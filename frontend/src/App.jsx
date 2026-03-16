@@ -1,13 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
+  Copy,
   Droplet,
   FileCode2,
   Home,
   Info,
   Library,
   LogIn,
-  Palette,
   Settings,
   Sparkles,
   Store,
@@ -110,6 +110,23 @@ function canPlayCard({ card, hand, trickSuit, isMyTurn, trickPending }) {
   return !hand.some((handCard) => parseCard(handCard).suit === trickSuit);
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'absolute';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textArea);
+}
+
 function Card({ cardString, onClick, disabled, ghosted = false, compact = false, title = '' }) {
   if (!cardString) {
     return null;
@@ -169,7 +186,7 @@ function ThemeTray({ themes, theme, onThemeChange, mobile = false }) {
           onClick={() => onThemeChange(themeOption.id)}
           className={clsx(
             'theme-chip relative z-10',
-            theme === themeOption.id ? 'frutiger-button scale-[1.02]' : 'text-[var(--text-secondary)]'
+            theme === themeOption.id ? 'theme-chip-active scale-[1.02]' : 'text-[var(--text-secondary)]'
           )}
         >
           {themeOption.label}
@@ -263,7 +280,6 @@ function CollectedHandsView({ players, collectedHandsByPlayer, myPlayerId }) {
 
 function App() {
   const [theme, setTheme] = useState('theme-frutiger-lime');
-  const [themeTrayOpen, setThemeTrayOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('play');
   const [playView, setPlayView] = useState('table');
 
@@ -271,7 +287,8 @@ function App() {
   const [roomId, setRoomId] = useState('');
   const [joinInput, setJoinInput] = useState('');
   const [players, setPlayers] = useState([]);
-  const [nameInput, setNameInput] = useState('');
+  const [guestNameInput, setGuestNameInput] = useState('');
+  const [guestProfile, setGuestProfile] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userProfile, setUserProfile] = useState(null);
 
@@ -291,6 +308,8 @@ function App() {
   const [activityFeed, setActivityFeed] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [finalStandings, setFinalStandings] = useState([]);
+  const [topPrompts, setTopPrompts] = useState([]);
+  const topPromptTimeoutsRef = useRef(new Map());
 
   const [editorTitle, setEditorTitle] = useState('My House Rules');
   const [editorType, setEditorType] = useState('per_round');
@@ -416,6 +435,11 @@ function App() {
     });
 
     return () => {
+      topPromptTimeoutsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      topPromptTimeoutsRef.current.clear();
+
       socket.off('lobby_update');
       socket.off('game_started');
       socket.off('game_update');
@@ -427,34 +451,68 @@ function App() {
     };
   }, []);
 
-  const handleAuth = () => {
-    const trimmedName = nameInput.trim();
+  const showTopPrompt = (message, tone = 'info') => {
+    const promptId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setTopPrompts((current) => [...current, { id: promptId, message, tone }]);
+
+    const timeoutId = window.setTimeout(() => {
+      setTopPrompts((current) => current.filter((prompt) => prompt.id !== promptId));
+      topPromptTimeoutsRef.current.delete(promptId);
+    }, 1200);
+
+    topPromptTimeoutsRef.current.set(promptId, timeoutId);
+  };
+
+  const createSessionProfile = (name, guest = false) => ({
+    userId: Math.random().toString(36).slice(2, 10),
+    name,
+    guest
+  });
+
+  const handleGuestContinue = () => {
+    const trimmedName = guestNameInput.trim();
     if (!trimmedName) {
       return;
     }
 
-    const userId = Math.random().toString(36).slice(2, 10);
-    const profile = { userId, name: trimmedName };
+    const profile = createSessionProfile(trimmedName, true);
     socket.emit('authenticate', profile);
-    setUserProfile(profile);
-    setIsAuthenticated(true);
+    setGuestProfile(profile);
     setActiveTab('play');
   };
 
   const handleLogout = () => {
     if (inLobby || gameStarted) {
-      setErrorMsg('Leave the current lobby before switching players.');
+      setErrorMsg('Leave the current room before switching players.');
       window.setTimeout(() => setErrorMsg(''), 3000);
       return;
     }
 
     setIsAuthenticated(false);
     setUserProfile(null);
-    setNameInput('');
     setActiveTab('login');
   };
 
+  const handleGuestReset = () => {
+    if (inLobby || gameStarted) {
+      setErrorMsg('Leave the current room before changing your guest name.');
+      window.setTimeout(() => setErrorMsg(''), 3000);
+      return;
+    }
+
+    setGuestNameInput(guestProfile?.name || '');
+    setGuestProfile(null);
+    setActiveTab('play');
+  };
+
   const handleCreateLobby = () => {
+    if (!activeProfile) {
+      setErrorMsg('Choose a guest name or sign in before creating a room.');
+      setActiveTab('play');
+      return;
+    }
+
+    socket.emit('authenticate', activeProfile);
     socket.emit('create_lobby', {}, (response) => {
       if (response.success) {
         setRoomId(response.roomId);
@@ -462,7 +520,7 @@ function App() {
         setGameStarted(false);
         setGameFinished(false);
         setFinalStandings([]);
-        setPlayers([{ socketId: socket.id, name: userProfile?.name || nameInput, isReady: true, userId: userProfile?.userId }]);
+        setPlayers([{ socketId: socket.id, name: activeProfile.name, isReady: true, userId: activeProfile.userId }]);
       } else if (response.error) {
         setErrorMsg(response.error);
       }
@@ -470,10 +528,17 @@ function App() {
   };
 
   const handleJoinLobby = () => {
+    if (!activeProfile) {
+      setErrorMsg('Choose a guest name or sign in before joining a room.');
+      setActiveTab('play');
+      return;
+    }
+
     if (!joinInput.trim()) {
       return;
     }
 
+    socket.emit('authenticate', activeProfile);
     socket.emit('join_lobby', { roomId: joinInput.toUpperCase() }, (response) => {
       if (response.success) {
         setRoomId(response.roomId);
@@ -528,6 +593,19 @@ function App() {
     setEditorStatus('Draft saved locally.');
   };
 
+  const handleCopyRoomCode = async () => {
+    if (!roomId) {
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(roomId);
+      showTopPrompt(`Room code ${roomId} copied to clipboard.`, 'success');
+    } catch {
+      showTopPrompt('Could not copy the room code right now.', 'error');
+    }
+  };
+
   const toggleReady = () => socket.emit('toggle_ready', { roomId });
   const startGame = () => socket.emit('start_game', { roomId }, (response) => {
     if (response.error) {
@@ -537,7 +615,6 @@ function App() {
 
   const applyTheme = (nextTheme) => {
     setTheme(nextTheme);
-    setThemeTrayOpen(false);
   };
 
   const navItems = [
@@ -546,8 +623,7 @@ function App() {
     { id: 'library', label: 'Library', icon: Library },
     { id: 'market', label: 'Marketplace', icon: Store },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
-    { id: 'settings', label: 'Settings', icon: Settings },
-    { id: 'login', label: 'Login', icon: LogIn }
+    ...(!isAuthenticated ? [{ id: 'login', label: 'Login', icon: LogIn }] : [])
   ];
 
   const themes = [
@@ -557,7 +633,8 @@ function App() {
     { id: 'theme-colorful-aero', label: 'Colorful Aero' }
   ];
 
-  const myPlayerId = players[myIndex]?.userId || userProfile?.userId;
+  const activeProfile = isAuthenticated ? userProfile : guestProfile;
+  const myPlayerId = players[myIndex]?.userId || activeProfile?.userId;
   const myPlayer = players[myIndex];
   const opponents = players.filter((_, index) => index !== myIndex);
   const trickWinnerRole = trickWinnerId
@@ -592,17 +669,29 @@ function App() {
           : 'Select any card from your hand.'
         : nextTurnPlayer
           ? `${getPlayerName(nextTurnPlayer)} is choosing a card.`
-          : 'Waiting for players to join the table.';
+          : 'Waiting for players to join the room.';
 
   const renderLobbyView = () => (
     <div className="relative z-10 w-full max-w-4xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <h3 className="text-3xl font-display font-extrabold text-[var(--text-primary)]">
-          Lobby
-          <span className="ml-3 rounded-2xl border border-[var(--glass-border)] bg-white/35 px-4 py-1.5 text-lg tracking-[0.26em] text-[var(--text-secondary)]">
-            {roomId}
-          </span>
-        </h3>
+        <div className="flex flex-wrap items-center gap-3">
+          <h3 className="text-3xl font-display font-extrabold text-[var(--text-primary)]">
+            Room
+          </h3>
+          <div className="flex items-center gap-2 rounded-[1.35rem] border border-[var(--glass-border)] bg-white/35 px-3 py-2 shadow-sm">
+            <span className="text-lg font-black tracking-[0.26em] text-[var(--text-secondary)]">
+              {roomId}
+            </span>
+            <button
+              type="button"
+              onClick={handleCopyRoomCode}
+              className="rounded-full border border-[var(--glass-border)] bg-white/55 p-2 text-[var(--text-primary)] transition hover:-translate-y-0.5 hover:bg-white/80"
+              title="Copy room code"
+            >
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
         <div className="status-pill px-4 py-2">
           {players.length} player{players.length === 1 ? '' : 's'}
         </div>
@@ -659,6 +748,25 @@ function App() {
 
   const renderMatchmaking = () => (
     <div className="relative z-10 m-auto w-full max-w-3xl space-y-6">
+      {!isAuthenticated && guestProfile && (
+        <div className="glass-panel flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+              Guest profile
+            </div>
+            <div className="mt-1 text-2xl font-black text-[var(--text-primary)]">
+              {guestProfile.name}
+            </div>
+          </div>
+          <button
+            onClick={handleGuestReset}
+            className="rounded-full border border-[var(--glass-border)] bg-white/35 px-5 py-3 text-sm font-black uppercase tracking-[0.18em] text-[var(--text-primary)] transition hover:bg-white/55"
+          >
+            Change Guest Name
+          </button>
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="glass-panel p-8">
           <h3 className="mb-3 text-3xl font-display font-black text-[var(--text-primary)]">Host Private Table</h3>
@@ -666,22 +774,22 @@ function App() {
             Spin up a private room, copy the code, and invite your friends.
           </p>
           <button onClick={handleCreateLobby} className="frutiger-button w-full py-4 text-lg">
-            Create Private Lobby
+            Create Private Room
           </button>
         </div>
         <div className="glass-panel p-8">
           <h3 className="mb-3 text-3xl font-display font-black text-[var(--text-primary)]">Join Friends</h3>
           <p className="mb-6 text-sm font-semibold text-[var(--text-secondary)]">
-            Paste a room code to hop straight into someone else&apos;s lobby.
+            Paste a room code to hop straight into someone else&apos;s room.
           </p>
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 sm:grid sm:grid-cols-[minmax(0,1fr)_auto]">
             <input
               value={joinInput}
               onChange={(event) => setJoinInput(event.target.value)}
               placeholder="Code (e.g. ABCDEF)"
-              className="flex-1 rounded-[1.3rem] border border-[var(--glass-border)] bg-white/40 px-5 py-4 font-black uppercase tracking-[0.24em] text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+              className="min-w-0 rounded-[1.3rem] border border-[var(--glass-border)] bg-white/40 px-5 py-4 font-black uppercase tracking-[0.14em] text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)] sm:tracking-[0.22em]"
             />
-            <button onClick={handleJoinLobby} className="frutiger-button px-6 text-lg">
+            <button onClick={handleJoinLobby} className="frutiger-button w-full px-6 py-4 text-lg sm:min-w-[9rem] sm:px-8">
               Join
             </button>
           </div>
@@ -942,21 +1050,21 @@ function App() {
   );
 
   const renderPlayContent = () => {
-    if (!isAuthenticated) {
+    if (!activeProfile) {
       return (
         <div className="relative z-10 m-auto flex w-full max-w-md flex-col gap-4 text-center">
-          <h3 className="text-3xl font-display font-black text-[var(--text-primary)]">Welcome Player</h3>
+          <h3 className="text-3xl font-display font-black text-[var(--text-primary)]">Play as Guest</h3>
           <p className="text-sm font-semibold text-[var(--text-secondary)]">
-            Pick a display name to enter the arena and unlock lobbies, custom rulesets, and multiplayer.
+            Pick a guest display name for this device. Account login lives separately from guest play.
           </p>
           <input
-            value={nameInput}
-            onChange={(event) => setNameInput(event.target.value)}
-            placeholder="Enter a display name..."
+            value={guestNameInput}
+            onChange={(event) => setGuestNameInput(event.target.value)}
+            placeholder="Enter a guest display name..."
             className="w-full rounded-[1.4rem] border border-[var(--glass-border)] bg-white/40 px-5 py-4 font-black tracking-wide text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
           />
-          <button onClick={handleAuth} className="frutiger-button py-4 text-lg">
-            Enter Arena
+          <button onClick={handleGuestContinue} className="frutiger-button py-4 text-lg">
+            Continue as Guest
           </button>
         </div>
       );
@@ -1073,21 +1181,19 @@ function App() {
   const renderLoginContent = () => (
     <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
       <section className="glass-panel p-8">
-        <h3 className="mb-2 text-3xl font-display font-black text-[var(--text-primary)]">Player Login</h3>
+        <h3 className="mb-2 text-3xl font-display font-black text-[var(--text-primary)]">Account Login</h3>
         <p className="mb-6 text-sm font-semibold text-[var(--text-secondary)]">
-          This build still uses lightweight display-name login for socket multiplayer, but the navbar now keeps it accessible from anywhere in the app.
+          Guest display names now live on the Play screen. This area is reserved for registered account access instead of minting pseudo-accounts from a display name field.
         </p>
 
         {!isAuthenticated ? (
-          <div className="space-y-4">
-            <input
-              value={nameInput}
-              onChange={(event) => setNameInput(event.target.value)}
-              placeholder="Choose your display name..."
-              className="w-full rounded-[1.4rem] border border-[var(--glass-border)] bg-white/40 px-5 py-4 font-black tracking-wide text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
-            />
-            <button onClick={handleAuth} className="frutiger-button w-full py-4 text-lg">
-              Login to Arena
+          <div className="rounded-[1.7rem] border border-dashed border-[var(--glass-border)] bg-white/20 p-6">
+            <div className="text-lg font-black text-[var(--text-primary)]">Registered accounts are not wired in yet.</div>
+            <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              Use the Play tab to choose a guest display name and jump into rooms. Once real account auth is connected, this page can host the proper sign-in flow without confusing guest names for accounts.
+            </p>
+            <button onClick={() => setActiveTab('play')} className="frutiger-button mt-5 w-full py-4 text-lg">
+              Back to Play
             </button>
           </div>
         ) : (
@@ -1148,6 +1254,20 @@ function App() {
       return renderLoginContent();
     }
 
+    if (activeTab === 'settings') {
+      return (
+        <div className="space-y-5">
+          <div className="glass-panel p-8">
+            <h3 className="mb-3 text-3xl font-display font-black text-[var(--text-primary)]">Settings</h3>
+            <p className="mb-6 text-sm font-semibold text-[var(--text-secondary)]">
+              Theme switching lives here now, and the palette button in the title bar jumps straight to this page.
+            </p>
+            <ThemeTray themes={themes} theme={theme} onThemeChange={applyTheme} />
+          </div>
+        </div>
+      );
+    }
+
     if (activeTab === 'friends') {
       return renderPlaceholderModule(
         'Friends',
@@ -1169,17 +1289,7 @@ function App() {
       );
     }
 
-    return (
-      <div className="space-y-5">
-        <div className="glass-panel p-8">
-          <h3 className="mb-3 text-3xl font-display font-black text-[var(--text-primary)]">Settings</h3>
-          <p className="mb-6 text-sm font-semibold text-[var(--text-secondary)]">
-            Theme switching is now available on small screens through the title bar, and the full preset tray remains here as well.
-          </p>
-          <ThemeTray themes={themes} theme={theme} onThemeChange={applyTheme} />
-        </div>
-      </div>
-    );
+    return null;
   };
 
   return (
@@ -1201,18 +1311,49 @@ function App() {
 
           <div className="flex w-20 justify-end md:w-24">
             <button
-              onClick={() => setThemeTrayOpen((open) => !open)}
+              onClick={() => setActiveTab('settings')}
               className="rounded-full border border-[var(--glass-border)] bg-white/35 p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-white/50"
-              title="Toggle themes"
+              title="Open settings"
             >
-              <Palette className="h-4 w-4" />
+              <Settings className="h-4 w-4" />
             </button>
           </div>
         </div>
 
-        {themeTrayOpen && (
-          <div className="border-b border-[var(--glass-border)] px-3 py-3" style={{ background: 'var(--glass-bg)' }}>
-            <ThemeTray themes={themes} theme={theme} onThemeChange={applyTheme} mobile />
+        {topPrompts.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 top-16 z-40 px-4">
+            <div className="relative mx-auto h-14 w-full">
+              {topPrompts.map((topPrompt) => (
+                <div
+                  key={topPrompt.id}
+                  className="absolute left-1/2 top-0 w-fit max-w-[calc(100vw-2rem)] -translate-x-1/2"
+                >
+                  <div
+                    className={clsx(
+                      'copy-toast glass-panel inline-flex w-max max-w-[calc(100vw-2rem)] items-center gap-2.5 rounded-[1.35rem] px-3 py-2.5 shadow-[0_18px_36px_rgba(0,0,0,0.16)] backdrop-blur-2xl sm:gap-3 sm:rounded-[1.6rem] sm:px-4 sm:py-3 sm:max-w-[30rem]',
+                      topPrompt.tone === 'success' && 'border-lime-100/90 bg-[linear-gradient(180deg,rgba(248,255,245,0.92)_0%,rgba(214,247,177,0.78)_100%)]',
+                      topPrompt.tone === 'error' && 'border-rose-100/90 bg-[linear-gradient(180deg,rgba(255,246,248,0.94)_0%,rgba(255,205,218,0.82)_100%)]',
+                      topPrompt.tone === 'info' && 'border-sky-100/90 bg-[linear-gradient(180deg,rgba(245,252,255,0.94)_0%,rgba(198,234,255,0.8)_100%)]'
+                    )}
+                  >
+                    <div
+                      className={clsx(
+                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border shadow-[inset_0_1px_2px_rgba(255,255,255,0.92),0_6px_12px_rgba(0,0,0,0.08)] sm:h-8 sm:w-8',
+                        topPrompt.tone === 'success' && 'border-lime-100/95 bg-white/80 text-emerald-700',
+                        topPrompt.tone === 'error' && 'border-rose-100/95 bg-white/80 text-rose-700',
+                        topPrompt.tone === 'info' && 'border-sky-100/95 bg-white/80 text-sky-700'
+                      )}
+                    >
+                      <Check className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                    </div>
+                    <div className="min-w-0 whitespace-normal break-words text-xs font-black leading-5 text-[var(--text-primary)] sm:text-sm md:text-base">
+                      {topPrompt.message}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div className="h-14" aria-hidden="true" />
+            </div>
           </div>
         )}
 
@@ -1245,39 +1386,7 @@ function App() {
               })}
             </nav>
 
-            <div className="mt-auto space-y-4 border-t border-[var(--glass-border)] pt-6">
-              <div className="rounded-[1.5rem] border border-[var(--glass-border)] bg-white/20 p-4">
-                <div className="mb-1 text-[10px] font-extrabold uppercase tracking-[0.24em] text-[var(--text-secondary)]">
-                  Login
-                </div>
-                <button
-                  onClick={() => setActiveTab('login')}
-                  className="flex w-full items-center justify-between gap-3 rounded-[1.2rem] bg-white/35 px-4 py-3 transition hover:bg-white/50"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="seat-avatar h-10 w-10 text-xs">
-                      {isAuthenticated ? userProfile?.name?.charAt(0).toUpperCase() : <UserRound className="h-4 w-4" />}
-                    </div>
-                    <div className="text-left">
-                      <div className="text-sm font-black text-[var(--text-primary)]">
-                        {isAuthenticated ? userProfile?.name : 'Login'}
-                      </div>
-                      <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                        {isAuthenticated ? 'Signed in' : 'Guest mode'}
-                      </div>
-                    </div>
-                  </div>
-                  <LogIn className="h-4 w-4 text-[var(--text-secondary)]" />
-                </button>
-              </div>
-
-              <div>
-                <span className="mb-4 block px-2 text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)] opacity-70">
-                  Aesthetic
-                </span>
-                <ThemeTray themes={themes} theme={theme} onThemeChange={applyTheme} />
-              </div>
-            </div>
+            <div className="mt-auto border-t border-[var(--glass-border)] pt-6" />
           </aside>
 
           <main className="relative z-10 flex h-full flex-1 flex-col overflow-y-auto overflow-x-hidden p-3 pb-32 md:p-4 md:pb-4 lg:p-5">
