@@ -175,8 +175,8 @@ function ThemeTray({ themes, theme, onThemeChange, mobile = false }) {
   return (
     <div
       className={clsx(
-        'glass-panel relative z-40 border border-[var(--glass-border)]',
-        mobile ? 'flex gap-2 overflow-x-auto rounded-[1.4rem] p-2' : 'grid grid-cols-2 gap-2.5 p-0'
+        'relative z-40',
+        mobile ? 'flex gap-2 overflow-x-auto p-2' : 'grid grid-cols-2 gap-2.5 p-0'
       )}
     >
       {themes.map((themeOption) => (
@@ -742,6 +742,11 @@ function App() {
             Start Match
           </button>
         )}
+        {gameFinished && (
+          <button onClick={() => setPlayView('stats')} className="flex-1 rounded-[1.6rem] border border-[var(--glass-border)] bg-white/35 px-8 py-4 text-lg font-black uppercase tracking-[0.18em] transition hover:bg-white/55">
+            View Last Game Stats
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1029,9 +1034,14 @@ function App() {
 
           {gameFinished && (
             <div className="glass-panel p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <Trophy className="h-5 w-5 text-[var(--text-secondary)]" />
-                <h4 className="text-lg font-display font-black text-[var(--text-primary)]">Game Finished</h4>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Trophy className="h-5 w-5 text-[var(--text-secondary)]" />
+                  <h4 className="text-lg font-display font-black text-[var(--text-primary)]">Game Finished</h4>
+                </div>
+                <button onClick={() => setPlayView('table')} className="rounded-full border border-[var(--glass-border)] bg-white/35 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] transition hover:bg-white/55">
+                  Back to Lobby
+                </button>
               </div>
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {finalStandings.map((standing, index) => (
@@ -1074,7 +1084,7 @@ function App() {
       return renderMatchmaking();
     }
 
-    if (!gameStarted) {
+    if (!gameStarted || (gameFinished && playView !== 'stats')) {
       return renderLobbyView();
     }
 
@@ -1124,6 +1134,9 @@ function App() {
           </button>
           <button onClick={handleSaveDraft} className="ready-button flex-1 py-4 text-lg">
             Save Draft
+          </button>
+          <button onClick={() => setActiveTab('guide')} className="flex-1 rounded-[1.6rem] border border-[var(--glass-border)] bg-white/35 py-4 text-lg font-black uppercase tracking-[0.18em] text-[var(--text-primary)] transition hover:bg-white/55">
+            View Guide
           </button>
         </div>
 
@@ -1241,6 +1254,119 @@ function App() {
     </div>
   );
 
+  const renderGuideContent = () => (
+    <div className="flex max-h-[85vh] flex-col gap-4">
+      <div className="flex shrink-0 items-center justify-between px-2">
+        <h3 className="text-3xl font-display font-black text-[var(--text-primary)]">Ruleset Definition Guide</h3>
+        <button onClick={() => setActiveTab('editor')} className="rounded-full border border-[var(--glass-border)] bg-white/35 px-5 py-2 text-sm font-black uppercase tracking-[0.18em] text-[var(--text-primary)] shadow-sm transition hover:bg-white/55">
+          Back to Editor
+        </button>
+      </div>
+      
+      <div className="glass-panel flex-1 overflow-y-auto p-8">
+        <div className="space-y-8 text-sm font-medium leading-7 text-[var(--text-secondary)]">
+        <section>
+          <h4 className="mb-3 text-xl font-bold text-[var(--text-primary)]">Overview</h4>
+          <p>The rules engine supports custom Rentz rules executed either <code>per_round</code> or <code>end_game</code>. Special variables are made available to your scripts at runtime.</p>
+        </section>
+
+        <section>
+          <h4 className="mb-3 text-xl font-bold text-[var(--text-primary)]">Variables</h4>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">POINTS</strong>
+              <p className="mt-1 text-xs">The current score of the player.</p>
+            </div>
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">TRICKS_WON</strong>
+              <p className="mt-1 text-xs">The number of tricks currently won by the player.</p>
+            </div>
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">[SUIT]_COUNT</strong>
+              <p className="mt-1 text-xs">Number of specific suits captured (e.g. <code>HEART_COUNT</code>, <code>SPADE_COUNT</code>).</p>
+            </div>
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">[SUIT]_[VALUE]</strong>
+              <p className="mt-1 text-xs">Boolean if the specific card was captured (e.g. <code>HEART_KING</code>, <code>DIAMOND_JACK</code>).</p>
+            </div>
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">CARD_NR</strong>
+              <p className="mt-1 text-xs">The total number of cards currently collected by the player.</p>
+            </div>
+            <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <strong className="text-base text-[var(--text-primary)]">PLAYER_COUNT</strong>
+              <p className="mt-1 text-xs">The total number of players in the game.</p>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h4 className="mb-3 text-xl font-bold text-[var(--text-primary)]">Functions & Commands</h4>
+          <ul className="space-y-4">
+            <li className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <code className="rounded bg-black/10 px-1 font-mono text-base font-bold text-[var(--text-primary)]">add(value)</code>
+              <p className="mt-1">Adds the specified integer expression to the player's score.</p>
+            </li>
+            <li className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <code className="rounded bg-black/10 px-1 font-mono text-base font-bold text-[var(--text-primary)]">set_to(value)</code>
+              <p className="mt-1">Hardcodes the player's score directly to the specified expression.</p>
+            </li>
+            <li className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <code className="rounded bg-black/10 px-1 font-mono text-base font-bold text-[var(--text-primary)]">reset_to(value)</code>
+              <p className="mt-1">Resets the score back to a default value, optionally taking an expression.</p>
+            </li>
+            <li className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <code className="rounded bg-black/10 px-1 font-mono text-base font-bold text-[var(--text-primary)]">end()</code>
+              <p className="mt-1">Instantly ends the current round context execution.</p>
+            </li>
+            <li className="rounded-[1.3rem] border border-[var(--glass-border)] bg-white/30 p-4">
+              <code className="rounded bg-black/10 px-1 font-mono text-base font-bold text-[var(--text-primary)]">game_end()</code>
+              <p className="mt-1">Forces the game to conclude and proceeds to final standings.</p>
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h4 className="mb-3 text-xl font-bold text-[var(--text-primary)]">Control Flow & Logic</h4>
+          <p className="mb-3">Standard logical branches are fully supported. Conditions must be wrapped in parentheses.</p>
+          <ul className="list-inside list-disc space-y-2 pl-4">
+            <li><strong>Statements:</strong> <code>if</code>, <code>elif</code>, <code>else</code>, <code>endif</code></li>
+            <li><strong>Comparisons:</strong> <code>==</code>, <code>!=</code>, <code>&gt;</code>, <code>&lt;</code>, <code>&gt;=</code>, <code>&lt;=</code></li>
+            <li><strong>Logical Operators:</strong> <code>and</code>, <code>or</code>, <code>not</code></li>
+            <li><strong>Math Operators:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code></li>
+          </ul>
+        </section>
+
+        <section>
+          <h4 className="mb-3 text-xl font-bold text-[var(--text-primary)]">Comprehensive Example</h4>
+          <pre className="overflow-x-auto rounded-[1.3rem] bg-slate-950/85 p-6 font-mono text-sm leading-relaxed text-lime-100 shadow-inner">
+{`if (HEART_KING)
+  add(-100)
+elif (HEART_COUNT > 0)
+  add(HEART_COUNT * -20)
+endif
+
+if (TRICKS_WON == 0 and POINTS < -50)
+  set_to(0)
+  end()
+endif
+
+if (not DIAMOND_JACK)
+  add(10)
+else
+  add(150)
+endif
+
+if (POINTS < -500)
+  game_end()
+endif`}
+          </pre>
+        </section>
+        </div>
+      </div>
+    </div>
+  );
+
   const renderMainContent = () => {
     if (activeTab === 'play') {
       return renderPlayContent();
@@ -1250,6 +1376,10 @@ function App() {
       return renderEditorContent();
     }
 
+    if (activeTab === 'guide') {
+      return renderGuideContent();
+    }
+
     if (activeTab === 'login') {
       return renderLoginContent();
     }
@@ -1257,7 +1387,7 @@ function App() {
     if (activeTab === 'settings') {
       return (
         <div className="space-y-5">
-          <div className="glass-panel p-8">
+          <div className="p-8">
             <h3 className="mb-3 text-3xl font-display font-black text-[var(--text-primary)]">Settings</h3>
             <p className="mb-6 text-sm font-semibold text-[var(--text-secondary)]">
               Theme switching lives here now, and the palette button in the title bar jumps straight to this page.
