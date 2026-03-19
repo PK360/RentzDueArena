@@ -5,25 +5,10 @@ const mongoose = require('mongoose');
 const { Server } = require('socket.io');
 
 const createApp = require('./src/app');
+const { connectToMongo, getMongoUri } = require('./src/lib/database');
 const registerSocketHandlers = require('./socketManager');
 
 const PORT = Number(process.env.PORT || 4000);
-const MONGODB_URI =
-  process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/rentz-arena';
-
-async function connectToMongo() {
-  try {
-    await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000
-    });
-    console.log('MongoDB connected');
-  } catch (error) {
-    console.warn(
-      'MongoDB unavailable, continuing with degraded in-memory mode:',
-      error.message
-    );
-  }
-}
 
 function start() {
   const app = createApp();
@@ -50,7 +35,16 @@ function start() {
     console.warn('MongoDB connection error:', error.message);
   });
 
-  void connectToMongo();
+  void connectToMongo()
+    .then(() => {
+      console.log(`MongoDB connected to ${getMongoUri()}`);
+    })
+    .catch((error) => {
+      console.warn(
+        'MongoDB unavailable, continuing with degraded in-memory mode:',
+        error.message
+      );
+    });
 }
 
 start();

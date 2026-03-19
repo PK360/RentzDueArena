@@ -10,10 +10,19 @@
     "dev:backend": "cd backend && node index.js",
     "dev:frontend": "cd frontend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "db:start": "docker compose up -d mongo",
+    "db:stop": "docker compose stop mongo",
+    "db:logs": "docker compose logs -f mongo",
+    "stack:start": "docker compose up -d mongo backend",
+    "stack:stop": "docker compose stop backend mongo",
+    "stack:logs": "docker compose logs -f backend mongo",
     "build": "cd frontend && npm run build",
     "start": "cd backend && node index.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "mongodb": "^7.1.0"
   }
 }
