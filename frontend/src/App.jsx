@@ -204,13 +204,82 @@ async function copyTextToClipboard(text) {
   document.body.removeChild(textArea);
 }
 
-function Card({ cardString, onClick, disabled, ghosted = false, compact = false, title = '' }) {
+const CARD_PIP_LAYOUTS = {
+  A: [{ x: 50, y: 50 }],
+  '2': [{ x: 50, y: 22 }, { x: 50, y: 78, invert: true }],
+  '3': [{ x: 50, y: 20 }, { x: 50, y: 50 }, { x: 50, y: 80, invert: true }],
+  '4': [{ x: 33, y: 23 }, { x: 67, y: 23 }, { x: 33, y: 77, invert: true }, { x: 67, y: 77, invert: true }],
+  '5': [{ x: 33, y: 23 }, { x: 67, y: 23 }, { x: 50, y: 50 }, { x: 33, y: 77, invert: true }, { x: 67, y: 77, invert: true }],
+  '6': [{ x: 33, y: 21 }, { x: 67, y: 21 }, { x: 33, y: 50 }, { x: 67, y: 50 }, { x: 33, y: 79, invert: true }, { x: 67, y: 79, invert: true }],
+  '7': [{ x: 33, y: 21 }, { x: 67, y: 21 }, { x: 50, y: 34 }, { x: 33, y: 50 }, { x: 67, y: 50 }, { x: 33, y: 79, invert: true }, { x: 67, y: 79, invert: true }],
+  '8': [{ x: 33, y: 19 }, { x: 67, y: 19 }, { x: 50, y: 33 }, { x: 33, y: 50 }, { x: 67, y: 50 }, { x: 50, y: 67, invert: true }, { x: 33, y: 81, invert: true }, { x: 67, y: 81, invert: true }],
+  '9': [{ x: 33, y: 18 }, { x: 67, y: 18 }, { x: 50, y: 30 }, { x: 33, y: 44 }, { x: 67, y: 44 }, { x: 50, y: 56, invert: true }, { x: 33, y: 70, invert: true }, { x: 67, y: 70, invert: true }, { x: 50, y: 82, invert: true }],
+  '10': [{ x: 33, y: 18 }, { x: 67, y: 18 }, { x: 50, y: 30 }, { x: 33, y: 42 }, { x: 67, y: 42 }, { x: 33, y: 58, invert: true }, { x: 67, y: 58, invert: true }, { x: 50, y: 70, invert: true }, { x: 33, y: 82, invert: true }, { x: 67, y: 82, invert: true }]
+};
+
+function CardIndex({ value, suit, compact = false, bottom = false }) {
+  return (
+    <div
+      className={clsx(
+        'absolute flex flex-col items-center leading-none',
+        compact ? 'gap-[1px]' : 'gap-[2px]',
+        bottom ? 'bottom-[6%] right-[7%] rotate-180' : 'left-[7%] top-[6%]'
+      )}
+    >
+      <span className={clsx('font-serif font-bold tracking-tight', compact ? 'text-[0.68rem]' : 'text-[0.98rem] sm:text-[1.08rem] md:text-[1.3rem]')}>
+        {value}
+      </span>
+      <span className={clsx('font-serif', compact ? 'text-[0.7rem]' : 'text-[0.95rem] sm:text-[1rem] md:text-[1.18rem]')}>
+        {SUIT_SYMBOLS[suit]}
+      </span>
+    </div>
+  );
+}
+
+function CardCenterFace({ value, suit, compact = false }) {
+  const pipLayout = CARD_PIP_LAYOUTS[value];
+
+  if (pipLayout) {
+    return (
+      <div className="absolute inset-[16%_16%_14%]">
+        {pipLayout.map((pip, index) => (
+          <span
+            key={`${value}-${suit}-${index}`}
+            className={clsx(
+              'absolute select-none font-serif leading-none',
+              compact ? 'text-[1rem] sm:text-[1.05rem]' : 'text-[1.18rem] sm:text-[1.4rem] md:text-[1.7rem] lg:text-[1.85rem]'
+            )}
+            style={{
+              left: `${pip.x}%`,
+              top: `${pip.y}%`,
+              transform: `translate(-50%, -50%)${pip.invert ? ' rotate(180deg)' : ''}`
+            }}
+            aria-hidden="true"
+          >
+            {SUIT_SYMBOLS[suit]}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="absolute inset-[22%_16%_18%] flex items-center justify-center">
+      <span className={clsx('font-serif leading-none', compact ? 'text-[1.5rem]' : 'text-[2.15rem] sm:text-[2.45rem] md:text-[3.3rem]')}>
+        {SUIT_SYMBOLS[suit]}
+      </span>
+    </div>
+  );
+}
+
+function Card({ cardString, onClick, disabled, ghosted = false, compact = false, title = '', variant = 'default' }) {
   if (!cardString) {
     return null;
   }
 
   const { value, suit } = parseCard(cardString);
   const isRed = suit === 'H' || suit === 'D';
+  const isCompactCard = compact || variant === 'trick';
 
   return (
     <button
@@ -218,32 +287,25 @@ function Card({ cardString, onClick, disabled, ghosted = false, compact = false,
       disabled={disabled}
       title={title}
       className={clsx(
-        'relative flex shrink-0 flex-col justify-between rounded-[1.35rem] border border-gray-200 bg-gradient-to-br from-white via-white to-slate-100 transition-all duration-300',
-        compact ? 'h-[3.9rem] w-[2.65rem] p-1.5 sm:h-[4.4rem] sm:w-[3rem] md:h-[4.9rem] md:w-[3.35rem]' : 'h-[5.35rem] w-[3.55rem] p-1.5 sm:h-[6.1rem] sm:w-[4.1rem] sm:p-2 md:h-[8.3rem] md:w-[5.45rem] md:p-2.5 lg:h-[9rem] lg:w-[5.9rem]',
-        'shadow-[0_8px_16px_rgba(0,0,0,0.12),inset_0_2px_4px_rgba(255,255,255,1)]',
+        'relative flex shrink-0 flex-col justify-between overflow-hidden border border-slate-500/55 bg-gradient-to-b from-white via-white to-slate-50 transition-all duration-200',
+        variant === 'trick' ? 'rounded-none' : 'rounded-[0.38rem]',
+        variant === 'trick'
+          ? 'h-full w-full p-[0.26rem] sm:p-[0.28rem]'
+          : compact
+            ? 'h-[3.85rem] w-[2.6rem] p-1 sm:h-[4.3rem] sm:w-[2.9rem] md:h-[4.75rem] md:w-[3.2rem]'
+            : 'h-[5.2rem] w-[3.45rem] p-1.5 sm:h-[5.95rem] sm:w-[3.95rem] sm:p-1.5 md:h-[8rem] md:w-[5.2rem] md:p-2 lg:h-[8.7rem] lg:w-[5.65rem]',
+        'shadow-[0_8px_18px_rgba(0,0,0,0.14),inset_0_1px_0_rgba(255,255,255,0.96)]',
         isRed ? 'text-red-500' : 'text-slate-800',
         disabled && ghosted
           ? 'cursor-not-allowed opacity-35 saturate-0 blur-[0.2px]'
           : disabled
             ? 'cursor-default opacity-80'
-            : 'cursor-pointer hover:-translate-y-5 hover:rotate-2 hover:shadow-[0_22px_38px_-14px_rgba(0,0,0,0.35)]'
+            : 'cursor-pointer hover:-translate-y-3 hover:shadow-[0_18px_28px_-14px_rgba(0,0,0,0.38)]'
       )}
     >
-      <div className={clsx('font-display font-black leading-none tracking-tight', compact ? 'text-xs sm:text-sm' : 'text-base sm:text-lg md:text-2xl')}>
-        {value}
-      </div>
-      <div className={clsx('flex flex-1 items-center justify-center drop-shadow-sm', compact ? 'text-xl sm:text-2xl' : 'text-3xl sm:text-4xl md:text-6xl')}>
-        {SUIT_SYMBOLS[suit]}
-      </div>
-      <div className={clsx('rotate-180 font-display font-black leading-none tracking-tight', compact ? 'text-xs sm:text-sm' : 'text-base sm:text-lg md:text-2xl')}>
-        {value}
-      </div>
-      {!compact && (
-        <div
-          className="pointer-events-none absolute inset-x-[10%] top-[6%] h-[32%] rounded-full bg-gradient-to-b from-white/90 to-transparent"
-          aria-hidden="true"
-        />
-      )}
+      <CardIndex value={value} suit={suit} compact={isCompactCard} />
+      <CardIndex value={value} suit={suit} compact={isCompactCard} bottom />
+      <CardCenterFace value={value} suit={suit} compact={isCompactCard} />
     </button>
   );
 }
@@ -455,16 +517,18 @@ function TrickBoard({ currentTrick, playerCount, trickSuit, trickPending }) {
 
           return (
             <div key={`trick-slot-${index}`} className={clsx('rentz-trick-slot', play && 'is-filled')}>
-              {play ? (
-                <>
-                  <Card cardString={play.card} compact disabled />
-                  <span className="rentz-trick-slot-name">{play.playerName}</span>
-                </>
-              ) : (
-                <div className="rentz-trick-placeholder">
-                  <span className="rentz-trick-placeholder-card" />
-                </div>
-              )}
+              <div className="rentz-trick-card-frame">
+                {play ? (
+                  <Card cardString={play.card} compact disabled variant="trick" />
+                ) : (
+                  <div className="rentz-trick-placeholder">
+                    <span className="rentz-trick-placeholder-card" />
+                  </div>
+                )}
+              </div>
+              <span className={clsx('rentz-trick-slot-name', !play && 'is-placeholder')}>
+                {play?.playerName || 'Waiting'}
+              </span>
             </div>
           );
         })}
@@ -960,21 +1024,11 @@ function App() {
     return acc;
   }, {});
 
-  const noticeText = errorMsg
+  const inlineStatusText = errorMsg
     ? errorMsg
-    : gameFinished
-      ? finalStandings[0]
-        ? `Game finished. ${finalStandings[0].name} won with ${finalStandings[0].tricksWon} collected hands.`
-        : 'Game finished.'
     : roundWinnerName
       ? `${roundWinnerName} took the last hand.`
-      : isMyTurn
-        ? trickSuit
-          ? `Select a ${SUIT_NAMES[trickSuit]} card from your hand.`
-          : 'Select any card from your hand.'
-        : nextTurnPlayer
-          ? `${getPlayerName(nextTurnPlayer)} is choosing a card.`
-          : 'Waiting for players to join the room.';
+      : null;
   const localTablePlayer = myPlayer || players.find((player) => player.userId === myPlayerId) || activeProfile;
   const totalHandsTaken = Object.values(collectedHandsByPlayer).reduce((sum, tricks) => sum + tricks.length, 0);
   const sortedHand = sortCards(hand);
@@ -1001,6 +1055,15 @@ function App() {
   const handleEmojiPrompt = (player) => {
     showTopPrompt(`Emoji reactions are not wired yet for ${getPlayerName(player)}.`, 'info');
   };
+  const isCompactGameHeader = activeTab === 'play' && inLobby && gameStarted;
+  const compactHeaderTurnText = gameFinished && playView === 'stats'
+    ? 'Final standings'
+    : isMyTurn
+      ? 'Your turn'
+      : nextTurnPlayer
+        ? `${getPlayerName(nextTurnPlayer)}'s turn`
+        : 'Waiting';
+  const compactHeaderLeadText = trickSuit ? `Lead ${SUIT_NAMES[trickSuit]}` : 'Waiting for lead';
 
   const renderLobbyView = () => (
     <div className="relative z-10 w-full max-w-4xl">
@@ -1122,8 +1185,10 @@ function App() {
             <input
               value={joinInput}
               onChange={(event) => setJoinInput(event.target.value)}
-              placeholder="Code (e.g. ABCDEF)"
-              className="min-w-0 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-black uppercase tracking-[0.14em] text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)] sm:tracking-[0.22em]"
+              autoCapitalize="characters"
+              placeholder="Room code"
+              spellCheck={false}
+              className="min-w-0 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-mono text-[0.95rem] font-black uppercase tracking-[0.06em] text-[var(--text-primary)] shadow-inner placeholder:font-sans placeholder:text-[0.9rem] placeholder:font-bold placeholder:normal-case placeholder:tracking-normal focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)] sm:text-[1rem] sm:tracking-[0.12em]"
             />
             <button onClick={handleJoinLobby} className="frutiger-button w-full px-6 py-4 text-base sm:min-w-[9rem] sm:px-8 sm:text-lg">
               Join
@@ -1138,16 +1203,6 @@ function App() {
     if (gameFinished && playView === 'stats') {
       return (
         <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-4">
-          <div className="rentz-status-strip">
-            <div className="rentz-notice-banner">
-              <Info className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
-              <div>
-                <span className="rentz-notice-label">Notice:</span>
-                <span className="rentz-notice-copy">{noticeText}</span>
-              </div>
-            </div>
-          </div>
-
           <section className="glass-panel p-4 sm:p-5">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
@@ -1195,24 +1250,10 @@ function App() {
     if (playView === 'collected') {
       return (
         <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-4">
-          <div className="rentz-status-strip">
-            <div className="rentz-notice-banner">
-              <Info className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
-              <div>
-                <span className="rentz-notice-label">Notice:</span>
-                <span className="rentz-notice-copy">{noticeText}</span>
-              </div>
-            </div>
-            <div className="rentz-status-pills">
-              <div className="status-pill px-3 py-2">Room {roomId}</div>
-              <div className="status-pill px-3 py-2">{totalHandsTaken} hands taken</div>
-            </div>
-          </div>
-
           <section className="glass-panel p-4 sm:p-5">
             <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Collected Hands</h4>
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Taken Hands</h4>
                 <p className="text-sm font-semibold text-[var(--text-secondary)]">
                   This is the existing taken-hands view, remapped from the new table action area.
                 </p>
@@ -1221,7 +1262,7 @@ function App() {
                 onClick={() => setPlayView('table')}
                 className="frutiger-button px-5 py-3 text-sm font-black uppercase tracking-[0.16em]"
               >
-                Înapoi la masă
+                Back to table
               </button>
             </div>
 
@@ -1236,28 +1277,20 @@ function App() {
     }
 
     return (
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-4">
-        <div className="rentz-status-strip">
-          <div className="rentz-notice-banner">
-            <Info className="h-5 w-5 shrink-0 text-[var(--text-secondary)]" />
-            <div>
-              <span className="rentz-notice-label">Notice:</span>
-              <span className="rentz-notice-copy">{noticeText}</span>
-            </div>
-          </div>
-
-          <div className="rentz-status-pills">
-            <div className="status-pill px-3 py-2">Room {roomId}</div>
-            <div className={clsx('status-pill px-3 py-2', isMyTurn && 'bg-[var(--accent-glow)] text-white')}>
-              {isMyTurn ? 'Your turn' : `${getPlayerName(nextTurnPlayer)}'s turn`}
-            </div>
-            <div className="status-pill px-3 py-2">{players.length} players</div>
-          </div>
-        </div>
-
-        <section className="rentz-game-frame">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+        <section className="rentz-game-frame flex-1 min-h-0">
           <div className="rentz-table-stage table-felt">
-            <div className="rentz-marking-box">Marking suit: {formatMarkingSuit(trickSuit)}</div>
+            <div className="rentz-marking-box">
+              <span className="rentz-marking-label">Marking suit:</span>
+              <span
+                className={clsx(
+                  'rentz-marking-value',
+                  trickSuit && (trickSuit === 'H' || trickSuit === 'D') ? 'is-red' : 'is-neutral'
+                )}
+              >
+                {formatMarkingSuit(trickSuit)}
+              </span>
+            </div>
 
             <div className="rentz-table-corner-pills">
               <div className="status-pill px-3 py-2">{totalHandsTaken} hands taken</div>
@@ -1287,31 +1320,37 @@ function App() {
                 const seatRole = OPPONENT_SEAT_ROLES[index] || 'top';
 
                 return (
-                  <RentzSeatCluster
+                  <div
                     key={player.userId || player.socketId || index}
-                    player={player}
-                    seatRole={seatRole}
-                    isCurrent={nextTurnPlayer?.userId === player.userId}
-                    isWinner={trickWinnerId === player.userId}
-                    cardCount={cardCounts[player.userId] || 0}
-                    tricksWon={(collectedHandsByPlayer[player.userId] || []).length}
-                    points={getPlayerPoints(player)}
-                    onEmojiClick={() => handleEmojiPrompt(player)}
-                  />
+                    className={clsx('rentz-seat-slot', `rentz-seat-slot-${seatRole}`)}
+                  >
+                    <RentzSeatCluster
+                      player={player}
+                      seatRole={seatRole}
+                      isCurrent={nextTurnPlayer?.userId === player.userId}
+                      isWinner={trickWinnerId === player.userId}
+                      cardCount={cardCounts[player.userId] || 0}
+                      tricksWon={(collectedHandsByPlayer[player.userId] || []).length}
+                      points={getPlayerPoints(player)}
+                      onEmojiClick={() => handleEmojiPrompt(player)}
+                    />
+                  </div>
                 );
               })}
 
               {localTablePlayer ? (
-                <RentzSeatCluster
-                  player={localTablePlayer}
-                  seatRole="bottom"
-                  isCurrent={nextTurnPlayer?.userId === myPlayerId}
-                  isWinner={trickWinnerId === myPlayerId}
-                  cardCount={hand.length}
-                  tricksWon={(collectedHandsByPlayer[myPlayerId] || []).length}
-                  points={getPlayerPoints(localTablePlayer)}
-                  onEmojiClick={() => handleEmojiPrompt(localTablePlayer)}
-                />
+                <div className="rentz-seat-slot rentz-seat-slot-bottom">
+                  <RentzSeatCluster
+                    player={localTablePlayer}
+                    seatRole="bottom"
+                    isCurrent={nextTurnPlayer?.userId === myPlayerId}
+                    isWinner={trickWinnerId === myPlayerId}
+                    cardCount={hand.length}
+                    tricksWon={(collectedHandsByPlayer[myPlayerId] || []).length}
+                    points={getPlayerPoints(localTablePlayer)}
+                    onEmojiClick={() => handleEmojiPrompt(localTablePlayer)}
+                  />
+                </div>
               ) : null}
             </div>
 
@@ -1376,7 +1415,7 @@ function App() {
               onClick={() => setPlayView('collected')}
               className="rentz-verify-button"
             >
-              <span>Verifică mâinile luate</span>
+              <span>Review taken hands</span>
             </button>
 
             <section className="rentz-log-panel rentz-log-panel-desktop">
@@ -1927,12 +1966,42 @@ endif`}
           <main className="relative z-10 flex h-full flex-1 flex-col overflow-y-auto overflow-x-auto p-3 pb-28 sm:p-4 sm:pb-32 md:pb-4 lg:p-5">
             <div className="subpage-viewport">
               <div className="subpage-content">
-                <header className="mb-6 flex shrink-0 flex-col gap-3">
-                  <h2 className="flex items-center gap-3 pt-1 text-[2rem] font-display font-black capitalize leading-[1.08] tracking-tight text-[var(--text-primary)] drop-shadow-sm sm:text-3xl md:text-[4rem]">
-                    {activeTab === 'play' && !inLobby && <Swords className="h-8 w-8 opacity-70 sm:h-10 sm:w-10" />}
-                    {activeTab}
-                  </h2>
-                  <div className="h-1.5 w-24 rounded-full" style={{ background: 'var(--button-bg)', boxShadow: 'var(--nav-active-shadow)' }} />
+                <header className={clsx(
+                  'flex shrink-0',
+                  isCompactGameHeader ? 'mb-2 flex-col gap-2 lg:mb-2.5 lg:flex-row lg:items-center lg:justify-between lg:gap-4' : 'mb-6 flex-col gap-3'
+                )}>
+                  <div className="min-w-0 flex flex-col gap-1.5 pt-1">
+                    <h2 className={clsx(
+                      'flex items-center gap-3 font-display font-black capitalize leading-[1.08] tracking-tight text-[var(--text-primary)] drop-shadow-sm',
+                      isCompactGameHeader ? 'text-[1.5rem] sm:text-[1.75rem] lg:text-[2.1rem]' : 'text-[2rem] sm:text-3xl md:text-[4rem]'
+                    )}>
+                      {activeTab === 'play' && !inLobby && <Swords className="h-8 w-8 opacity-70 sm:h-10 sm:w-10" />}
+                      {activeTab}
+                    </h2>
+                    <div
+                      className={clsx('rounded-full', isCompactGameHeader ? 'h-1 w-16' : 'h-1.5 w-24')}
+                      style={{ background: 'var(--button-bg)', boxShadow: 'var(--nav-active-shadow)' }}
+                    />
+                  </div>
+
+                  {isCompactGameHeader && (
+                    <div className="flex min-w-0 flex-1 lg:justify-end">
+                      <div className="flex flex-wrap items-center gap-1.5 lg:flex-nowrap lg:justify-end">
+                        <div className="status-pill px-2.5 py-1.5 text-[0.66rem] sm:text-[0.7rem]">Room {roomId}</div>
+                        <div className={clsx('status-pill px-2.5 py-1.5 text-[0.66rem] sm:text-[0.7rem]', isMyTurn && 'bg-[var(--accent-glow)] text-white')}>
+                          Turn: {compactHeaderTurnText}
+                        </div>
+                        <div className="status-pill px-2.5 py-1.5 text-[0.66rem] sm:text-[0.7rem]">{players.length} players</div>
+                        <div className="status-pill px-2.5 py-1.5 text-[0.66rem] sm:text-[0.7rem]">{compactHeaderLeadText}</div>
+                        <div className="status-pill px-2.5 py-1.5 text-[0.66rem] sm:text-[0.7rem]">{totalHandsTaken} hands</div>
+                        {inlineStatusText ? (
+                          <div className={clsx('rentz-inline-status rentz-inline-status-header', errorMsg && 'is-error')}>
+                            {inlineStatusText}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
                 </header>
 
                 {errorMsg && activeTab !== 'play' && (
