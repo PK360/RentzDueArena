@@ -17,6 +17,37 @@ function isAllowedAssetValue(value) {
   return /^(https?:\/\/|\/|data:image\/)/i.test(value);
 }
 
+function normalizeRelationshipReferenceList(values, selfId = '') {
+  const seen = new Set();
+
+  return (Array.isArray(values) ? values : [])
+    .map((value) => {
+      if (!value) {
+        return '';
+      }
+
+      if (typeof value === 'string') {
+        return value;
+      }
+
+      if (value instanceof mongoose.Types.ObjectId) {
+        return String(value);
+      }
+
+      return String(value._id || value.id || value.userId || '');
+    })
+    .filter((value) => mongoose.isValidObjectId(value))
+    .filter((value) => value && value !== selfId)
+    .filter((value) => {
+      if (seen.has(value)) {
+        return false;
+      }
+
+      seen.add(value);
+      return true;
+    });
+}
+
 const userSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -86,6 +117,8 @@ const userSchema = new mongoose.Schema({
   passwordResetRequestedAt: { type: Date, default: null },
   sessionVersion: { type: Number, default: 0 },
   friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  incomingFriendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  outgoingFriendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   savedRulesets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Ruleset' }],
   createdRulesets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Ruleset' }],
 }, { timestamps: true });
@@ -106,6 +139,10 @@ userSchema.pre('validate', function normalizeAccountFields(next) {
       maxItems: MAX_RULESET_LOADOUT,
       fieldName: 'rulesetLoadout'
     });
+    const selfId = this._id ? String(this._id) : '';
+    this.friends = normalizeRelationshipReferenceList(this.friends, selfId);
+    this.incomingFriendRequests = normalizeRelationshipReferenceList(this.incomingFriendRequests, selfId);
+    this.outgoingFriendRequests = normalizeRelationshipReferenceList(this.outgoingFriendRequests, selfId);
     next();
   } catch (error) {
     next(error);

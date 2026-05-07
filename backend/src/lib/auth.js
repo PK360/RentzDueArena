@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const util = require('util');
 
 const User = require('../../models/User');
+const { normalizeRelationshipIds } = require('./friends');
 
 const scryptAsync = util.promisify(crypto.scrypt);
 
@@ -139,7 +140,10 @@ function serializeAccount(user) {
     favouriteRulesets: Array.isArray(user.favouriteRulesets) ? user.favouriteRulesets : [],
     rulesetLoadout: Array.isArray(user.rulesetLoadout) ? user.rulesetLoadout : [],
     accountCreatedAt: user.accountCreatedAt || user.createdAt || null,
-    friendCode: user.friendCode || null
+    friendCode: user.friendCode || null,
+    friends: normalizeRelationshipIds(user.friends),
+    incomingFriendRequests: normalizeRelationshipIds(user.incomingFriendRequests),
+    outgoingFriendRequests: normalizeRelationshipIds(user.outgoingFriendRequests)
   };
 }
 

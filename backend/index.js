@@ -21,6 +21,7 @@ function start() {
     }
   });
 
+  app.set('io', io);
   registerSocketHandlers(io);
 
   let isShuttingDown = false;

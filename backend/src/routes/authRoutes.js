@@ -1,6 +1,8 @@
 const express = require('express');
+const mongoose = require('mongoose');
 
 const User = require('../../models/User');
+const { emitFriendStateUpdate } = require('../../socketManager');
 const { generateFriendCode } = require('../../utils/helpers');
 const {
   ACCOUNT_RULESET_OPTIONS,
@@ -13,6 +15,12 @@ const {
   getDefaultAccountImages,
   saveUploadedAccountImage
 } = require('../lib/accountAssets');
+const {
+  buildFriendStatePayload,
+  buildProfileSummary,
+  normalizeRelationshipIds,
+  sanitizeRelationshipReferences
+} = require('../lib/friends');
 const {
   clearSessionCookie,
   getAuthenticatedUserFromRequest,
@@ -49,6 +57,62 @@ function validatePassword(password) {
   }
 
   return null;
+}
+
+function readTargetUserId(value) {
+  return String(value || '').trim();
+}
+
+function isValidTargetUserId(value) {
+  return mongoose.isValidObjectId(value);
+}
+
+function addRelationshipId(user, fieldName, targetUserId) {
+  user[fieldName] = [
+    ...normalizeRelationshipIds(user[fieldName], String(user?._id || '')),
+    targetUserId
+  ];
+}
+
+function removeRelationshipId(user, fieldName, targetUserId) {
+  user[fieldName] = normalizeRelationshipIds(user[fieldName], String(user?._id || ''))
+    .filter((value) => value !== targetUserId);
+}
+
+async function requireAuthenticatedAccount(req, res, message = 'You must be logged in to use this feature') {
+  const user = await getAuthenticatedUserFromRequest(req);
+
+  if (!user) {
+    clearSessionCookie(res);
+    res.status(401).json({ error: message });
+    return null;
+  }
+
+  return user;
+}
+
+async function syncFriendStateForUsers(req, users) {
+  const io = req.app.get('io');
+
+  if (!io) {
+    return;
+  }
+
+  await Promise.all(
+    users
+      .filter(Boolean)
+      .map((user) => emitFriendStateUpdate(io, user))
+  );
+}
+
+async function buildFriendActionResponse(user, targetUser, message) {
+  return {
+    ok: true,
+    message,
+    user: serializeAccount(user),
+    friendState: await buildFriendStatePayload(user),
+    profile: await buildProfileSummary(targetUser, user)
+  };
 }
 
 function normalizeAccountPayload(body = {}) {
@@ -340,6 +404,325 @@ router.patch('/me', async (req, res, next) => {
       return res.status(mappedError.statusCode).json({ error: mappedError.clientMessage });
     }
 
+    next(error);
+  }
+});
+
+router.get('/profiles/:userId', async (req, res, next) => {
+  try {
+    const viewer = await getAuthenticatedUserFromRequest(req);
+    if (viewer) {
+      await sanitizeRelationshipReferences(viewer);
+    }
+
+    const targetUserId = readTargetUserId(req.params.userId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Profile target is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid profile target' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    res.json({
+      ok: true,
+      profile: await buildProfileSummary(targetUser, viewer)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/friends/state', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to view friend requests'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    res.json({
+      ok: true,
+      user: serializeAccount(user),
+      friendState: await buildFriendStatePayload(user)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/friends/request', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to send a friend request'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    const targetUserId = readTargetUserId(req.body.targetUserId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid target user' });
+    }
+
+    if (String(user._id) === targetUserId) {
+      return res.status(400).json({ error: 'You cannot send a friend request to yourself' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    await sanitizeRelationshipReferences(targetUser);
+
+    const friendIds = new Set(normalizeRelationshipIds(user.friends, String(user._id)));
+    const incomingIds = new Set(normalizeRelationshipIds(user.incomingFriendRequests, String(user._id)));
+    const outgoingIds = new Set(normalizeRelationshipIds(user.outgoingFriendRequests, String(user._id)));
+
+    if (friendIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'You are already friends with this player' });
+    }
+
+    if (outgoingIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'Friend request already sent' });
+    }
+
+    if (incomingIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'This player has already sent you a friend request' });
+    }
+
+    addRelationshipId(user, 'outgoingFriendRequests', targetUserId);
+    addRelationshipId(targetUser, 'incomingFriendRequests', String(user._id));
+
+    await user.save();
+    await targetUser.save();
+    await syncFriendStateForUsers(req, [user, targetUser]);
+
+    res.json(await buildFriendActionResponse(user, targetUser, 'Friend request sent.'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/friends/accept', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to accept a friend request'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    const targetUserId = readTargetUserId(req.body.targetUserId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid target user' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    await sanitizeRelationshipReferences(targetUser);
+
+    const incomingIds = new Set(normalizeRelationshipIds(user.incomingFriendRequests, String(user._id)));
+    if (!incomingIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'No incoming friend request from this player' });
+    }
+
+    removeRelationshipId(user, 'incomingFriendRequests', targetUserId);
+    removeRelationshipId(user, 'outgoingFriendRequests', targetUserId);
+    addRelationshipId(user, 'friends', targetUserId);
+
+    removeRelationshipId(targetUser, 'outgoingFriendRequests', String(user._id));
+    removeRelationshipId(targetUser, 'incomingFriendRequests', String(user._id));
+    addRelationshipId(targetUser, 'friends', String(user._id));
+
+    await user.save();
+    await targetUser.save();
+    await syncFriendStateForUsers(req, [user, targetUser]);
+
+    res.json(await buildFriendActionResponse(user, targetUser, 'Friend request accepted.'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/friends/reject', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to reject a friend request'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    const targetUserId = readTargetUserId(req.body.targetUserId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid target user' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    await sanitizeRelationshipReferences(targetUser);
+
+    const incomingIds = new Set(normalizeRelationshipIds(user.incomingFriendRequests, String(user._id)));
+    if (!incomingIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'No incoming friend request from this player' });
+    }
+
+    removeRelationshipId(user, 'incomingFriendRequests', targetUserId);
+    removeRelationshipId(targetUser, 'outgoingFriendRequests', String(user._id));
+
+    await user.save();
+    await targetUser.save();
+    await syncFriendStateForUsers(req, [user, targetUser]);
+
+    res.json(await buildFriendActionResponse(user, targetUser, 'Friend request rejected.'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/friends/remove', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to remove a friend'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    const targetUserId = readTargetUserId(req.body.targetUserId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid target user' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    await sanitizeRelationshipReferences(targetUser);
+
+    const friendIds = new Set(normalizeRelationshipIds(user.friends, String(user._id)));
+    if (!friendIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'You are not friends with this player' });
+    }
+
+    removeRelationshipId(user, 'friends', targetUserId);
+    removeRelationshipId(user, 'incomingFriendRequests', targetUserId);
+    removeRelationshipId(user, 'outgoingFriendRequests', targetUserId);
+
+    removeRelationshipId(targetUser, 'friends', String(user._id));
+    removeRelationshipId(targetUser, 'incomingFriendRequests', String(user._id));
+    removeRelationshipId(targetUser, 'outgoingFriendRequests', String(user._id));
+
+    await user.save();
+    await targetUser.save();
+    await syncFriendStateForUsers(req, [user, targetUser]);
+
+    res.json(await buildFriendActionResponse(user, targetUser, 'Friend removed.'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/friends/cancel', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to cancel a friend request'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    await sanitizeRelationshipReferences(user);
+
+    const targetUserId = readTargetUserId(req.body.targetUserId);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Target user is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid target user' });
+    }
+
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    await sanitizeRelationshipReferences(targetUser);
+
+    const outgoingIds = new Set(normalizeRelationshipIds(user.outgoingFriendRequests, String(user._id)));
+    if (!outgoingIds.has(targetUserId)) {
+      return res.status(409).json({ error: 'No outgoing friend request to cancel' });
+    }
+
+    removeRelationshipId(user, 'outgoingFriendRequests', targetUserId);
+    removeRelationshipId(targetUser, 'incomingFriendRequests', String(user._id));
+
+    await user.save();
+    await targetUser.save();
+    await syncFriendStateForUsers(req, [user, targetUser]);
+
+    res.json(await buildFriendActionResponse(user, targetUser, 'Friend request canceled.'));
+  } catch (error) {
     next(error);
   }
 });

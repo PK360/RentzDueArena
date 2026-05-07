@@ -1,6 +1,8 @@
 const Game = require('./models/Game');
+const User = require('./models/User');
 const { randomFriendCode } = require('./utils/helpers');
 const { DEFAULT_PROFILE_PICTURE_PATH } = require('./src/lib/accountAssets');
+const { buildFriendStatePayload } = require('./src/lib/friends');
 const { getAuthenticatedUserFromCookieHeader, serializeAccount } = require('./src/lib/auth');
 const { generateDeck, shuffle, dealCards } = require('./utils/cards');
 const {
@@ -528,6 +530,14 @@ function buildPublicRoomSummary(roomId, lobby, viewer = null) {
       ? viewer.friends.map((friend) => (typeof friend === 'object' ? friend.userId || friend._id || friend.id : friend)).filter(Boolean)
       : []
   );
+  const friendsInRoom = members
+    .filter((member) => viewerFriends.has(member.userId))
+    .map((member) => ({
+      userId: member.userId,
+      name: getUserDisplayName(member),
+      avatarUrl: getAvatarSource(member),
+      guest: Boolean(member.guest)
+    }));
 
   return {
     roomId,
@@ -539,9 +549,11 @@ function buildPublicRoomSummary(roomId, lobby, viewer = null) {
     avatars: members.slice(0, MAX_ACTIVE_PLAYERS).map((member) => ({
       userId: member.userId,
       name: getUserDisplayName(member),
-      avatarUrl: getAvatarSource(member)
+      avatarUrl: getAvatarSource(member),
+      guest: Boolean(member.guest)
     })),
-    hasFriend: members.some((member) => viewerFriends.has(member.userId)),
+    hasFriend: friendsInRoom.length > 0,
+    friendsInRoom,
     status: lobby.status,
     isInGame: lobby.status === 'playing'
   };
@@ -553,12 +565,56 @@ function listPublicRoomsForUser(user) {
     .filter(([, lobby]) => !lobby.bannedUserIds?.includes(user?.userId))
     .map(([roomId, lobby]) => buildPublicRoomSummary(roomId, lobby, user))
     .sort((left, right) => {
+      if (left.hasFriend !== right.hasFriend) {
+        return left.hasFriend ? -1 : 1;
+      }
+
       if (left.status !== right.status) {
         return left.status === 'waiting' ? -1 : 1;
       }
 
       return left.roomName.localeCompare(right.roomName);
     });
+}
+
+async function emitFriendStateUpdate(io, userOrId) {
+  if (!io || !userOrId) {
+    return;
+  }
+
+  const resolvedUserId = String(
+    typeof userOrId === 'string'
+      ? userOrId
+      : (userOrId._id || userOrId.userId || userOrId.id || '')
+  ).trim();
+
+  if (!resolvedUserId) {
+    return;
+  }
+
+  const user = userOrId?.username
+    ? userOrId
+    : await User.findById(resolvedUserId);
+
+  if (!user) {
+    return;
+  }
+
+  const friendState = await buildFriendStatePayload(user);
+  const accountProfile = serializeAccount(user);
+
+  for (const [socketId, socketUser] of socketToUser.entries()) {
+    if (socketUser?.guest || socketUser?.userId !== accountProfile.userId) {
+      continue;
+    }
+
+    socketToUser.set(socketId, accountProfile);
+    io.to(socketId).emit('friend_state_update', {
+      user: accountProfile,
+      friendState,
+      shouldRefreshPublicRooms: true
+    });
+  }
 }
 
 function addMemberToLobby(lobby, user, socketId, { isReady = false } = {}) {
@@ -2174,6 +2230,7 @@ module.exports.buildPublicRoomSummary = buildPublicRoomSummary;
 module.exports.findNextChooser = findNextChooser;
 module.exports.getEligibleRuleIdsForPlayer = getEligibleRuleIdsForPlayer;
 module.exports.applyActiveRulesetAtRoundEnd = applyActiveRulesetAtRoundEnd;
+module.exports.emitFriendStateUpdate = emitFriendStateUpdate;
 module.exports.removeWaitingLobbyMember = removeWaitingLobbyMember;
 module.exports.sanitizeRulesetPermissions = sanitizeRulesetPermissions;
 module.exports.sanitizeTurnTimerSeconds = sanitizeTurnTimerSeconds;

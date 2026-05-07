@@ -558,6 +558,135 @@ function getPlayerAvatarSource(player) {
   );
 }
 
+function createEmptyFriendState() {
+  return {
+    friends: [],
+    incomingRequests: [],
+    outgoingRequests: []
+  };
+}
+
+function normalizeRelationshipIds(values) {
+  const seen = new Set();
+
+  return (Array.isArray(values) ? values : [])
+    .map((value) => {
+      if (!value) {
+        return '';
+      }
+
+      if (typeof value === 'string') {
+        return value;
+      }
+
+      return String(value.userId || value.id || value._id || '');
+    })
+    .filter(Boolean)
+    .filter((value) => {
+      if (seen.has(value)) {
+        return false;
+      }
+
+      seen.add(value);
+      return true;
+    });
+}
+
+function getPlayerUserId(player) {
+  return String(player?.userId || player?.id || '').trim();
+}
+
+function getFriendRelationshipStatus(viewer, target) {
+  const targetUserId = getPlayerUserId(target);
+
+  if (!targetUserId) {
+    return {
+      code: 'unavailable',
+      label: 'Profile unavailable',
+      canSendRequest: false
+    };
+  }
+
+  if (target?.guest) {
+    return {
+      code: 'guest-user',
+      label: 'Guest user',
+      canSendRequest: false
+    };
+  }
+
+  if (!viewer?.userId || viewer?.guest) {
+    return {
+      code: 'login-required',
+      label: 'Log in to send a friend request',
+      canSendRequest: false
+    };
+  }
+
+  if (viewer.userId === targetUserId) {
+    return {
+      code: 'self',
+      label: 'This is you',
+      canSendRequest: false
+    };
+  }
+
+  const friendIds = new Set(normalizeRelationshipIds(viewer.friends));
+  const incomingIds = new Set(normalizeRelationshipIds(viewer.incomingFriendRequests));
+  const outgoingIds = new Set(normalizeRelationshipIds(viewer.outgoingFriendRequests));
+
+  if (friendIds.has(targetUserId)) {
+    return {
+      code: 'friends',
+      label: 'Already friends',
+      canSendRequest: false,
+      canRemoveFriend: true
+    };
+  }
+
+  if (outgoingIds.has(targetUserId)) {
+    return {
+      code: 'outgoing-pending',
+      label: 'Request sent',
+      canSendRequest: false,
+      canCancelOutgoing: true
+    };
+  }
+
+  if (incomingIds.has(targetUserId)) {
+    return {
+      code: 'incoming-pending',
+      label: 'Sent you a request',
+      canSendRequest: false,
+      canAcceptRequest: true,
+      canRejectRequest: true
+    };
+  }
+
+  return {
+    code: 'not-friends',
+    label: 'Send Friend Request',
+    canSendRequest: true
+  };
+}
+
+function buildGuestProfileSummary(player) {
+  return {
+    userId: getPlayerUserId(player),
+    username: getPlayerName(player),
+    name: getPlayerName(player),
+    displayName: getPlayerName(player),
+    guest: true,
+    profilePicture: getPlayerAvatarSource(player),
+    avatarUrl: getPlayerAvatarSource(player),
+    banner: '',
+    description: player?.description || 'This player is using a guest profile.',
+    accountCreatedAt: null,
+    favouriteRulesets: [],
+    rulesetLoadout: []
+  };
+}
+
 function PlayerNameLabel({ player, isLocal = false, className = '', nameClassName = '', suffixClassName = '' }) {
   return (
     <span className={clsx('rentz-player-name-label', className)}>
@@ -1061,7 +1190,8 @@ function RentzSeatCluster({
   mobileHero = false,
   reaction = null,
   reactionPlacement = 'left',
-  onEmojiClick
+  onEmojiClick,
+  onProfileAction = null
 }) {
   const rating = getPlayerRating(player);
   const isConnected = getPlayerPresence(player);
@@ -1084,11 +1214,26 @@ function RentzSeatCluster({
         />
       )}
 
-      <PlayerNameLabel
-        player={player}
-        isLocal={isLocal}
-        className="rentz-seat-name"
-      />
+      {onProfileAction ? (
+        <button
+          type="button"
+          onClick={(event) => onProfileAction(event, player)}
+          className="rentz-seat-name-button"
+          title={`Open actions for ${getPlayerName(player)}`}
+        >
+          <PlayerNameLabel
+            player={player}
+            isLocal={isLocal}
+            className="rentz-seat-name"
+          />
+        </button>
+      ) : (
+        <PlayerNameLabel
+          player={player}
+          isLocal={isLocal}
+          className="rentz-seat-name"
+        />
+      )}
 
       <div className="rentz-avatar-wrap">
         <EmojiReactionBubble player={player} reaction={reaction} placement={reactionPlacement} />
@@ -1108,22 +1253,48 @@ function RentzSeatCluster({
           title={isConnected ? 'Present in room' : 'Not currently connected'}
         />
 
-        <div className="rentz-avatar-shell">
-          <AvatarFace
-            player={player}
-            alt={`${getPlayerName(player)} avatar`}
-            wrapperClassName="h-full w-full"
-            imageClassName="rentz-avatar-image"
-            fallbackClassName="rentz-avatar-fallback"
-          />
+        {onProfileAction ? (
+          <button
+            type="button"
+            onClick={(event) => onProfileAction(event, player)}
+            className="rentz-seat-avatar-trigger"
+            title={`Open actions for ${getPlayerName(player)}`}
+          >
+            <div className="rentz-avatar-shell">
+              <AvatarFace
+                player={player}
+                alt={`${getPlayerName(player)} avatar`}
+                wrapperClassName="h-full w-full"
+                imageClassName="rentz-avatar-image"
+                fallbackClassName="rentz-avatar-fallback"
+              />
 
-          {showElo && (
-            <div className="rentz-elo-badge">
-              <Trophy className="h-3 w-3" />
-              <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+              {showElo && (
+                <div className="rentz-elo-badge">
+                  <Trophy className="h-3 w-3" />
+                  <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </button>
+        ) : (
+          <div className="rentz-avatar-shell">
+            <AvatarFace
+              player={player}
+              alt={`${getPlayerName(player)} avatar`}
+              wrapperClassName="h-full w-full"
+              imageClassName="rentz-avatar-image"
+              fallbackClassName="rentz-avatar-fallback"
+            />
+
+            {showElo && (
+              <div className="rentz-elo-badge">
+                <Trophy className="h-3 w-3" />
+                <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {showStats && (
@@ -1146,11 +1317,10 @@ function RentzSeatCluster({
   );
 }
 
-function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, points }) {
+function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, points, onProfileAction = null }) {
   const rating = getPlayerRating(player);
-
-  return (
-    <div data-seat-player-id={player?.userId} className={clsx('rentz-player-row', isCurrent && 'is-current')}>
+  const identityContent = (
+    <>
       <AvatarFace
         player={player}
         alt={`${getPlayerName(player)} avatar`}
@@ -1171,41 +1341,96 @@ function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, po
           <span>{formatMetaValue(points)} pts</span>
         </div>
       </div>
+    </>
+  );
+
+  return (
+    <div data-seat-player-id={player?.userId} className={clsx('rentz-player-row', isCurrent && 'is-current')}>
+      {onProfileAction ? (
+        <button
+          type="button"
+          onClick={(event) => onProfileAction(event, player)}
+          className="rentz-player-row-main"
+          title={`Open actions for ${getPlayerName(player)}`}
+        >
+          {identityContent}
+        </button>
+      ) : (
+        <div className="rentz-player-row-main is-static">
+          {identityContent}
+        </div>
+      )}
     </div>
   );
 }
 
-function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, points }) {
+function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, points, onProfileAction = null }) {
   const rating = getPlayerRating(player);
 
   return (
     <article className={clsx('rentz-desktop-player-card', isCurrent && 'is-current', isLocal && 'is-local')}>
-      <div className="rentz-desktop-player-card-top">
-        <div className="rentz-desktop-player-card-avatar">
-          <AvatarFace
-            player={player}
-            alt={`${getPlayerName(player)} avatar`}
-            wrapperClassName="h-full w-full"
-            imageClassName="rentz-desktop-player-card-avatar-image"
-            fallbackClassName="rentz-desktop-player-card-avatar-fallback"
-          />
-        </div>
-        <div className="rentz-desktop-player-card-copy">
-          <PlayerNameLabel
-            player={player}
-            isLocal={isLocal}
-            className="rentz-desktop-player-card-name"
-          />
-          <div className="rentz-desktop-player-card-rating">
-            {rating == null ? 'ELO --' : `ELO ${rating}`} <span aria-hidden="true">★</span>
+      {onProfileAction ? (
+        <button
+          type="button"
+          onClick={(event) => onProfileAction(event, player)}
+          className="rentz-desktop-player-card-identity"
+          title={`Open actions for ${getPlayerName(player)}`}
+        >
+          <div className="rentz-desktop-player-card-top">
+            <div className="rentz-desktop-player-card-avatar">
+              <AvatarFace
+                player={player}
+                alt={`${getPlayerName(player)} avatar`}
+                wrapperClassName="h-full w-full"
+                imageClassName="rentz-desktop-player-card-avatar-image"
+                fallbackClassName="rentz-desktop-player-card-avatar-fallback"
+              />
+            </div>
+            <div className="rentz-desktop-player-card-copy">
+              <PlayerNameLabel
+                player={player}
+                isLocal={isLocal}
+                className="rentz-desktop-player-card-name"
+              />
+              <div className="rentz-desktop-player-card-rating">
+                {rating == null ? 'ELO --' : `ELO ${rating}`} <span aria-hidden="true">★</span>
+              </div>
+              <div className="rentz-desktop-player-card-stats">
+                <span>{cardCount} cards</span>
+                <span>{tricksWon} hands</span>
+                <span>{formatMetaValue(points)} pts</span>
+              </div>
+            </div>
           </div>
-          <div className="rentz-desktop-player-card-stats">
-            <span>{cardCount} cards</span>
-            <span>{tricksWon} hands</span>
-            <span>{formatMetaValue(points)} pts</span>
+        </button>
+      ) : (
+        <div className="rentz-desktop-player-card-top">
+          <div className="rentz-desktop-player-card-avatar">
+            <AvatarFace
+              player={player}
+              alt={`${getPlayerName(player)} avatar`}
+              wrapperClassName="h-full w-full"
+              imageClassName="rentz-desktop-player-card-avatar-image"
+              fallbackClassName="rentz-desktop-player-card-avatar-fallback"
+            />
+          </div>
+          <div className="rentz-desktop-player-card-copy">
+            <PlayerNameLabel
+              player={player}
+              isLocal={isLocal}
+              className="rentz-desktop-player-card-name"
+            />
+            <div className="rentz-desktop-player-card-rating">
+              {rating == null ? 'ELO --' : `ELO ${rating}`} <span aria-hidden="true">★</span>
+            </div>
+            <div className="rentz-desktop-player-card-stats">
+              <span>{cardCount} cards</span>
+              <span>{tricksWon} hands</span>
+              <span>{formatMetaValue(points)} pts</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </article>
   );
 }
@@ -1580,6 +1805,7 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userProfile, setUserProfile] = useState(null);
+  const [friendState, setFriendState] = useState(() => createEmptyFriendState());
   const [authView, setAuthView] = useState('login');
   const [authBusyAction, setAuthBusyAction] = useState('');
   const [authFeedback, setAuthFeedback] = useState('');
@@ -1630,6 +1856,10 @@ function App() {
   const [topPrompts, setTopPrompts] = useState([]);
   const [turnTimerNotice, setTurnTimerNotice] = useState('');
   const [isSpectatorPopoverOpen, setIsSpectatorPopoverOpen] = useState(false);
+  const [playerActionMenu, setPlayerActionMenu] = useState(null);
+  const [playerProfileModal, setPlayerProfileModal] = useState(null);
+  const [playerProfileLoading, setPlayerProfileLoading] = useState(false);
+  const [friendActionBusyTargetId, setFriendActionBusyTargetId] = useState('');
   const [pendingSpectatorJoin, setPendingSpectatorJoin] = useState(null);
   const [rulesetPreview, setRulesetPreview] = useState(null);
   const [emojiPickerState, setEmojiPickerState] = useState(null);
@@ -1645,6 +1875,7 @@ function App() {
   const latestGameStateVersionRef = useRef(0);
   const startingHandSizeRef = useRef(0);
   const activeProfileRef = useRef(null);
+  const isPublicBrowserOpenRef = useRef(false);
   const mobileNavRef = useRef(null);
   const tableStageRef = useRef(null);
   const cardBoardRef = useRef(null);
@@ -1656,6 +1887,7 @@ function App() {
   const accountBannerInputRef = useRef(null);
   const descriptionTextareaRef = useRef(null);
   const spectatorPopoverRef = useRef(null);
+  const playerActionMenuRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const showReactionBubbleRef = useRef(() => {});
   const turnTimerWarningStateRef = useRef({ deadline: null, halfShown: false, quarterShown: false });
@@ -1747,6 +1979,7 @@ function App() {
     activeProfileRef.current = authenticated ? user : guestProfile;
     setIsAuthenticated(authenticated);
     setUserProfile(authenticated ? user : null);
+    setFriendState((current) => (authenticated ? current : createEmptyFriendState()));
 
     if (authenticated) {
       clearGuestIdentity();
@@ -1761,6 +1994,149 @@ function App() {
 
     socket.connect();
   };
+
+  async function loadFriendState({ suppressErrors = false } = {}) {
+    if (!isAuthenticated) {
+      setFriendState(createEmptyFriendState());
+      return createEmptyFriendState();
+    }
+
+    try {
+      const response = await requestJson('/api/auth/friends/state');
+      const nextUser = response?.user || null;
+      const nextFriendState = response?.friendState || createEmptyFriendState();
+
+      if (nextUser?.userId) {
+        applyAuthenticatedUser(nextUser);
+      }
+      setFriendState(nextFriendState);
+      return nextFriendState;
+    } catch (error) {
+      if (!suppressErrors) {
+        setAuthFeedback(error.message || 'Unable to load friend requests right now.');
+      }
+      throw error;
+    }
+  }
+
+  function refreshPublicRooms() {
+    if (!activeProfile) {
+      showErrorMessage('Choose a guest name or sign in before browsing rooms.');
+      return;
+    }
+
+    setPublicRoomsLoading(true);
+    socket.emit('authenticate', activeProfile);
+    socket.emit('list_public_rooms', {}, (response) => {
+      setPublicRoomsLoading(false);
+
+      if (response?.error) {
+        showErrorMessage(response.error);
+        return;
+      }
+
+      setPublicRooms(response?.rooms || []);
+    });
+  }
+
+  function openPlayerActionMenu(event, player, source = 'identity') {
+    if (!player) {
+      return;
+    }
+
+    const currentTargetRect = event?.currentTarget?.getBoundingClientRect?.() || null;
+    const eventTargetRect = event?.target?.getBoundingClientRect?.() || null;
+    const rect = currentTargetRect?.width
+      ? currentTargetRect
+      : (eventTargetRect?.width ? eventTargetRect : null);
+    const shouldUsePopover = Boolean(rect);
+
+    setPlayerActionMenu({
+      player,
+      source,
+      mode: shouldUsePopover ? 'popover' : 'bottom-sheet',
+      anchorRect: rect
+    });
+  }
+
+  async function openPlayerProfileModal(playerOrProfile) {
+    if (!playerOrProfile) {
+      return;
+    }
+
+    const targetUserId = getPlayerUserId(playerOrProfile);
+    if (playerOrProfile.guest) {
+      setPlayerProfileLoading(false);
+      setPlayerProfileModal(buildGuestProfileSummary(playerOrProfile));
+      return;
+    }
+
+    if (!targetUserId) {
+      showTopPrompt('This profile is not available right now.', 'error');
+      return;
+    }
+
+    setPlayerProfileLoading(true);
+    setPlayerProfileModal({
+      userId: targetUserId,
+      username: getPlayerName(playerOrProfile),
+      name: getPlayerName(playerOrProfile),
+      displayName: getPlayerName(playerOrProfile),
+      guest: false,
+      avatarUrl: getPlayerAvatarSource(playerOrProfile),
+      profilePicture: getPlayerAvatarSource(playerOrProfile),
+      banner: playerOrProfile.banner || '',
+      description: playerOrProfile.description || '',
+      accountCreatedAt: playerOrProfile.accountCreatedAt || null
+    });
+
+    try {
+      const response = await requestJson(`/api/auth/profiles/${encodeURIComponent(targetUserId)}`);
+      setPlayerProfileModal(response?.profile || null);
+    } catch (error) {
+      setPlayerProfileModal(null);
+      showTopPrompt(error.message || 'Unable to load that profile right now.', 'error');
+    } finally {
+      setPlayerProfileLoading(false);
+    }
+  }
+
+  async function runFriendAction(action, targetUserId, successMessage = '') {
+    if (!targetUserId) {
+      return false;
+    }
+
+    setFriendActionBusyTargetId(targetUserId);
+
+    try {
+      const response = await requestJson(`/api/auth/friends/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ targetUserId })
+      });
+
+      if (response?.user?.userId) {
+        applyAuthenticatedUser(response.user);
+      }
+      if (response?.friendState) {
+        setFriendState(response.friendState);
+      }
+      if (response?.profile) {
+        setPlayerProfileModal(response.profile);
+      }
+      if (successMessage || response?.message) {
+        showTopPrompt(successMessage || response.message, 'success');
+      }
+      if (isPublicBrowserOpenRef.current) {
+        refreshPublicRooms();
+      }
+      return true;
+    } catch (error) {
+      showTopPrompt(error.message || 'That friend action could not be completed.', 'error');
+      return false;
+    } finally {
+      setFriendActionBusyTargetId('');
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1829,6 +2205,40 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    isPublicBrowserOpenRef.current = isPublicBrowserOpen;
+  }, [isPublicBrowserOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!isAuthenticated) {
+      setFriendState(createEmptyFriendState());
+      return undefined;
+    }
+
+    const loadCurrentFriendState = async () => {
+      try {
+        const nextFriendState = await loadFriendState({ suppressErrors: true });
+        if (cancelled) {
+          return;
+        }
+
+        setFriendState(nextFriendState);
+      } catch {
+        if (!cancelled) {
+          setAuthFeedback((current) => current || 'Unable to load friend requests right now.');
+        }
+      }
+    };
+
+    void loadCurrentFriendState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
 
   function applyRestoredSession(response) {
     if (!response?.success || !response.roomId || !response.lobby) {
@@ -1942,6 +2352,9 @@ function App() {
     setTurnTimerNotice('');
     setLocalTimerDeadline(null);
     setIsSpectatorPopoverOpen(false);
+    setPlayerActionMenu(null);
+    setPlayerProfileModal(null);
+    setPlayerProfileLoading(false);
     setPendingSpectatorJoin(null);
     setRulesetPreview(null);
     reactionTimeoutsRef.current.forEach((timeoutId) => {
@@ -2235,6 +2648,30 @@ function App() {
       window.setTimeout(() => setErrorMsg(''), 3000);
     });
 
+    socket.on('friend_state_update', ({ user, friendState: nextFriendState, shouldRefreshPublicRooms }) => {
+      if (user?.userId) {
+        applyAuthenticatedUser(user);
+      }
+
+      if (nextFriendState) {
+        setFriendState(nextFriendState);
+      }
+
+      if (shouldRefreshPublicRooms && isPublicBrowserOpenRef.current && activeProfileRef.current) {
+        setPublicRoomsLoading(true);
+        socket.emit('authenticate', activeProfileRef.current);
+        socket.emit('list_public_rooms', {}, (response) => {
+          setPublicRoomsLoading(false);
+
+          if (response?.error) {
+            return;
+          }
+
+          setPublicRooms(response?.rooms || []);
+        });
+      }
+    });
+
     socket.on('player_reaction', (payload) => {
       showReactionBubbleRef.current(payload || {});
     });
@@ -2260,6 +2697,7 @@ function App() {
       socket.off('lobby_removed');
       socket.off('lobby_deleted');
       socket.off('game_error');
+      socket.off('friend_state_update');
       socket.off('player_reaction');
     };
     // Socket listeners are registered once; reconnect auth reads the live profile from a ref.
@@ -2321,6 +2759,34 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [emojiPickerState]);
+
+  useEffect(() => {
+    if (!playerActionMenu) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (playerActionMenuRef.current?.contains(event.target)) {
+        return;
+      }
+
+      setPlayerActionMenu(null);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setPlayerActionMenu(null);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [playerActionMenu]);
 
   useEffect(() => () => {
     reactionTimeoutsRef.current.forEach((timeoutId) => {
@@ -3142,25 +3608,6 @@ function App() {
     });
   };
 
-  const refreshPublicRooms = () => {
-    if (!activeProfile) {
-      showErrorMessage('Choose a guest name or sign in before browsing rooms.');
-      return;
-    }
-
-    setPublicRoomsLoading(true);
-    socket.emit('authenticate', activeProfile);
-    socket.emit('list_public_rooms', {}, (response) => {
-      setPublicRoomsLoading(false);
-      if (response?.error) {
-        showErrorMessage(response.error);
-        return;
-      }
-
-      setPublicRooms(response?.rooms || []);
-    });
-  };
-
   const openPublicRoomBrowser = () => {
     setIsPublicBrowserOpen(true);
     refreshPublicRooms();
@@ -3348,13 +3795,12 @@ function App() {
 
   const navItems = [
     { id: 'play', label: 'Play', icon: Home },
-    { id: 'friends', label: 'Friends', icon: Users },
     { id: 'library', label: 'Library', icon: Library },
     { id: 'ruleset-rater', label: 'Ruleset Rater', icon: Users2 },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
     { id: 'login', label: isAuthenticated ? 'Account' : 'Login', icon: isAuthenticated ? UserRound : LogIn }
   ];
-  const mobilePrimaryNavIds = new Set(['play', 'friends', 'library']);
+  const mobilePrimaryNavIds = new Set(['play', 'library', 'login']);
   const mobilePrimaryNavItems = navItems.filter((item) => mobilePrimaryNavIds.has(item.id));
   const mobileMoreNavItems = navItems.filter((item) => !mobilePrimaryNavIds.has(item.id));
   const isMobileMoreActive = mobileMoreNavItems.some((item) => item.id === activeTab);
@@ -3373,6 +3819,7 @@ function App() {
 
   const activeProfile = isAuthenticated ? userProfile : guestProfile;
   activeProfileRef.current = activeProfile;
+  isPublicBrowserOpenRef.current = isPublicBrowserOpen;
   const activeLobbyPlayer = players.find(
     (player) => player.socketId === socket.id || player.userId === activeProfile?.userId
   );
@@ -3386,6 +3833,10 @@ function App() {
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
   const isMyTurn = gameStarted && !gameFinished && myIndex === turnIndex;
+  const currentFriendRelationship = playerProfileModal
+    ? getFriendRelationshipStatus(userProfile, playerProfileModal)
+    : null;
+  const currentProfileTargetId = getPlayerUserId(playerProfileModal);
   const nextTurnPlayer = players[turnIndex];
   const currentChooser = players.find((player) => player.userId === choiceState?.chooserId) || null;
   const amIChooser = Boolean(choiceState?.chooserId && choiceState.chooserId === myPlayerId);
@@ -3410,6 +3861,7 @@ function App() {
   const hasActiveModal = Boolean(
     (isRecoveryPromptOpen && recoverableGuestProfile) ||
     isRoomSettingsOpen ||
+    playerProfileModal ||
     pendingSpectatorJoin ||
     rulesetPreview ||
     isChoosingNv ||
@@ -3465,6 +3917,461 @@ function App() {
     });
     return acc;
   }, {});
+
+  const renderPlayerActionTrigger = (player, {
+    elementKey = null,
+    className = '',
+    title = '',
+    children,
+    disabled = false
+  } = {}) => (
+    <button
+      key={elementKey}
+      type="button"
+      disabled={disabled}
+      onClick={(event) => openPlayerActionMenu(event, player)}
+      className={clsx('rentz-player-action-trigger', className)}
+      title={title || `Interact with ${getPlayerName(player)}`}
+    >
+      {children}
+    </button>
+  );
+
+  const renderPlayerActionMenu = () => {
+    if (!playerActionMenu?.player) {
+      return null;
+    }
+
+    const relationship = getFriendRelationshipStatus(userProfile, playerActionMenu.player);
+    const busy = friendActionBusyTargetId === getPlayerUserId(playerActionMenu.player);
+    const menuWidth = Math.min(280, Math.max(220, window.innerWidth - 24));
+    const estimatedMenuHeight = 188;
+    const rect = playerActionMenu.anchorRect;
+    const desktopLeft = rect
+      ? Math.min(
+        Math.max(12, rect.left + (rect.width / 2) - (menuWidth / 2)),
+        window.innerWidth - menuWidth - 12
+      )
+      : 12;
+    const preferredTop = rect ? rect.bottom + 10 : 12;
+    const fallbackTop = rect ? rect.top - estimatedMenuHeight - 10 : 12;
+    const desktopTop = rect
+      ? (preferredTop + estimatedMenuHeight <= window.innerHeight - 12
+        ? preferredTop
+        : Math.max(12, fallbackTop))
+      : 12;
+
+    return (
+      <div className="fixed inset-0 z-[78]">
+        <div
+          ref={playerActionMenuRef}
+          className={clsx(
+            'rentz-player-action-menu',
+            playerActionMenu.mode === 'bottom-sheet' && 'is-bottom-sheet'
+          )}
+          style={playerActionMenu.mode === 'bottom-sheet'
+            ? undefined
+            : {
+              left: `${desktopLeft}px`,
+              top: `${desktopTop}px`,
+              width: `${menuWidth}px`
+            }}
+        >
+          <div className="rentz-player-action-menu-header">
+            <div className="rentz-player-action-menu-avatar seat-avatar h-12 w-12 text-sm">
+              {getPlayerAvatarSource(playerActionMenu.player) ? (
+                <img src={getPlayerAvatarSource(playerActionMenu.player)} alt="" className="h-full w-full rounded-full object-cover" />
+              ) : (
+                getPlayerInitials(playerActionMenu.player)
+              )}
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-base font-black text-[var(--text-primary)]">
+                {getPlayerName(playerActionMenu.player)}
+              </div>
+              <div className="text-xs font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                {relationship.label}
+              </div>
+            </div>
+          </div>
+
+          <div className="rentz-player-action-menu-buttons">
+            <button
+              type="button"
+              onClick={() => {
+                setPlayerActionMenu(null);
+                void openPlayerProfileModal(playerActionMenu.player);
+              }}
+              className="rentz-player-action-menu-button"
+            >
+              <UserRound className="h-4 w-4" />
+              View Profile
+            </button>
+
+            {relationship.canSendRequest ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  const success = await runFriendAction(
+                    'request',
+                    getPlayerUserId(playerActionMenu.player),
+                    'Friend request sent.'
+                  );
+                  if (success) {
+                    setPlayerActionMenu(null);
+                  }
+                }}
+                className="rentz-player-action-menu-button is-accent"
+              >
+                <Plus className="h-4 w-4" />
+                {busy ? 'Sending...' : 'Send Friend Request'}
+              </button>
+            ) : relationship.code === 'login-required' ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setPlayerActionMenu(null);
+                  setActiveTab('login');
+                  showTopPrompt('Log in to send friend requests.', 'info');
+                }}
+                className="rentz-player-action-menu-button is-accent"
+              >
+                <LogIn className="h-4 w-4" />
+                Log In to Add Friend
+              </button>
+            ) : (
+              <div className="rentz-player-action-menu-status">
+                {relationship.label}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderReadonlyProfileRulesetDeck = ({
+    profile,
+    title,
+    fieldName,
+    limit,
+    emptyLabel,
+    isLoading = false
+  }) => {
+    const indexes = Array.isArray(profile?.[fieldName]) ? profile[fieldName] : [];
+    const slots = Array.from({ length: limit }, (_, slotIndex) => indexes[slotIndex] ?? null);
+    const filledCount = slots.filter((index) => index != null).length;
+    const cardShellClassName = 'relative flex min-h-[13.25rem] w-full min-w-0 flex-col overflow-hidden rounded-[1.45rem] box-border p-4';
+    const gridClassName = limit === 5
+      ? 'grid grid-cols-1 justify-start gap-3 sm:grid-cols-2 md:grid-cols-3 lg:[grid-template-columns:repeat(5,var(--ruleset-card-width))]'
+      : 'grid grid-cols-1 justify-start gap-3 sm:grid-cols-2 md:grid-cols-3 lg:[grid-template-columns:repeat(3,var(--ruleset-card-width))]';
+    const gridStyle = {
+      '--ruleset-card-width': '11rem'
+    };
+
+    return (
+      <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h4 className="text-xl font-display font-black text-[var(--text-primary)]">{title}</h4>
+          <div className="status-pill px-3 py-2">{filledCount}/{limit}</div>
+        </div>
+
+        <div className={gridClassName} style={gridStyle}>
+          {slots.map((index, slotIndex) => {
+            const definition = index == null ? null : getAccountRulesetDefinition(index);
+
+            if (isLoading) {
+              return (
+                <div
+                  key={`${fieldName}-loading-${slotIndex}`}
+                  className={clsx(cardShellClassName, 'h-full border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)]')}
+                >
+                  <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                    Card {slotIndex + 1}
+                  </div>
+                  <div className="mt-4 text-sm font-semibold text-[var(--text-secondary)]">
+                    Loading ruleset...
+                  </div>
+                </div>
+              );
+            }
+
+            if (!definition) {
+              return (
+                <div
+                  key={`${fieldName}-empty-${slotIndex}`}
+                  className={clsx(cardShellClassName, 'h-full items-center justify-center border-2 border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] text-center')}
+                >
+                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                    Empty slot
+                  </div>
+                  <p className="mt-2 max-w-[11rem] text-xs font-semibold leading-5 text-[var(--text-secondary)]">
+                    {emptyLabel}
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div
+                key={`${fieldName}-${definition.index}`}
+                className={clsx(cardShellClassName, 'h-full border border-slate-300/80 shadow-[0_14px_30px_rgba(15,23,42,0.10)]')}
+                style={{
+                  background: 'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(237,242,247,0.98) 100%)'
+                }}
+              >
+                <div className="min-w-0">
+                  <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-slate-500">Card {slotIndex + 1}</div>
+                  <div
+                    className="mt-2 text-[0.95rem] font-black leading-5 text-slate-950 [overflow-wrap:anywhere]"
+                    style={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    {definition.label}
+                  </div>
+                  <div className="mt-2 inline-flex rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700">
+                    {definition.abbreviation}
+                  </div>
+                </div>
+
+                <div className="mt-auto space-y-2 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => handleAccountRulesetPreview(definition.index)}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    Code Preview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlayerProfileModal(null);
+                      handleAccountRulesetOpenInEditor(definition.index);
+                    }}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
+                  >
+                    <Settings className="h-3.5 w-3.5" />
+                    Open Editor
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
+  const renderPlayerProfileModal = () => {
+    if (!playerProfileModal) {
+      return null;
+    }
+
+    const busy = friendActionBusyTargetId === currentProfileTargetId;
+    const relationship = currentFriendRelationship || {
+      code: 'unavailable',
+      label: 'Profile unavailable',
+      canSendRequest: false
+    };
+    const footerButtons = [];
+
+    if (relationship.canSendRequest) {
+      footerButtons.push(
+        <button
+          key="send"
+          type="button"
+          disabled={busy}
+          onClick={() => void runFriendAction('request', currentProfileTargetId, 'Friend request sent.')}
+          className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {busy ? 'Sending...' : 'Send Friend Request'}
+        </button>
+      );
+    } else if (relationship.canAcceptRequest) {
+      footerButtons.push(
+        <button
+          key="accept"
+          type="button"
+          disabled={busy}
+          onClick={() => void runFriendAction('accept', currentProfileTargetId, 'Friend request accepted.')}
+          className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {busy ? 'Accepting...' : 'Accept Request'}
+        </button>
+      );
+      footerButtons.push(
+        <button
+          key="reject"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            const success = await runFriendAction('reject', currentProfileTargetId, 'Friend request rejected.');
+            if (success) {
+              setPlayerProfileModal((current) => current ? { ...current } : current);
+            }
+          }}
+          className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          Reject
+        </button>
+      );
+    } else if (relationship.canCancelOutgoing) {
+      footerButtons.push(
+        <button
+          key="cancel"
+          type="button"
+          disabled={busy}
+          onClick={() => void runFriendAction('cancel', currentProfileTargetId, 'Friend request canceled.')}
+          className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {busy ? 'Canceling...' : 'Cancel Request'}
+        </button>
+      );
+    } else if (relationship.canRemoveFriend) {
+      footerButtons.push(
+        <button
+          key="remove"
+          type="button"
+          disabled={busy}
+          onClick={() => void runFriendAction('remove', currentProfileTargetId, 'Friend removed.')}
+          className="rounded-[1.3rem] border border-red-200/80 bg-red-100/80 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {busy ? 'Removing...' : 'Remove Friend'}
+        </button>
+      );
+    } else if (relationship.code === 'login-required') {
+      footerButtons.push(
+        <button
+          key="login"
+          type="button"
+          onClick={() => {
+            setPlayerProfileModal(null);
+            setActiveTab('login');
+            showTopPrompt('Log in to send friend requests.', 'info');
+          }}
+          className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]"
+        >
+          Open Account
+        </button>
+      );
+    } else if (relationship.code === 'self') {
+      footerButtons.push(
+        <button
+          key="account"
+          type="button"
+          onClick={() => {
+            setPlayerProfileModal(null);
+            setActiveTab('login');
+          }}
+          className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]"
+        >
+          Open Account
+        </button>
+      );
+    }
+
+    footerButtons.push(
+      <button
+        key="close"
+        type="button"
+        onClick={() => setPlayerProfileModal(null)}
+        className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+      >
+        Close
+      </button>
+    );
+
+    return (
+      <ModalShell
+        title={playerProfileModal.username || playerProfileModal.displayName || 'Player Profile'}
+        eyebrow={playerProfileModal.guest ? 'Guest profile' : 'Table profile'}
+        onClose={() => setPlayerProfileModal(null)}
+        wide
+        footer={<div className="flex flex-col gap-3 sm:flex-row sm:justify-end">{footerButtons}</div>}
+      >
+        <div className="space-y-5">
+          <div className="rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-soft)]">
+            <div
+              className="relative h-56 overflow-hidden rounded-t-[1.6rem] border-b border-[var(--glass-border)]"
+              style={{
+                background: `linear-gradient(180deg, rgba(8,15,28,0.22), rgba(8,15,28,0.58)), url(${playerProfileModal.banner || DEFAULT_REGISTER_BANNER_PREVIEW}) center/cover`
+              }}
+            >
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.24),transparent_42%)]" />
+            </div>
+
+            <div className="px-5 pb-6 pt-5 sm:px-6 sm:pb-7 sm:pt-6">
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start">
+                  <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-white/85 bg-white/90 p-1 shadow-lg sm:h-28 sm:w-28">
+                    <img
+                      src={playerProfileModal.avatarUrl || DEFAULT_REGISTER_PROFILE_PREVIEW}
+                      alt=""
+                      className="h-full w-full rounded-full object-contain object-center"
+                    />
+                  </div>
+
+                  <div className="min-w-0 pt-1">
+                    <div className="text-3xl font-black text-[var(--text-primary)]">
+                      {playerProfileModal.username || playerProfileModal.displayName || 'Player'}
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                        {relationship.label}
+                      </span>
+                      <span className="text-sm font-semibold text-[var(--text-secondary)]">
+                        {playerProfileModal.accountCreatedAt
+                          ? `Joined ${new Date(playerProfileModal.accountCreatedAt).toLocaleDateString()}`
+                          : 'Guest player'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 sm:p-5">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                  Description
+                </div>
+                <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-primary)] [overflow-wrap:anywhere] break-words whitespace-pre-wrap">
+                  {playerProfileLoading
+                    ? 'Loading profile...'
+                    : (playerProfileModal.description || 'No profile description yet.')}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {!playerProfileModal.guest && (
+            <div className="grid gap-5 xl:grid-cols-2">
+              {renderReadonlyProfileRulesetDeck({
+                profile: playerProfileModal,
+                title: 'Favourite Rulesets',
+                fieldName: 'favouriteRulesets',
+                limit: 5,
+                emptyLabel: '',
+                isLoading: playerProfileLoading
+              })}
+              {renderReadonlyProfileRulesetDeck({
+                profile: playerProfileModal,
+                title: 'Ruleset Loadout',
+                fieldName: 'rulesetLoadout',
+                limit: 3,
+                emptyLabel: 'No ruleset loadout selected.',
+                isLoading: playerProfileLoading
+              })}
+            </div>
+          )}
+        </div>
+      </ModalShell>
+    );
+  };
 
   useEffect(() => {
     if (!hasActiveModal) {
@@ -4125,25 +5032,30 @@ function App() {
 
                   return (
                     <div key={`${player.socketId}-${index}`} className="glass-panel flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-                      <div className="flex min-w-0 items-center gap-4">
-                        <AvatarFace
-                          player={player}
-                          alt={`${getPlayerName(player)} avatar`}
-                          wrapperClassName="seat-avatar h-12 w-12 text-sm"
-                          imageClassName="h-full w-full rounded-full object-cover"
-                          fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                        />
-                        <div className="min-w-0">
-                          <PlayerNameLabel
-                            player={player}
-                            isLocal={player.socketId === socket.id}
-                            className="text-lg font-black text-[var(--text-primary)] sm:text-xl"
-                          />
-                          <div className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
-                            {isHostPlayer ? 'Host Player' : 'Player'}
-                          </div>
-                        </div>
-                      </div>
+                      {renderPlayerActionTrigger(player, {
+                        className: 'flex min-w-0 items-center gap-4 text-left',
+                        children: (
+                          <>
+                            <AvatarFace
+                              player={player}
+                              alt={`${getPlayerName(player)} avatar`}
+                              wrapperClassName="seat-avatar h-12 w-12 text-sm"
+                              imageClassName="h-full w-full rounded-full object-cover"
+                              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                            />
+                            <div className="min-w-0">
+                              <PlayerNameLabel
+                                player={player}
+                                isLocal={player.socketId === socket.id}
+                                className="text-lg font-black text-[var(--text-primary)] sm:text-xl"
+                              />
+                              <div className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                                {isHostPlayer ? 'Host Player' : 'Player'}
+                              </div>
+                            </div>
+                          </>
+                        )
+                      })}
                       <div className={clsx('status-pill px-4 py-2', player.isReady && 'bg-emerald-200/80 text-emerald-900')}>
                         {player.isReady ? (
                           <span className="flex items-center gap-2">
@@ -4185,25 +5097,30 @@ function App() {
 
                   return (
                     <div key={`${spectator.socketId}-${index}`} className="glass-panel flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-                      <div className="flex min-w-0 items-center gap-4">
-                        <AvatarFace
-                          player={spectator}
-                          alt={`${getPlayerName(spectator)} avatar`}
-                          wrapperClassName="seat-avatar h-12 w-12 text-sm"
-                          imageClassName="h-full w-full rounded-full object-cover"
-                          fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                        />
-                        <div className="min-w-0">
-                          <PlayerNameLabel
-                            player={spectator}
-                            isLocal={spectator.socketId === socket.id}
-                            className="text-lg font-black text-[var(--text-primary)] sm:text-xl"
-                          />
-                          <div className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
-                            {isHostSpectator ? 'Host Spectator' : 'Spectator'}
-                          </div>
-                        </div>
-                      </div>
+                      {renderPlayerActionTrigger(spectator, {
+                        className: 'flex min-w-0 items-center gap-4 text-left',
+                        children: (
+                          <>
+                            <AvatarFace
+                              player={spectator}
+                              alt={`${getPlayerName(spectator)} avatar`}
+                              wrapperClassName="seat-avatar h-12 w-12 text-sm"
+                              imageClassName="h-full w-full rounded-full object-cover"
+                              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                            />
+                            <div className="min-w-0">
+                              <PlayerNameLabel
+                                player={spectator}
+                                isLocal={spectator.socketId === socket.id}
+                                className="text-lg font-black text-[var(--text-primary)] sm:text-xl"
+                              />
+                              <div className="text-xs font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                                {isHostSpectator ? 'Host Spectator' : 'Spectator'}
+                              </div>
+                            </div>
+                          </>
+                        )
+                      })}
                       <div className="status-pill bg-sky-100/85 px-4 py-2 text-sky-900">
                         Spectating
                       </div>
@@ -4454,8 +5371,114 @@ function App() {
           No public rooms are available right now.
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {publicRooms.map((room) => (
+        <div className="space-y-6">
+          {publicRooms.filter((room) => room.hasFriend).length > 0 && (
+            <section className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Friends at Tables</h4>
+                  <p className="text-sm font-semibold text-[var(--text-secondary)]">
+                    These public rooms already have someone from your friends list inside.
+                  </p>
+                </div>
+                <div className="status-pill px-4 py-2">
+                  {publicRooms.filter((room) => room.hasFriend).length} room{publicRooms.filter((room) => room.hasFriend).length === 1 ? '' : 's'}
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                {publicRooms.filter((room) => room.hasFriend).map((room) => (
+                  <article key={room.roomId} className="glass-panel p-5">
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-xl font-black text-[var(--text-primary)]">{room.roomName}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                          <span>{room.playerCount}/{room.maxPlayers} players</span>
+                          {room.isInGame && <span className="rounded-full bg-amber-200/85 px-2 py-1 text-amber-900">In game</span>}
+                          <span className="rounded-full bg-emerald-200/80 px-2 py-1 text-emerald-900">Friend here</span>
+                        </div>
+                      </div>
+                      <div className="status-pill px-3 py-2">{room.roomId}</div>
+                    </div>
+
+                    <div className="mb-4 flex flex-wrap gap-2">
+                        {(room.avatars || []).map((avatar, index) => (
+                          renderPlayerActionTrigger(avatar, {
+                          elementKey: `${room.roomId}-${avatar.userId || index}`,
+                          className: 'seat-avatar h-10 w-10 border-2 border-white text-xs',
+                          title: `Open actions for ${getPlayerName(avatar)}`,
+                          children: avatar.avatarUrl ? (
+                            <img src={avatar.avatarUrl} alt="" className="h-full w-full rounded-full object-cover" />
+                          ) : (
+                            getPlayerInitials(avatar)
+                          )
+                        })
+                      ))}
+                    </div>
+
+                    {room.friendsInRoom?.length > 0 && (
+                      <div className="mb-4 rounded-[1.25rem] border border-emerald-200/70 bg-emerald-50/80 p-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-emerald-800">
+                          Friends in this room
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {room.friendsInRoom.map((friend) => (
+                            renderPlayerActionTrigger(friend, {
+                              elementKey: `${room.roomId}-friend-${friend.userId}`,
+                              className: 'rounded-full border border-emerald-200 bg-white/85 px-3 py-2 text-xs font-black text-emerald-950',
+                              children: <span>{getPlayerName(friend)}</span>
+                            })
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={inLobby || gameStarted}
+                      onClick={() => {
+                        if (room.isInGame) {
+                          setPendingSpectatorJoin({
+                            roomId: room.roomId,
+                            roomName: room.roomName
+                          });
+                          return;
+                        }
+
+                        joinPublicRoom(room.roomId);
+                      }}
+                      className={clsx(
+                        'w-full rounded-[1.3rem] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] transition',
+                        inLobby || gameStarted
+                          ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
+                          : 'frutiger-button'
+                      )}
+                    >
+                      {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">
+                  {publicRooms.some((room) => room.hasFriend) ? 'Other Public Rooms' : 'All Public Rooms'}
+                </h4>
+                <p className="text-sm font-semibold text-[var(--text-secondary)]">
+                  Public tables stay available below even when none of your friends are inside.
+                </p>
+              </div>
+              <div className="status-pill px-4 py-2">
+                {publicRooms.filter((room) => !room.hasFriend).length} room{publicRooms.filter((room) => !room.hasFriend).length === 1 ? '' : 's'}
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {publicRooms.filter((room) => !room.hasFriend).map((room) => (
             <article key={room.roomId} className="glass-panel p-5">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -4463,20 +5486,22 @@ function App() {
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
                     <span>{room.playerCount}/{room.maxPlayers} players</span>
                     {room.isInGame && <span className="rounded-full bg-amber-200/85 px-2 py-1 text-amber-900">In game</span>}
-                    {room.hasFriend && <span className="rounded-full bg-emerald-200/80 px-2 py-1 text-emerald-900">Friend here</span>}
                   </div>
                 </div>
                 <div className="status-pill px-3 py-2">{room.roomId}</div>
               </div>
               <div className="mb-4 flex -space-x-2">
                 {(room.avatars || []).map((avatar, index) => (
-                  <div key={`${room.roomId}-${avatar.userId || index}`} className="seat-avatar h-10 w-10 border-2 border-white text-xs">
-                    {avatar.avatarUrl ? (
+                  renderPlayerActionTrigger(avatar, {
+                    elementKey: `${room.roomId}-${avatar.userId || index}`,
+                    className: 'seat-avatar h-10 w-10 border-2 border-white text-xs',
+                    title: `Open actions for ${getPlayerName(avatar)}`,
+                    children: avatar.avatarUrl ? (
                       <img src={avatar.avatarUrl} alt="" className="h-full w-full rounded-full object-cover" />
                     ) : (
                       getPlayerInitials(avatar)
-                    )}
-                  </div>
+                    )
+                  })
                 ))}
               </div>
               <button
@@ -4503,7 +5528,9 @@ function App() {
                 {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
               </button>
             </article>
-          ))}
+              ))}
+            </div>
+          </section>
         </div>
       )}
     </div>
@@ -4674,9 +5701,11 @@ function App() {
                   <div id="rentz-spectator-popover" className="rentz-spectator-popover">
                     {spectators.length > 0 ? (
                       spectators.map((spectator, index) => (
-                        <div
+                        <button
+                          type="button"
+                          onClick={(event) => openPlayerActionMenu(event, spectator, 'spectator-popover')}
                           key={spectator.userId || spectator.socketId || index}
-                          className="rentz-spectator-entry"
+                          className="rentz-spectator-entry rentz-spectator-entry-button"
                         >
                           <AvatarFace
                             player={spectator}
@@ -4695,7 +5724,7 @@ function App() {
                               {spectator.userId === lobbyHostId ? 'Host spectating' : 'Watching the table'}
                             </div>
                           </div>
-                        </div>
+                        </button>
                       ))
                     ) : (
                       <div className="rentz-spectator-empty">No spectators right now.</div>
@@ -4760,6 +5789,7 @@ function App() {
                     reaction={activeReactions[nextTurnPlayer.userId] || null}
                     reactionPlacement="left"
                     onEmojiClick={handleEmojiPrompt}
+                    onProfileAction={openPlayerActionMenu}
                   />
                 ) : null}
               </div>
@@ -4778,6 +5808,7 @@ function App() {
                     reaction={activeReactions[myPlayer.userId] || null}
                     reactionPlacement="left"
                     onEmojiClick={handleEmojiPrompt}
+                    onProfileAction={openPlayerActionMenu}
                   />
                 </div>
               ) : null}
@@ -4807,6 +5838,7 @@ function App() {
                         reaction={activeReactions[player.userId] || null}
                         reactionPlacement={Math.cos(seatPosition.angle) < -0.34 ? 'right' : 'left'}
                         onEmojiClick={handleEmojiPrompt}
+                        onProfileAction={openPlayerActionMenu}
                       />
                     </div>
                   );
@@ -4890,6 +5922,7 @@ function App() {
                   cardCount={player.userId === myPlayerId ? hand.length : (cardCounts[player.userId] || 0)}
                   tricksWon={(collectedHandsByPlayer[player.userId] || []).length}
                   points={getPlayerPoints(player)}
+                  onProfileAction={openPlayerActionMenu}
                 />
               ))}
             </div>
@@ -4923,6 +5956,7 @@ function App() {
                     cardCount={player.userId === myPlayerId ? hand.length : (cardCounts[player.userId] || 0)}
                     tricksWon={(collectedHandsByPlayer[player.userId] || []).length}
                     points={getPlayerPoints(player)}
+                    onProfileAction={openPlayerActionMenu}
                   />
                 ))}
               </div>
@@ -5791,6 +6825,185 @@ function App() {
           </section>
 
           <section className="glass-panel p-5 sm:p-6">
+            <div className="mb-6 grid gap-4 lg:grid-cols-3">
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Friends
+                </div>
+                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
+                  {friendState.friends.length}
+                </div>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Incoming Requests
+                </div>
+                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
+                  {friendState.incomingRequests.length}
+                </div>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Outgoing Requests
+                </div>
+                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
+                  {friendState.outgoingRequests.length}
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Incoming Requests</h4>
+                  <div className="status-pill px-3 py-2">{friendState.incomingRequests.length}</div>
+                </div>
+
+                <div className="space-y-3">
+                  {friendState.incomingRequests.length === 0 ? (
+                    <div className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                      No incoming friend requests right now.
+                    </div>
+                  ) : friendState.incomingRequests.map((requester) => (
+                    <div key={requester.userId} className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <button
+                          type="button"
+                          onClick={() => void openPlayerProfileModal(requester)}
+                          className="flex min-w-0 items-center gap-3 text-left"
+                        >
+                          <AvatarFace
+                            player={requester}
+                            alt={`${getPlayerName(requester)} avatar`}
+                            wrapperClassName="seat-avatar h-12 w-12 text-sm"
+                            imageClassName="h-full w-full rounded-full object-cover"
+                            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(requester)}</div>
+                            <div className="text-xs font-bold text-[var(--text-secondary)]">Wants to add you as a friend</div>
+                          </div>
+                        </button>
+
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            disabled={friendActionBusyTargetId === requester.userId}
+                            onClick={() => void runFriendAction('accept', requester.userId, 'Friend request accepted.')}
+                            className="rounded-full bg-emerald-100/85 p-2 text-emerald-900 transition hover:bg-emerald-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+                            title="Accept request"
+                          >
+                            <Check className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={friendActionBusyTargetId === requester.userId}
+                            onClick={() => void runFriendAction('reject', requester.userId, 'Friend request rejected.')}
+                            className="rounded-full bg-rose-100/85 p-2 text-rose-900 transition hover:bg-rose-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+                            title="Reject request"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Outgoing Requests</h4>
+                  <div className="status-pill px-3 py-2">{friendState.outgoingRequests.length}</div>
+                </div>
+
+                <div className="space-y-3">
+                  {friendState.outgoingRequests.length === 0 ? (
+                    <div className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                      No outgoing friend requests right now.
+                    </div>
+                  ) : friendState.outgoingRequests.map((requester) => (
+                    <div key={requester.userId} className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <button
+                          type="button"
+                          onClick={() => void openPlayerProfileModal(requester)}
+                          className="flex min-w-0 items-center gap-3 text-left"
+                        >
+                          <AvatarFace
+                            player={requester}
+                            alt={`${getPlayerName(requester)} avatar`}
+                            wrapperClassName="seat-avatar h-12 w-12 text-sm"
+                            imageClassName="h-full w-full rounded-full object-cover"
+                            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(requester)}</div>
+                            <div className="text-xs font-bold text-[var(--text-secondary)]">Request sent</div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={friendActionBusyTargetId === requester.userId}
+                          onClick={() => void runFriendAction('cancel', requester.userId, 'Friend request canceled.')}
+                          className="rounded-[1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <section className="mb-6 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Friends</h4>
+                <div className="status-pill px-3 py-2">{friendState.friends.length}</div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                {friendState.friends.length === 0 ? (
+                  <div className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                    You have not added any friends yet.
+                  </div>
+                ) : friendState.friends.map((friend) => (
+                  <div key={friend.userId} className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <button
+                        type="button"
+                        onClick={() => void openPlayerProfileModal(friend)}
+                        className="flex min-w-0 items-center gap-3 text-left"
+                      >
+                        <AvatarFace
+                          player={friend}
+                          alt={`${getPlayerName(friend)} avatar`}
+                          wrapperClassName="seat-avatar h-12 w-12 text-sm"
+                          imageClassName="h-full w-full rounded-full object-cover"
+                          fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                        />
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(friend)}</div>
+                          <div className="text-xs font-bold text-[var(--text-secondary)]">Friend</div>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={friendActionBusyTargetId === friend.userId}
+                        onClick={() => void runFriendAction('remove', friend.userId, 'Friend removed.')}
+                        className="rounded-[1rem] border border-red-200/75 bg-red-100/80 px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-red-900 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             <div className="space-y-6 overflow-x-hidden">
               {renderAccountRulesetDeck({
                 title: 'Favourite Rulesets',
@@ -6190,13 +7403,6 @@ endif`}
             onChange={(nextValue) => setPageZoom(nextValue / 100)}
           />
         </div>
-      );
-    }
-
-    if (activeTab === 'friends') {
-      return renderPlaceholderModule(
-        'Friends',
-        'Friend codes, presence, and private invites can live here. The navbar entry is now in place so we can wire the real friend graph into this space next.'
       );
     }
 
@@ -6661,6 +7867,9 @@ endif`}
           </div>
         </ModalShell>
       )}
+
+      {renderPlayerActionMenu()}
+      {renderPlayerProfileModal()}
 
       {pendingSpectatorJoin && (
         <ModalShell
