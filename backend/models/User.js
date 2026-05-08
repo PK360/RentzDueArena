@@ -48,6 +48,36 @@ function normalizeRelationshipReferenceList(values, selfId = '') {
     });
 }
 
+function normalizeObjectIdReferenceList(values) {
+  const seen = new Set();
+
+  return (Array.isArray(values) ? values : [])
+    .map((value) => {
+      if (!value) {
+        return '';
+      }
+
+      if (typeof value === 'string') {
+        return value;
+      }
+
+      if (value instanceof mongoose.Types.ObjectId) {
+        return String(value);
+      }
+
+      return String(value._id || value.id || '');
+    })
+    .filter((value) => mongoose.isValidObjectId(value))
+    .filter((value) => {
+      if (seen.has(value)) {
+        return false;
+      }
+
+      seen.add(value);
+      return true;
+    });
+}
+
 const userSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -143,6 +173,8 @@ userSchema.pre('validate', function normalizeAccountFields(next) {
     this.friends = normalizeRelationshipReferenceList(this.friends, selfId);
     this.incomingFriendRequests = normalizeRelationshipReferenceList(this.incomingFriendRequests, selfId);
     this.outgoingFriendRequests = normalizeRelationshipReferenceList(this.outgoingFriendRequests, selfId);
+    this.savedRulesets = normalizeObjectIdReferenceList(this.savedRulesets);
+    this.createdRulesets = normalizeObjectIdReferenceList(this.createdRulesets);
     next();
   } catch (error) {
     next(error);

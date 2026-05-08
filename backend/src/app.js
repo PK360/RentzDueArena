@@ -4,6 +4,7 @@ const path = require('path');
 
 const healthRoutes = require('./routes/healthRoutes');
 const authRoutes = require('./routes/authRoutes');
+const forumRoutes = require('./routes/forumRoutes');
 const rulesetRoutes = require('./routes/rulesetRoutes');
 const gameRoutes = require('./routes/gameRoutes');
 
@@ -21,6 +22,7 @@ function createApp() {
 
   app.use('/api/health', healthRoutes);
   app.use('/api/auth', authRoutes);
+  app.use('/api/forum', forumRoutes);
   app.use('/api/rulesets', rulesetRoutes);
   app.use('/api/games', gameRoutes);
 

@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Ban,
   BarChart3,
+  Bookmark,
   Check,
   Clock,
   Copy,
@@ -10,18 +11,24 @@ import {
   Droplet,
   FileCode2,
   Globe2,
+  Heart,
   Home,
+  ImagePlus,
   Info,
   Library,
   Lock,
   LogIn,
   LogOut,
+  MessageCircle,
   MoreHorizontal,
   PencilLine,
   Plus,
   RefreshCw,
+  Search,
+  SendHorizontal,
   Settings,
   Sparkles,
+  Star,
   Swords,
   Trash2,
   Trophy,
@@ -408,6 +415,125 @@ function revokeObjectPreview(url) {
   if (String(url || '').startsWith('blob:')) {
     URL.revokeObjectURL(url);
   }
+}
+
+function createForumDraft() {
+  return {
+    text: '',
+    mediaFile: null,
+    mediaPreview: '',
+    attachedRulesetIndex: ''
+  };
+}
+
+function createEmptyForumSearchState() {
+  return {
+    hasResultsTab: false,
+    query: '',
+    loading: false,
+    activeView: 'posts',
+    posts: [],
+    users: [],
+    friends: []
+  };
+}
+
+function createEmptyLibraryState() {
+  return {
+    loading: false,
+    savedRulesets: [],
+    bookmarkedRulesetPosts: []
+  };
+}
+
+function replaceForumEntryInTree(entries, nextEntry) {
+  return entries.map((entry) => {
+    if (entry.id === nextEntry.id) {
+      return {
+        ...entry,
+        ...nextEntry,
+        replies: entry.replies || []
+      };
+    }
+
+    if (!entry.replies?.length) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      replies: replaceForumEntryInTree(entry.replies, nextEntry)
+    };
+  });
+}
+
+function appendForumReplyInTree(entries, parentId, reply) {
+  return entries.map((entry) => {
+    if (entry.id === parentId) {
+      const nextReplies = [...(entry.replies || []), reply].sort(
+        (left, right) => new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime()
+      );
+
+      return {
+        ...entry,
+        replyCount: Math.max(entry.replyCount || 0, nextReplies.length),
+        replies: nextReplies
+      };
+    }
+
+    if (!entry.replies?.length) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      replies: appendForumReplyInTree(entry.replies, parentId, reply)
+    };
+  });
+}
+
+function removeForumEntryFromTree(entries, targetId) {
+  const nextEntries = [];
+
+  entries.forEach((entry) => {
+    if (entry.id === targetId) {
+      return;
+    }
+
+    const nextReplies = Array.isArray(entry.replies)
+      ? removeForumEntryFromTree(entry.replies, targetId)
+      : entry.replies;
+
+    nextEntries.push({
+      ...entry,
+      replies: nextReplies,
+      replyCount: Array.isArray(nextReplies) ? nextReplies.length : (entry.replyCount || 0)
+    });
+  });
+
+  return nextEntries;
+}
+
+function formatForumTimestamp(value) {
+  if (!value) {
+    return 'Just now';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'Just now';
+  }
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function formatForumRatingLabel(value) {
+  return typeof value === 'number' ? `${value.toFixed(1)} avg` : 'No rating yet';
 }
 
 function hashString(value) {
@@ -1577,13 +1703,13 @@ function ModalShell({
     <div className={clsx('rentz-modal-overlay fixed inset-0 z-[80] flex items-center justify-center px-4 py-6', overlayClassName)}>
       <div className={clsx('rentz-modal-panel glass-panel flex max-h-[82vh] w-full flex-col rounded-[2rem] p-5 sm:p-6', wide ? 'max-w-6xl' : 'max-w-3xl', panelClassName)}>
         <div className="flex items-start justify-between gap-4">
-          <div>
+          <div className="min-w-0 flex-1 pr-2">
             {eyebrow && (
               <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
                 {eyebrow}
               </div>
             )}
-            <h3 className="mt-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
+            <h3 className="mt-2 break-words pr-1 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
               {title}
             </h3>
           </div>
@@ -1592,7 +1718,7 @@ function ModalShell({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              className="shrink-0 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
               title="Close"
             >
               <X className="h-4 w-4" />
@@ -1894,6 +2020,7 @@ function App() {
   const turnTimerNoticeTimeoutRef = useRef(null);
   const reactionTimeoutsRef = useRef(new Map());
   const mobileReactionSpotlightTimeoutRef = useRef(null);
+  const forumReplyPreviewUrlsRef = useRef([]);
 
   const [editorTitle, setEditorTitle] = useState('My House Rules');
   const [editorShortName, setEditorShortName] = useState('MHR');
@@ -1911,6 +2038,26 @@ function App() {
       return [];
     }
   });
+  const [forumFeed, setForumFeed] = useState([]);
+  const [forumFeedLoading, setForumFeedLoading] = useState(false);
+  const [forumView, setForumView] = useState('feed');
+  const [forumThread, setForumThread] = useState(null);
+  const [forumThreadLoading, setForumThreadLoading] = useState(false);
+  const [forumComposerDraft, setForumComposerDraft] = useState(() => createForumDraft());
+  const [forumComposerBusy, setForumComposerBusy] = useState(false);
+  const [isForumComposerOpen, setIsForumComposerOpen] = useState(false);
+  const [forumReplyDrafts, setForumReplyDrafts] = useState({});
+  const [forumReplyBusyId, setForumReplyBusyId] = useState('');
+  const [forumReplyTarget, setForumReplyTarget] = useState(null);
+  const [forumDeleteTarget, setForumDeleteTarget] = useState(null);
+  const [forumActionBusyKey, setForumActionBusyKey] = useState('');
+  const [forumRulesetSaveTarget, setForumRulesetSaveTarget] = useState(null);
+  const [forumRatingPreview, setForumRatingPreview] = useState(null);
+  const [forumSearchInput, setForumSearchInput] = useState('');
+  const [forumSearchState, setForumSearchState] = useState(() => createEmptyForumSearchState());
+  const [libraryState, setLibraryState] = useState(() => createEmptyLibraryState());
+  const [savedCustomRulesets, setSavedCustomRulesets] = useState([]);
+  const [editorSaveBusy, setEditorSaveBusy] = useState(false);
 
   useEffect(() => {
     document.body.className = theme;
@@ -1966,6 +2113,20 @@ function App() {
     revokeObjectPreview(accountEditForm.profilePicturePreview);
     revokeObjectPreview(accountEditForm.bannerPreview);
   }, [accountEditForm.bannerPreview, accountEditForm.profilePicturePreview]);
+
+  useEffect(() => () => {
+    revokeObjectPreview(forumComposerDraft.mediaPreview);
+  }, [forumComposerDraft.mediaPreview]);
+
+  useEffect(() => {
+    forumReplyPreviewUrlsRef.current = Object.values(forumReplyDrafts)
+      .map((draft) => draft?.mediaPreview || '')
+      .filter(Boolean);
+  }, [forumReplyDrafts]);
+
+  useEffect(() => () => {
+    forumReplyPreviewUrlsRef.current.forEach((previewUrl) => revokeObjectPreview(previewUrl));
+  }, []);
 
   const clearGuestIdentity = () => {
     storeGuestProfile(null);
@@ -2101,7 +2262,7 @@ function App() {
     }
   }
 
-  async function runFriendAction(action, targetUserId, successMessage = '') {
+  async function runFriendAction(action, targetUserId, successMessage = '', { updateProfileModal = false } = {}) {
     if (!targetUserId) {
       return false;
     }
@@ -2120,7 +2281,11 @@ function App() {
       if (response?.friendState) {
         setFriendState(response.friendState);
       }
-      if (response?.profile) {
+      if (
+        updateProfileModal
+        && response?.profile
+        && getPlayerUserId(playerProfileModal) === targetUserId
+      ) {
         setPlayerProfileModal(response.profile);
       }
       if (successMessage || response?.message) {
@@ -2207,6 +2372,28 @@ function App() {
   }, []);
 
   useEffect(() => {
+    void loadForumFeed({ suppressErrors: true });
+    // Forum feed sorting depends on the live auth/friends snapshot, so we refresh on those changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, userProfile?.userId, (userProfile?.friends || []).join(',')]);
+
+  useEffect(() => {
+    void loadLibraryData({ suppressErrors: true });
+    // Library content is account-scoped, so it refreshes when auth identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, userProfile?.userId]);
+
+  useEffect(() => {
+    if (!forumSearchState.hasResultsTab || !forumSearchState.query) {
+      return;
+    }
+
+    void runForumSearch(forumSearchState.query, { activateTab: false });
+    // Search results should be rehydrated when the viewer identity changes, without retabbing the user.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, userProfile?.userId]);
+
+  useEffect(() => {
     isPublicBrowserOpenRef.current = isPublicBrowserOpen;
   }, [isPublicBrowserOpen]);
 
@@ -2238,6 +2425,8 @@ function App() {
     return () => {
       cancelled = true;
     };
+    // Friend bootstrap should rerun only when auth state flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
   function applyRestoredSession(response) {
@@ -3230,6 +3419,668 @@ function App() {
     }
   };
 
+  const syncForumPostEverywhere = (nextPost) => {
+    if (!nextPost?.id) {
+      return;
+    }
+
+    setForumFeed((current) => replaceForumEntryInTree(current, nextPost));
+    setForumThread((current) => {
+      if (!current?.selected) {
+        return current;
+      }
+
+      return {
+        ...current,
+        parents: Array.isArray(current.parents)
+          ? current.parents.map((parent) => (parent.id === nextPost.id ? { ...parent, ...nextPost, replies: [] } : parent))
+          : current.parents,
+        selected: current.selected.id === nextPost.id
+          ? nextPost
+          : {
+            ...current.selected,
+            replies: replaceForumEntryInTree(current.selected.replies || [], nextPost)
+          }
+      };
+    });
+    setForumSearchState((current) => ({
+      ...current,
+      posts: current.posts.map((post) => (
+        post.id === nextPost.id
+          ? {
+            ...post,
+            ...nextPost,
+            replies: post.replies || []
+          }
+          : post
+      ))
+    }));
+    setLibraryState((current) => ({
+      ...current,
+      bookmarkedRulesetPosts: current.bookmarkedRulesetPosts.map((post) => (
+        post.id === nextPost.id
+          ? {
+            ...post,
+            ...nextPost,
+            replies: []
+          }
+          : post
+      ))
+    }));
+  };
+
+  const removeForumPostEverywhere = (postId) => {
+    if (!postId) {
+      return;
+    }
+
+    setForumFeed((current) => removeForumEntryFromTree(current, postId));
+    setForumThread((current) => {
+      if (!current?.selected) {
+        return current;
+      }
+
+      if (current.selected.id === postId) {
+        return null;
+      }
+
+      return {
+        ...current,
+        parents: Array.isArray(current.parents)
+          ? current.parents.filter((parent) => parent.id !== postId)
+          : current.parents,
+        selected: {
+          ...current.selected,
+          replies: removeForumEntryFromTree(current.selected.replies || [], postId)
+        }
+      };
+    });
+    setForumSearchState((current) => ({
+      ...current,
+      posts: current.posts.filter((post) => post.id !== postId)
+    }));
+    setLibraryState((current) => ({
+      ...current,
+      bookmarkedRulesetPosts: current.bookmarkedRulesetPosts.filter((post) => post.id !== postId)
+    }));
+  };
+
+  const loadForumFeed = async ({ suppressErrors = false } = {}) => {
+    setForumFeedLoading(true);
+
+    try {
+      const response = await requestJson('/api/forum/feed');
+      setForumFeed(Array.isArray(response?.posts) ? response.posts : []);
+    } catch (error) {
+      if (!suppressErrors) {
+        showTopPrompt(error.message || 'Unable to load Rentz Forum right now.', 'error');
+      }
+    } finally {
+      setForumFeedLoading(false);
+    }
+  };
+
+  const resetForumComposerDraft = () => {
+    setForumComposerDraft((current) => {
+      revokeObjectPreview(current.mediaPreview);
+      return createForumDraft();
+    });
+  };
+
+  const loadLibraryData = async ({ suppressErrors = false } = {}) => {
+    if (!isAuthenticated) {
+      setLibraryState(createEmptyLibraryState());
+      setSavedCustomRulesets([]);
+      return;
+    }
+
+    setLibraryState((current) => ({ ...current, loading: true }));
+
+    try {
+      const response = await requestJson('/api/forum/library');
+      const savedRulesets = Array.isArray(response?.savedRulesets) ? response.savedRulesets : [];
+      setLibraryState({
+        loading: false,
+        savedRulesets,
+        bookmarkedRulesetPosts: Array.isArray(response?.bookmarkedRulesetPosts) ? response.bookmarkedRulesetPosts : []
+      });
+      setSavedCustomRulesets(savedRulesets);
+    } catch (error) {
+      setLibraryState((current) => ({ ...current, loading: false }));
+      if (!suppressErrors) {
+        showTopPrompt(error.message || 'Unable to load your library right now.', 'error');
+      }
+    }
+  };
+
+  const loadForumThread = async (postId, { suppressErrors = false, switchTab = false } = {}) => {
+    if (!postId) {
+      return;
+    }
+
+    setForumThreadLoading(true);
+
+    if (switchTab) {
+      setActiveTab('ruleset-rater');
+    }
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(postId)}/thread`);
+      setForumThread(response?.thread || null);
+      setForumView('thread');
+    } catch (error) {
+      if (!suppressErrors) {
+        showTopPrompt(error.message || 'Unable to load that thread right now.', 'error');
+      }
+    } finally {
+      setForumThreadLoading(false);
+    }
+  };
+
+  const updateForumReplyDraft = (postId, updater) => {
+    setForumReplyDrafts((current) => {
+      const existingDraft = current[postId] || createForumDraft();
+      const nextDraft = typeof updater === 'function'
+        ? updater(existingDraft)
+        : { ...existingDraft, ...updater };
+
+      return {
+        ...current,
+        [postId]: nextDraft
+      };
+    });
+  };
+
+  const resetForumReplyDraft = (postId) => {
+    setForumReplyDrafts((current) => {
+      const nextDrafts = { ...current };
+      revokeObjectPreview(nextDrafts[postId]?.mediaPreview);
+      delete nextDrafts[postId];
+      return nextDrafts;
+    });
+  };
+
+  const handleForumComposerMediaChange = (event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(file.type)) {
+      showTopPrompt('Forum media must be a PNG, JPEG, WebP, or GIF image.', 'error');
+      return;
+    }
+
+    if (file.size > 4 * 1024 * 1024) {
+      showTopPrompt('Forum media must be 4 MB or smaller.', 'error');
+      return;
+    }
+
+    const nextPreview = URL.createObjectURL(file);
+    setForumComposerDraft((current) => {
+      revokeObjectPreview(current.mediaPreview);
+      return {
+        ...current,
+        mediaFile: file,
+        mediaPreview: nextPreview
+      };
+    });
+  };
+
+  const handleForumReplyMediaChange = (postId, event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(file.type)) {
+      showTopPrompt('Reply media must be a PNG, JPEG, WebP, or GIF image.', 'error');
+      return;
+    }
+
+    if (file.size > 4 * 1024 * 1024) {
+      showTopPrompt('Reply media must be 4 MB or smaller.', 'error');
+      return;
+    }
+
+    const nextPreview = URL.createObjectURL(file);
+    updateForumReplyDraft(postId, (current) => {
+      revokeObjectPreview(current.mediaPreview);
+      return {
+        ...current,
+        mediaFile: file,
+        mediaPreview: nextPreview
+      };
+    });
+  };
+
+  const submitForumPost = async ({ draft, parentPostId = '' }) => {
+    const payload = {
+      text: draft.text,
+      attachedRuleset: draft.attachedRulesetIndex === '' || draft.attachedRulesetIndex == null
+        ? null
+        : { rulesetId: String(draft.attachedRulesetIndex) }
+    };
+
+    if (draft.mediaFile) {
+      payload.mediaUpload = await serializeFileUpload(draft.mediaFile);
+    }
+
+    if (parentPostId) {
+      payload.parentPostId = parentPostId;
+    }
+
+    return requestJson('/api/forum/posts', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  };
+
+  const handleSubmitForumComposer = async (event) => {
+    event?.preventDefault?.();
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to post on Rentz Forum.', 'info');
+      return;
+    }
+
+    setForumComposerBusy(true);
+
+    try {
+      const response = await submitForumPost({ draft: forumComposerDraft });
+      if (response?.post) {
+        setForumFeed((current) => [response.post, ...current]);
+      }
+      resetForumComposerDraft();
+      setIsForumComposerOpen(false);
+      showTopPrompt('Post published.', 'success');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to publish that post.', 'error');
+    } finally {
+      setForumComposerBusy(false);
+    }
+  };
+
+  const handleSubmitForumReply = async (parentPostId) => {
+    if (!parentPostId) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to reply on Rentz Forum.', 'info');
+      return;
+    }
+
+    const draft = forumReplyDrafts[parentPostId] || createForumDraft();
+    setForumReplyBusyId(parentPostId);
+
+    try {
+      const response = await submitForumPost({
+        draft,
+        parentPostId
+      });
+
+      if (response?.post) {
+        setForumFeed((current) => appendForumReplyInTree(current, parentPostId, response.post));
+        setForumThread((current) => {
+          if (!current?.selected) {
+            return current;
+          }
+
+          if (current.selected.id === parentPostId) {
+            return {
+              ...current,
+              selected: {
+                ...current.selected,
+                replies: [...(current.selected.replies || []), response.post]
+              }
+            };
+          }
+
+          return {
+            ...current,
+            selected: {
+              ...current.selected,
+              replies: appendForumReplyInTree(current.selected.replies || [], parentPostId, response.post)
+            }
+          };
+        });
+      }
+      resetForumReplyDraft(parentPostId);
+      setForumReplyTarget(null);
+      showTopPrompt('Reply posted.', 'success');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to publish that reply.', 'error');
+    } finally {
+      setForumReplyBusyId('');
+    }
+  };
+
+  const handleForumEntryAction = async (postId, action, {
+    successMessage,
+    loginPrompt,
+    nextBusyKey = `${postId}:${action}`
+  } = {}) => {
+    if (!postId) {
+      return false;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt(loginPrompt || 'Log in to use that Rentz Forum action.', 'info');
+      return false;
+    }
+
+    setForumActionBusyKey(nextBusyKey);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(postId)}/${action}`, {
+        method: 'POST'
+      });
+
+      if (response?.post) {
+        syncForumPostEverywhere(response.post);
+        if (action === 'bookmark' && response.post.attachedRuleset) {
+          void loadLibraryData({ suppressErrors: true });
+        }
+      }
+
+      if (successMessage) {
+        showTopPrompt(successMessage, 'success');
+      }
+      return true;
+    } catch (error) {
+      showTopPrompt(error.message || 'That forum action could not be completed.', 'error');
+      return false;
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleDeleteForumPost = async () => {
+    if (!forumDeleteTarget?.id) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to delete your own Rentz Forum posts.', 'info');
+      return;
+    }
+
+    const deletingPostId = forumDeleteTarget.id;
+    const wasSelectedThreadEntry = forumThread?.selected?.id === deletingPostId;
+    setForumActionBusyKey(`${deletingPostId}:delete`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(deletingPostId)}`, {
+        method: 'DELETE'
+      });
+
+      if (forumReplyTarget?.id === deletingPostId) {
+        setForumReplyTarget(null);
+      }
+
+      if (response?.removed) {
+        removeForumPostEverywhere(deletingPostId);
+
+        if (wasSelectedThreadEntry) {
+          if (response.parentPostId) {
+            await loadForumThread(response.parentPostId, { suppressErrors: true });
+          } else {
+            setForumView('feed');
+            setForumThread(null);
+            await loadForumFeed({ suppressErrors: true });
+          }
+        }
+      } else if (response?.post) {
+        syncForumPostEverywhere(response.post);
+      }
+
+      setForumDeleteTarget(null);
+      showTopPrompt('Post deleted.', 'success');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to delete that forum post.', 'error');
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleForumCopyRulesetToEditor = async (postId) => {
+    if (!postId) {
+      return;
+    }
+
+    setForumActionBusyKey(`${postId}:copy-ruleset`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(postId)}/copy-ruleset`, {
+        method: 'POST'
+      });
+
+      if (!response?.ruleset) {
+        throw new Error('That ruleset attachment is unavailable right now.');
+      }
+
+      populateEditorFromRuleset({
+        longName: response.ruleset.title || response.ruleset.label,
+        shortName: response.ruleset.abbreviation,
+        type: response.ruleset.type,
+        code: response.ruleset.code
+      }, {
+        linkedRoomRulesetId: null,
+        switchToEditor: true
+      });
+      showTopPrompt(`${response.ruleset.label} copied to the editor.`, 'success');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to copy that ruleset into the editor.', 'error');
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const openForumRulesetSaveChoice = (post) => {
+    if (!post?.id) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to save attached rulesets to your profile.', 'info');
+      return;
+    }
+
+    setForumRulesetSaveTarget(post);
+  };
+
+  const handleForumPreviewRuleset = async (postId) => {
+    if (!postId) {
+      return;
+    }
+
+    setForumActionBusyKey(`${postId}:preview-ruleset`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(postId)}/copy-ruleset`, {
+        method: 'POST'
+      });
+
+      if (!response?.ruleset) {
+        throw new Error('That ruleset preview is unavailable right now.');
+      }
+
+      setRulesetPreview({
+        label: response.ruleset.title || response.ruleset.label,
+        abbreviation: response.ruleset.shortName || response.ruleset.abbreviation,
+        type: response.ruleset.type,
+        code: response.ruleset.code
+      });
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to preview that ruleset right now.', 'error');
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleForumSaveRulesetToProfile = async () => {
+    if (!forumRulesetSaveTarget?.id) {
+      return;
+    }
+
+    setForumActionBusyKey(`${forumRulesetSaveTarget.id}:save-ruleset`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(forumRulesetSaveTarget.id)}/save-ruleset`, {
+        method: 'POST'
+      });
+
+      await loadLibraryData({ suppressErrors: true });
+      setForumRulesetSaveTarget(null);
+      showTopPrompt(response?.message || 'Ruleset saved to your profile library.', 'success');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to save that ruleset to your profile.', 'error');
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleForumRateRuleset = async (postId, value) => {
+    if (!postId) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to rate attached rulesets.', 'info');
+      return;
+    }
+
+    setForumActionBusyKey(`${postId}:rate-ruleset`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(postId)}/rate-ruleset`, {
+        method: 'POST',
+        body: JSON.stringify({ value })
+      });
+
+      if (response?.post) {
+        syncForumPostEverywhere(response.post);
+      }
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to update that ruleset rating.', 'error');
+    } finally {
+      setForumRatingPreview((current) => (current?.postId === postId ? null : current));
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleSaveEditorRulesetToProfile = async () => {
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to save custom rulesets to your profile library.', 'info');
+      return;
+    }
+
+    setEditorSaveBusy(true);
+
+    try {
+      const payload = getEditorRulesetPayload();
+      const response = await requestJson('/api/rulesets/save-to-profile', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      if (response?.ruleset) {
+        setSavedCustomRulesets((current) => {
+          const existingIndex = current.findIndex((ruleset) => ruleset.id === response.ruleset.id);
+          if (existingIndex === -1) {
+            return [response.ruleset, ...current];
+          }
+
+          const nextRulesets = [...current];
+          nextRulesets[existingIndex] = response.ruleset;
+          return nextRulesets;
+        });
+        setLibraryState((current) => ({
+          ...current,
+          savedRulesets: (() => {
+            const existingIndex = current.savedRulesets.findIndex((ruleset) => ruleset.id === response.ruleset.id);
+            if (existingIndex === -1) {
+              return [response.ruleset, ...current.savedRulesets];
+            }
+
+            const nextRulesets = [...current.savedRulesets];
+            nextRulesets[existingIndex] = response.ruleset;
+            return nextRulesets;
+          })()
+        }));
+      }
+
+      setEditorStatus(response?.message || 'Ruleset saved to your profile library.');
+      showTopPrompt(response?.message || 'Ruleset saved to your profile library.', 'success');
+    } catch (error) {
+      setEditorStatus(error.message || 'Unable to save that ruleset.');
+      showTopPrompt(error.message || 'Unable to save that ruleset to your profile.', 'error');
+    } finally {
+      setEditorSaveBusy(false);
+    }
+  };
+
+  const runForumSearch = async (query, { activateTab = true } = {}) => {
+    const trimmedQuery = String(query || '').trim();
+
+    if (!trimmedQuery) {
+      showTopPrompt('Type something into the search bar first.', 'info');
+      return;
+    }
+
+    setForumSearchState((current) => ({
+      ...current,
+      hasResultsTab: true,
+      query: trimmedQuery,
+      loading: true
+    }));
+
+    if (activateTab) {
+      setActiveTab('search-results');
+    }
+
+    try {
+      const response = await requestJson(`/api/forum/search?q=${encodeURIComponent(trimmedQuery)}`);
+      setForumSearchState((current) => ({
+        ...current,
+        hasResultsTab: true,
+        query: response?.query || trimmedQuery,
+        loading: false,
+        posts: Array.isArray(response?.posts) ? response.posts : [],
+        users: Array.isArray(response?.users) ? response.users : [],
+        friends: Array.isArray(response?.friends) ? response.friends : []
+      }));
+    } catch (error) {
+      setForumSearchState((current) => ({
+        ...current,
+        hasResultsTab: true,
+        query: trimmedQuery,
+        loading: false,
+        posts: [],
+        users: [],
+        friends: []
+      }));
+      showTopPrompt(error.message || 'Unable to load those search results right now.', 'error');
+    }
+  };
+
+  const handleForumSearchSubmit = async (event) => {
+    event?.preventDefault?.();
+    await runForumSearch(forumSearchInput);
+  };
+
   const handleLoginSubmit = async (event) => {
     event.preventDefault();
 
@@ -3796,14 +4647,21 @@ function App() {
   const navItems = [
     { id: 'play', label: 'Play', icon: Home },
     { id: 'library', label: 'Library', icon: Library },
-    { id: 'ruleset-rater', label: 'Ruleset Rater', icon: Users2 },
+    { id: 'ruleset-rater', label: 'Rentz Forum', icon: Users2 },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
-    { id: 'login', label: isAuthenticated ? 'Account' : 'Login', icon: isAuthenticated ? UserRound : LogIn }
+    { id: 'login', label: isAuthenticated ? 'Account' : 'Login', icon: isAuthenticated ? UserRound : LogIn },
+    ...(forumSearchState.hasResultsTab ? [{ id: 'search-results', label: 'Search results', icon: Search }] : [])
   ];
   const mobilePrimaryNavIds = new Set(['play', 'library', 'login']);
   const mobilePrimaryNavItems = navItems.filter((item) => mobilePrimaryNavIds.has(item.id));
   const mobileMoreNavItems = navItems.filter((item) => !mobilePrimaryNavIds.has(item.id));
   const isMobileMoreActive = mobileMoreNavItems.some((item) => item.id === activeTab);
+  const activeNavItem = navItems.find((item) => item.id === activeTab) || null;
+  const activeTabLabel = activeNavItem?.label
+    || ({
+      settings: 'Settings',
+      guide: 'Guide'
+    }[activeTab] || activeTab);
 
   const handleNavSelect = (tabId) => {
     setActiveTab(tabId);
@@ -4077,92 +4935,94 @@ function App() {
           <div className="status-pill px-3 py-2">{filledCount}/{limit}</div>
         </div>
 
-        <div className={gridClassName} style={gridStyle}>
-          {slots.map((index, slotIndex) => {
-            const definition = index == null ? null : getAccountRulesetDefinition(index);
+        <div className="overflow-x-auto pb-1">
+          <div className={gridClassName} style={gridStyle}>
+            {slots.map((index, slotIndex) => {
+              const definition = index == null ? null : getAccountRulesetDefinition(index);
 
-            if (isLoading) {
-              return (
-                <div
-                  key={`${fieldName}-loading-${slotIndex}`}
-                  className={clsx(cardShellClassName, 'h-full border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)]')}
-                >
-                  <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
-                    Card {slotIndex + 1}
-                  </div>
-                  <div className="mt-4 text-sm font-semibold text-[var(--text-secondary)]">
-                    Loading ruleset...
-                  </div>
-                </div>
-              );
-            }
-
-            if (!definition) {
-              return (
-                <div
-                  key={`${fieldName}-empty-${slotIndex}`}
-                  className={clsx(cardShellClassName, 'h-full items-center justify-center border-2 border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] text-center')}
-                >
-                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
-                    Empty slot
-                  </div>
-                  <p className="mt-2 max-w-[11rem] text-xs font-semibold leading-5 text-[var(--text-secondary)]">
-                    {emptyLabel}
-                  </p>
-                </div>
-              );
-            }
-
-            return (
-              <div
-                key={`${fieldName}-${definition.index}`}
-                className={clsx(cardShellClassName, 'h-full border border-slate-300/80 shadow-[0_14px_30px_rgba(15,23,42,0.10)]')}
-                style={{
-                  background: 'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(237,242,247,0.98) 100%)'
-                }}
-              >
-                <div className="min-w-0">
-                  <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-slate-500">Card {slotIndex + 1}</div>
+              if (isLoading) {
+                return (
                   <div
-                    className="mt-2 text-[0.95rem] font-black leading-5 text-slate-950 [overflow-wrap:anywhere]"
-                    style={{
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden'
-                    }}
+                    key={`${fieldName}-loading-${slotIndex}`}
+                    className={clsx(cardShellClassName, 'h-full border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)]')}
                   >
-                    {definition.label}
+                    <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                      Card {slotIndex + 1}
+                    </div>
+                    <div className="mt-4 text-sm font-semibold text-[var(--text-secondary)]">
+                      Loading ruleset...
+                    </div>
                   </div>
-                  <div className="mt-2 inline-flex rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700">
-                    {definition.abbreviation}
-                  </div>
-                </div>
+                );
+              }
 
-                <div className="mt-auto space-y-2 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => handleAccountRulesetPreview(definition.index)}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
+              if (!definition) {
+                return (
+                  <div
+                    key={`${fieldName}-empty-${slotIndex}`}
+                    className={clsx(cardShellClassName, 'h-full items-center justify-center border-2 border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] text-center')}
                   >
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    Code Preview
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPlayerProfileModal(null);
-                      handleAccountRulesetOpenInEditor(definition.index);
-                    }}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
-                  >
-                    <Settings className="h-3.5 w-3.5" />
-                    Open Editor
-                  </button>
+                    <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                      Empty slot
+                    </div>
+                    <p className="mt-2 max-w-[11rem] text-xs font-semibold leading-5 text-[var(--text-secondary)]">
+                      {emptyLabel}
+                    </p>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={`${fieldName}-${definition.index}`}
+                  className={clsx(cardShellClassName, 'h-full border border-slate-300/80 shadow-[0_14px_30px_rgba(15,23,42,0.10)]')}
+                  style={{
+                    background: 'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(237,242,247,0.98) 100%)'
+                  }}
+                >
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-extrabold uppercase tracking-[0.22em] text-slate-500">Card {slotIndex + 1}</div>
+                    <div
+                      className="mt-2 text-[0.95rem] font-black leading-5 text-slate-950 [overflow-wrap:anywhere]"
+                      style={{
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden'
+                      }}
+                    >
+                      {definition.label}
+                    </div>
+                    <div className="mt-2 inline-flex rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700">
+                      {definition.abbreviation}
+                    </div>
+                  </div>
+
+                  <div className="mt-auto space-y-2 pt-4">
+                    <button
+                      type="button"
+                      onClick={() => handleAccountRulesetPreview(definition.index)}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
+                    >
+                      <FileCode2 className="h-3.5 w-3.5" />
+                      Code Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlayerProfileModal(null);
+                        handleAccountRulesetOpenInEditor(definition.index);
+                      }}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      Open Editor
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </section>
     );
@@ -4187,7 +5047,7 @@ function App() {
           key="send"
           type="button"
           disabled={busy}
-          onClick={() => void runFriendAction('request', currentProfileTargetId, 'Friend request sent.')}
+          onClick={() => void runFriendAction('request', currentProfileTargetId, 'Friend request sent.', { updateProfileModal: true })}
           className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
         >
           {busy ? 'Sending...' : 'Send Friend Request'}
@@ -4199,7 +5059,7 @@ function App() {
           key="accept"
           type="button"
           disabled={busy}
-          onClick={() => void runFriendAction('accept', currentProfileTargetId, 'Friend request accepted.')}
+          onClick={() => void runFriendAction('accept', currentProfileTargetId, 'Friend request accepted.', { updateProfileModal: true })}
           className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
         >
           {busy ? 'Accepting...' : 'Accept Request'}
@@ -4211,10 +5071,7 @@ function App() {
           type="button"
           disabled={busy}
           onClick={async () => {
-            const success = await runFriendAction('reject', currentProfileTargetId, 'Friend request rejected.');
-            if (success) {
-              setPlayerProfileModal((current) => current ? { ...current } : current);
-            }
+            await runFriendAction('reject', currentProfileTargetId, 'Friend request rejected.', { updateProfileModal: true });
           }}
           className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
         >
@@ -4227,7 +5084,7 @@ function App() {
           key="cancel"
           type="button"
           disabled={busy}
-          onClick={() => void runFriendAction('cancel', currentProfileTargetId, 'Friend request canceled.')}
+          onClick={() => void runFriendAction('cancel', currentProfileTargetId, 'Friend request canceled.', { updateProfileModal: true })}
           className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
         >
           {busy ? 'Canceling...' : 'Cancel Request'}
@@ -4239,7 +5096,7 @@ function App() {
           key="remove"
           type="button"
           disabled={busy}
-          onClick={() => void runFriendAction('remove', currentProfileTargetId, 'Friend removed.')}
+          onClick={() => void runFriendAction('remove', currentProfileTargetId, 'Friend removed.', { updateProfileModal: true })}
           className="rounded-[1.3rem] border border-red-200/80 bg-red-100/80 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
         >
           {busy ? 'Removing...' : 'Remove Friend'}
@@ -4349,7 +5206,7 @@ function App() {
           </div>
 
           {!playerProfileModal.guest && (
-            <div className="grid gap-5 xl:grid-cols-2">
+            <div className="grid gap-5 min-[1800px]:grid-cols-2">
               {renderReadonlyProfileRulesetDeck({
                 profile: playerProfileModal,
                 title: 'Favourite Rulesets',
@@ -6436,6 +7293,15 @@ function App() {
               <span className="rentz-editor-action-meta">Keep this ruleset in your local draft list.</span>
             </span>
           </button>
+          <button onClick={handleSaveEditorRulesetToProfile} disabled={editorSaveBusy} className="rentz-editor-action is-positive disabled:cursor-not-allowed disabled:opacity-70">
+            <span className="rentz-editor-action-icon">
+              <Library className="h-5 w-5" />
+            </span>
+            <span className="rentz-editor-action-copy">
+              <span className="rentz-editor-action-title">{editorSaveBusy ? 'Saving...' : 'Save Ruleset to Profile'}</span>
+              <span className="rentz-editor-action-meta">Store this custom ruleset in your profile library without duplicating repeats.</span>
+            </span>
+          </button>
           <button onClick={handleDownloadRentzRuleset} className="rentz-editor-action">
             <span className="rentz-editor-action-icon">
               <Download className="h-5 w-5" />
@@ -7344,6 +8210,990 @@ endif`}
     </div>
   );
 
+  const renderForumComposer = ({
+    draft,
+    busy = false,
+    onTextChange,
+    onRulesetChange,
+    onMediaChange,
+    onClearMedia,
+    onSubmit,
+    submitLabel,
+    placeholder,
+    compact = false,
+    onCancel = null,
+    title = 'Share with Rentz Forum',
+    description = 'Every post is public. Friend posts stay pinned above the broader community feed.'
+  }) => {
+    const attachmentOptions = Array.isArray(savedCustomRulesets) ? savedCustomRulesets : [];
+    const attachedRuleset = attachmentOptions.find((option) => String(option.id) === String(draft.attachedRulesetIndex));
+
+    return (
+      <form
+        onSubmit={onSubmit}
+        className={clsx(
+          'rounded-[1.8rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] shadow-[0_18px_36px_rgba(15,23,42,0.08)]',
+          compact ? 'p-4 sm:p-5' : 'glass-panel p-5 sm:p-7'
+        )}
+      >
+        <div className={clsx('space-y-5', compact ? 'space-y-4' : 'space-y-6')}>
+          {!compact && (
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">Public thread post</div>
+                <h3 className="mt-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">{title}</h3>
+                <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-[var(--text-secondary)]">{description}</p>
+              </div>
+              <div className="status-pill px-3 py-2">Public</div>
+            </div>
+          )}
+
+          <div className={clsx(
+            'grid gap-4 rounded-[1.55rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 sm:p-5',
+            compact ? 'grid-cols-1' : 'sm:grid-cols-[auto_minmax(0,1fr)]'
+          )}>
+            <div className="flex justify-center sm:justify-start">
+              <AvatarFace
+                player={userProfile || { avatarUrl: DEFAULT_REGISTER_PROFILE_PREVIEW, name: 'You' }}
+                alt="Your avatar"
+                wrapperClassName={clsx('seat-avatar text-sm', compact ? 'h-12 w-12' : 'h-16 w-16')}
+                imageClassName="h-full w-full rounded-full object-cover"
+                fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+              />
+            </div>
+
+            <div className="min-w-0 space-y-4">
+              <label className="block">
+                <span className="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                  {submitLabel === 'Reply' ? 'Reply text' : 'Post text'}
+                </span>
+                <textarea
+                  value={draft.text}
+                  onChange={(event) => onTextChange(event.target.value)}
+                  rows={compact ? 4 : 6}
+                  placeholder={placeholder}
+                  className="min-h-[9rem] w-full rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-4 py-3 text-sm font-semibold leading-6 text-[var(--text-primary)] outline-none transition focus:ring-4 focus:ring-[var(--accent-glow)]"
+                />
+              </label>
+
+              {draft.mediaPreview && (
+                <div className="overflow-hidden rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-medium)]">
+                  <img src={draft.mediaPreview} alt="" className="max-h-[22rem] w-full object-cover" />
+                  <div className="flex items-center justify-between gap-3 border-t border-[var(--glass-border)] p-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-secondary)]">Attached image / gif</div>
+                    <button
+                      type="button"
+                      onClick={onClearMedia}
+                      className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    >
+                      Remove media
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <label className="block">
+                  <span className="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">Attach custom ruleset</span>
+                  <select
+                    value={draft.attachedRulesetIndex}
+                    onChange={(event) => onRulesetChange(event.target.value)}
+                    className="w-full rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-4 py-3 text-sm font-black text-[var(--text-primary)] outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+                  >
+                    <option value="">No ruleset</option>
+                    {attachmentOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {(option.label || option.title || 'Untitled Ruleset')}
+                        {option.abbreviation ? ` (${option.abbreviation})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
+                    {attachmentOptions.length === 0
+                      ? 'Save a custom ruleset from the editor or forum to attach it here. Built-in rulesets are not attachable.'
+                      : attachedRuleset
+                        ? `Selected: ${attachedRuleset.label || attachedRuleset.title || 'Untitled Ruleset'}`
+                        : 'Only custom rulesets can be attached to forum posts and replies.'}
+                  </div>
+                </label>
+
+                <div className="rounded-[1.25rem] border border-[var(--glass-border)] bg-[var(--surface-input)] p-4">
+                  <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">Media upload</div>
+                  <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                      PNG, JPEG, WebP, or GIF up to 4 MB.
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]">
+                      <ImagePlus className="h-4 w-4" />
+                      {draft.mediaPreview ? 'Replace media' : 'Add image / gif'}
+                      <input type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" onChange={onMediaChange} className="hidden" />
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 border-t border-[var(--glass-border)] pt-4 sm:flex-row sm:justify-end">
+                {onCancel && (
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="frutiger-button inline-flex min-w-[10rem] items-center justify-center gap-2 px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <SendHorizontal className="h-4 w-4" />
+                  {busy ? 'Posting...' : submitLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+    );
+  };
+
+  const renderForumUserPreviewCard = (entry, { eyebrow = 'User result' } = {}) => (
+    <button
+      key={entry.userId}
+      type="button"
+      onClick={() => void openPlayerProfileModal(entry)}
+      className="overflow-hidden rounded-[1.7rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] text-left shadow-[0_14px_32px_rgba(15,23,42,0.08)] transition hover:-translate-y-0.5 hover:bg-[var(--surface-medium)]"
+    >
+      <div className="h-28 w-full bg-[var(--surface-medium)]">
+        {entry.banner ? (
+          <img src={entry.banner} alt="" className="h-full w-full object-cover" />
+        ) : null}
+      </div>
+      <div className="relative p-5">
+        <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">{eyebrow}</div>
+        <div className="-mt-1 flex items-end gap-4">
+          <AvatarFace
+            player={entry}
+            alt={`${getPlayerName(entry)} avatar`}
+            wrapperClassName="seat-avatar h-20 w-20 text-lg border-4 border-white/80 bg-white"
+            imageClassName="h-full w-full rounded-full object-cover"
+            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+          />
+          <div className="min-w-0 pb-2">
+            <div className="truncate text-xl font-black text-[var(--text-primary)]">{getPlayerName(entry)}</div>
+            <div className="mt-1 inline-flex items-center gap-2 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+              ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+
+  const renderForumRatingControl = (entry) => {
+    if (!entry?.attachedRuleset) {
+      return null;
+    }
+
+    const viewerRating = Number(entry.attachedRuleset.viewerRating || 0);
+    const previewRating = forumRatingPreview?.postId === entry.id
+      ? Number(forumRatingPreview.value || 0)
+      : null;
+    const displayRating = previewRating ?? viewerRating;
+    const ratingBusy = forumActionBusyKey === `${entry.id}:rate-ruleset`;
+
+    return (
+      <div
+        className="flex flex-wrap items-center justify-end gap-3 sm:flex-nowrap"
+        onMouseLeave={() => setForumRatingPreview((current) => (current?.postId === entry.id ? null : current))}
+      >
+        <span className="shrink-0 whitespace-nowrap text-[10px] font-extrabold uppercase tracking-[0.14em] text-slate-500">
+          {displayRating > 0 ? `${displayRating.toFixed(1)} stars` : 'Rate'}
+        </span>
+        <div className="flex items-center gap-1.5 rounded-full border border-slate-300 bg-white px-2 py-1.5 shadow-[0_4px_12px_rgba(15,23,42,0.08)]">
+          {Array.from({ length: 5 }, (_value, index) => {
+            const fill = clampNumber(displayRating - index, 0, 1);
+            const leftValue = index + 0.5;
+            const rightValue = index + 1;
+
+            return (
+              <div key={`${entry.id}-star-${index}`} className="relative h-9 w-9">
+                <svg viewBox="0 0 24 24" className="absolute inset-0 h-9 w-9 text-slate-300" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+                  />
+                </svg>
+                <div
+                  className="absolute inset-y-0 left-0 overflow-hidden"
+                  style={{ width: `${fill * 100}%` }}
+                  aria-hidden="true"
+                >
+                  <svg viewBox="0 0 24 24" className="h-9 w-9 text-amber-500">
+                    <path
+                      fill="currentColor"
+                      d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+                    />
+                  </svg>
+                </div>
+                <button
+                  type="button"
+                  disabled={ratingBusy}
+                  onMouseEnter={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
+                  onFocus={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
+                  onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleForumRateRuleset(entry.id, leftValue);
+                  }}
+                  className="absolute inset-y-0 left-0 w-1/2 rounded-l-full disabled:cursor-not-allowed"
+                  aria-label={`Rate ${leftValue} stars`}
+                />
+                <button
+                  type="button"
+                  disabled={ratingBusy}
+                  onMouseEnter={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
+                  onFocus={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
+                  onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleForumRateRuleset(entry.id, rightValue);
+                  }}
+                  className="absolute inset-y-0 right-0 w-1/2 rounded-r-full disabled:cursor-not-allowed"
+                  aria-label={`Rate ${rightValue} stars`}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderForumRulesetAttachment = (entry, { compact = false } = {}) => {
+    if (!entry?.attachedRuleset) {
+      return null;
+    }
+
+    const creator = entry.attachedRuleset.originalCreator;
+    const previewBusy = forumActionBusyKey === `${entry.id}:preview-ruleset`;
+    const copyBusy = forumActionBusyKey === `${entry.id}:copy-ruleset`;
+    const saveBusy = forumActionBusyKey === `${entry.id}:save-ruleset`;
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          disabled={previewBusy}
+          onClick={(event) => {
+            event.stopPropagation();
+            void handleForumPreviewRuleset(entry.id);
+          }}
+          className="rounded-[1rem] border border-slate-300 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {previewBusy ? 'Opening...' : 'Preview Ruleset'}
+        </button>
+        <button
+          type="button"
+          disabled={copyBusy}
+          onClick={(event) => {
+            event.stopPropagation();
+            void handleForumCopyRulesetToEditor(entry.id);
+          }}
+          className="rounded-[1rem] border border-slate-300 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {copyBusy ? 'Copying...' : 'Copy to Editor'}
+        </button>
+        <button
+          type="button"
+          disabled={saveBusy}
+          onClick={(event) => {
+            event.stopPropagation();
+            openForumRulesetSaveChoice(entry);
+          }}
+          className="rounded-[1rem] border border-emerald-300 bg-emerald-100 px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {saveBusy ? 'Saving...' : 'Save to Profile'}
+        </button>
+      </>
+    );
+
+    return (
+      <div className="group relative mt-4 overflow-hidden rounded-[1.55rem] border border-[var(--glass-border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.92)_0%,rgba(233,240,247,0.96)_100%)] p-5 shadow-[0_16px_36px_rgba(15,23,42,0.12)]">
+        <div className={compact ? '' : 'pr-24'}>
+          <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-slate-500">Attached ruleset</div>
+          <div className="mt-3 text-xl font-black text-slate-950 sm:text-[1.75rem]">{entry.attachedRuleset.label}</div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-slate-700">
+            {entry.attachedRuleset.abbreviation && (
+              <span className="rounded-full border border-slate-300 bg-white px-3 py-1">{entry.attachedRuleset.abbreviation}</span>
+            )}
+            <span className="rounded-full border border-slate-300 bg-white/70 px-3 py-1">
+              {entry.attachedRuleset.type === 'end_game' ? 'End Game' : 'Per Round'}
+            </span>
+          </div>
+
+          {creator && (
+            <div className="mt-4 flex items-center gap-3 rounded-[1.15rem] border border-slate-300/80 bg-white/70 px-3 py-2.5">
+              <AvatarFace
+                player={creator}
+                alt={`${getPlayerName(creator)} avatar`}
+                wrapperClassName="seat-avatar h-10 w-10 text-xs border border-white/90 bg-white"
+                imageClassName="h-full w-full rounded-full object-cover"
+                fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+              />
+              <div className="min-w-0">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-slate-500">Original creator</div>
+                <div className="truncate text-sm font-black text-slate-900">Created by {getPlayerName(creator)}</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!compact && (
+          <>
+            <div className="hidden gap-2 md:absolute md:right-4 md:top-4 md:flex md:flex-col md:opacity-0 md:transition md:group-hover:opacity-100">
+              {actionButtons}
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2 md:hidden">
+              {actionButtons}
+            </div>
+          </>
+        )}
+
+        <div className={clsx('mt-5 flex items-end justify-between gap-3', compact && 'mt-4')}>
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-black uppercase tracking-[0.14em] text-slate-700">
+            <Star className="h-3.5 w-3.5 fill-current" />
+            {formatForumRatingLabel(entry.attachedRuleset.averageRating)}
+          </div>
+
+          {!compact && (
+            <div className="max-w-full sm:pl-3">
+              {renderForumRatingControl(entry)}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderForumEntryCard = (entry, {
+    compact = false,
+    depth = 0,
+    interactive = true,
+    showReplies = false,
+    switchTabOnOpen = false
+  } = {}) => {
+    if (!entry) {
+      return null;
+    }
+
+    const actionBusy = (action) => forumActionBusyKey === `${entry.id}:${action}`;
+    const rating = getPlayerRating(entry.author);
+    const showMetadata = !compact;
+    const isDeleted = Boolean(entry.isDeleted);
+    const isOwner = getPlayerUserId(entry.author) && getPlayerUserId(entry.author) === String(userProfile?.userId || '');
+
+    const openThread = () => {
+      if (!interactive || !entry.id) {
+        return;
+      }
+
+      void loadForumThread(entry.id, { switchTab: switchTabOnOpen });
+    };
+
+    return (
+      <article
+        key={`${entry.id}-${compact ? 'compact' : 'full'}`}
+        role={interactive ? 'button' : undefined}
+        tabIndex={interactive ? 0 : undefined}
+        onClick={openThread}
+        onKeyDown={interactive
+          ? (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openThread();
+            }
+          }
+          : undefined}
+        className={clsx(
+          'rounded-[1.8rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-left shadow-[0_14px_32px_rgba(15,23,42,0.08)] transition sm:p-5',
+          interactive && 'cursor-pointer hover:-translate-y-0.5 hover:bg-[var(--surface-medium)]',
+          depth > 0 && 'ml-2 sm:ml-4'
+        )}
+      >
+        <div className="flex items-start gap-4">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void openPlayerProfileModal(entry.author);
+            }}
+            className="shrink-0 text-left"
+            title={`View ${getPlayerName(entry.author)}'s profile`}
+          >
+            <AvatarFace
+              player={entry.author}
+              alt={`${getPlayerName(entry.author)} avatar`}
+              wrapperClassName={clsx('seat-avatar text-sm', compact ? 'h-11 w-11' : 'h-14 w-14')}
+              imageClassName="h-full w-full rounded-full object-cover"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+            />
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void openPlayerProfileModal(entry.author);
+                  }}
+                  className="truncate text-left text-lg font-black text-[var(--text-primary)] transition hover:opacity-80"
+                >
+                  {getPlayerName(entry.author)}
+                </button>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1">
+                    ELO {rating == null ? '--' : rating}
+                  </span>
+                  {showMetadata && <span>{formatForumTimestamp(entry.createdAt)}</span>}
+                  {showMetadata && entry.isFriendAuthor && (
+                    <span className="rounded-full border border-emerald-300 bg-emerald-100 px-3 py-1 text-emerald-950">
+                      Friend post
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {!compact && isOwner && !isDeleted && (
+                <button
+                  type="button"
+                  disabled={actionBusy('delete')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setForumDeleteTarget(entry);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {actionBusy('delete') ? 'Deleting...' : 'Delete'}
+                </button>
+              )}
+            </div>
+
+            {isDeleted ? (
+              <div className="mt-4 rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                This post was deleted.
+              </div>
+            ) : entry.text && (
+              <div className={clsx(
+                'mt-4 whitespace-pre-wrap break-words font-semibold text-[var(--text-primary)]',
+                compact ? 'text-sm leading-6' : 'text-base leading-7'
+              )}
+              >
+                {entry.text}
+              </div>
+            )}
+
+            {!isDeleted && entry.media?.url && (
+              <div className="mt-4 overflow-hidden rounded-[1.55rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)]">
+                <img src={entry.media.url} alt="" className="max-h-[34rem] w-full object-cover" />
+              </div>
+            )}
+
+            {!isDeleted && renderForumRulesetAttachment(entry, { compact })}
+
+            {!compact && !isDeleted && (
+              <div className="mt-5 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                <button
+                  type="button"
+                  disabled={actionBusy('like')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleForumEntryAction(entry.id, 'like', {
+                      loginPrompt: 'Log in to like Rentz Forum posts.'
+                    });
+                  }}
+                  className={clsx(
+                    'inline-flex items-center gap-2 rounded-full border px-3 py-2 transition disabled:cursor-not-allowed disabled:opacity-70',
+                    entry.likedByViewer
+                      ? 'border-rose-200 bg-rose-100 text-rose-900'
+                      : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  )}
+                >
+                  <Heart className={clsx('h-4 w-4', entry.likedByViewer && 'fill-current')} />
+                  Like {entry.likeCount > 0 ? entry.likeCount : ''}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setForumReplyTarget(entry);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                >
+                  <MessageCircle className="h-4 w-4" />
+                  Comment {entry.replyCount > 0 ? entry.replyCount : ''}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={actionBusy('bookmark')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleForumEntryAction(entry.id, 'bookmark', {
+                      loginPrompt: 'Log in to save Rentz Forum posts.'
+                    });
+                  }}
+                  className={clsx(
+                    'inline-flex items-center gap-2 rounded-full border px-3 py-2 transition disabled:cursor-not-allowed disabled:opacity-70',
+                    entry.bookmarkedByViewer
+                      ? 'border-amber-200 bg-amber-100 text-amber-950'
+                      : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  )}
+                >
+                  <Bookmark className={clsx('h-4 w-4', entry.bookmarkedByViewer && 'fill-current')} />
+                  Save {entry.bookmarkCount > 0 ? entry.bookmarkCount : ''}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {!compact && showReplies && (entry.replies || []).length > 0 && (
+          <div className="mt-5 space-y-3 border-t border-[var(--glass-border)] pt-4">
+            {(entry.replies || []).map((reply) => renderForumEntryCard(reply, {
+              depth: depth + 1,
+              showReplies: true
+            }))}
+          </div>
+        )}
+      </article>
+    );
+  };
+
+  const renderSavedRulesetCard = (ruleset) => (
+    <div key={ruleset.id} className="rounded-[1.55rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-lg font-black text-[var(--text-primary)]">{ruleset.label || ruleset.title || 'Untitled Ruleset'}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+            {ruleset.abbreviation && (
+              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1">{ruleset.abbreviation}</span>
+            )}
+            <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1">
+              {ruleset.type === 'end_game' ? 'End Game' : 'Per Round'}
+            </span>
+          </div>
+        </div>
+        <div className="inline-flex items-center gap-1 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+          <Star className="h-3.5 w-3.5" />
+          {formatForumRatingLabel(ruleset.averageRating)}
+        </div>
+      </div>
+
+      {ruleset.originalCreator && (
+        <div className="mt-4 flex items-center gap-3 rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-2.5">
+          <AvatarFace
+            player={ruleset.originalCreator}
+            alt={`${getPlayerName(ruleset.originalCreator)} avatar`}
+            wrapperClassName="seat-avatar h-10 w-10 text-xs"
+            imageClassName="h-full w-full rounded-full object-cover"
+            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+          />
+          <div className="min-w-0">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Original creator</div>
+            <div className="truncate text-sm font-black text-[var(--text-primary)]">{getPlayerName(ruleset.originalCreator)}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setRulesetPreview({
+            label: ruleset.label || ruleset.title,
+            abbreviation: ruleset.abbreviation || ruleset.shortName,
+            type: ruleset.type,
+            code: ruleset.code
+          })}
+          className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+        >
+          Preview
+        </button>
+        <button
+          type="button"
+          onClick={() => populateEditorFromRuleset({
+            longName: ruleset.label || ruleset.title,
+            shortName: ruleset.abbreviation || ruleset.shortName,
+            type: ruleset.type,
+            code: ruleset.code
+          }, {
+            linkedRoomRulesetId: null,
+            switchToEditor: true
+          })}
+          className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+        >
+          Open in Editor
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderLibraryContent = () => {
+    if (!isAuthenticated) {
+      return renderPlaceholderModule(
+        'Library',
+        'Log in to see saved custom rulesets, bookmarked Rentz Forum ruleset previews, future match history, and future saved games.'
+      );
+    }
+
+    return (
+      <div className="space-y-5">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+          <div className="grid gap-5">
+            <section className="glass-panel p-5 sm:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Saved Rulesets</h4>
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    {libraryState.savedRulesets.length} saved
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadLibraryData()}
+                    disabled={libraryState.loading}
+                    className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2.5 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                    title="Refresh library"
+                  >
+                    <RefreshCw className={clsx('h-4 w-4', libraryState.loading && 'animate-spin')} />
+                  </button>
+                </div>
+              </div>
+              {libraryState.loading && libraryState.savedRulesets.length === 0 ? (
+                <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                  Loading saved rulesets...
+                </div>
+              ) : libraryState.savedRulesets.length === 0 ? (
+                <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                  Save a custom ruleset from the editor or from a forum attachment to see it here.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {libraryState.savedRulesets.map((ruleset) => renderSavedRulesetCard(ruleset))}
+                </div>
+              )}
+            </section>
+
+            <div className="grid gap-5 md:grid-cols-2">
+              <section className="glass-panel p-5 sm:p-6">
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Match History</h4>
+                <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                  Match history is not implemented yet. This panel is reserved for your completed Rentz sessions.
+                </p>
+              </section>
+
+              <section className="glass-panel p-5 sm:p-6">
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Saved Games</h4>
+                <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                  Saved games are not implemented yet. This panel is reserved for suspended games and resumable tables.
+                </p>
+              </section>
+            </div>
+          </div>
+
+          <section className="glass-panel p-5 sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Bookmarked Post Previews</h4>
+              <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                {libraryState.bookmarkedRulesetPosts.length} saved
+              </div>
+            </div>
+
+            {libraryState.loading && libraryState.bookmarkedRulesetPosts.length === 0 ? (
+              <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                Loading bookmarked forum previews...
+              </div>
+            ) : libraryState.bookmarkedRulesetPosts.length === 0 ? (
+              <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                Bookmark forum posts with attached rulesets to collect quick previews here.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {libraryState.bookmarkedRulesetPosts.map((entry) => renderForumEntryCard(entry, {
+                  compact: true,
+                  switchTabOnOpen: true
+                }))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    );
+  };
+
+  const renderForumContent = () => (
+    <div className="relative space-y-5 pb-28">
+      {isForumComposerOpen && (
+        <ModalShell
+          title="Create Post"
+          eyebrow="Rentz Forum"
+          onClose={() => setIsForumComposerOpen(false)}
+          wide
+          panelClassName="max-w-4xl"
+        >
+          {renderForumComposer({
+            draft: forumComposerDraft,
+            busy: forumComposerBusy,
+            onTextChange: (text) => setForumComposerDraft((current) => ({ ...current, text })),
+            onRulesetChange: (value) => setForumComposerDraft((current) => ({ ...current, attachedRulesetIndex: value })),
+            onMediaChange: handleForumComposerMediaChange,
+            onClearMedia: () => setForumComposerDraft((current) => {
+              revokeObjectPreview(current.mediaPreview);
+              return {
+                ...current,
+                mediaFile: null,
+                mediaPreview: ''
+              };
+            }),
+            onSubmit: handleSubmitForumComposer,
+            submitLabel: 'Post',
+            placeholder: 'What are you playing, testing, or arguing about in Rentz today?',
+            onCancel: () => setIsForumComposerOpen(false),
+            title: 'Create a Rentz Forum post',
+            description: 'Write a public forum post, optionally add media, and attach one of your saved custom rulesets.'
+          })}
+        </ModalShell>
+      )}
+
+      {forumReplyTarget && (
+        <ModalShell
+          title="Add Comment"
+          eyebrow="Thread reply"
+          onClose={() => setForumReplyTarget(null)}
+          wide
+          panelClassName="max-w-4xl"
+        >
+          <div className="space-y-5">
+            <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Reply target</div>
+              <div className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                Replying to {getPlayerName(forumReplyTarget.author)} in this thread.
+              </div>
+            </div>
+            {renderForumEntryCard(forumReplyTarget, { compact: true, interactive: false })}
+            {renderForumComposer({
+              draft: forumReplyDrafts[forumReplyTarget.id] || createForumDraft(),
+              busy: forumReplyBusyId === forumReplyTarget.id,
+              onTextChange: (text) => updateForumReplyDraft(forumReplyTarget.id, { text }),
+              onRulesetChange: (value) => updateForumReplyDraft(forumReplyTarget.id, { attachedRulesetIndex: value }),
+              onMediaChange: (event) => handleForumReplyMediaChange(forumReplyTarget.id, event),
+              onClearMedia: () => updateForumReplyDraft(forumReplyTarget.id, (current) => {
+                revokeObjectPreview(current.mediaPreview);
+                return {
+                  ...current,
+                  mediaFile: null,
+                  mediaPreview: ''
+                };
+              }),
+              onSubmit: (event) => {
+                event.preventDefault();
+                void handleSubmitForumReply(forumReplyTarget.id);
+              },
+              submitLabel: 'Reply',
+              placeholder: 'Write a threaded reply...',
+              onCancel: () => setForumReplyTarget(null),
+              title: 'Write your reply',
+              description: 'Replies behave like thread posts and can include media or one of your saved custom rulesets.'
+            })}
+          </div>
+        </ModalShell>
+      )}
+
+      {!isAuthenticated && (
+        <div className="rounded-[1.5rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+          You can browse every public post without signing in. Logging in is required for posting, likes, replies, bookmarks, rating attached rulesets, and saving custom rulesets to your profile library.
+        </div>
+      )}
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between gap-3 px-1">
+          <div>
+            <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
+              {forumView === 'thread' ? 'Thread View' : 'Public Feed'}
+            </h3>
+            <p className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+              {forumView === 'thread'
+                ? 'Parent previews stay above the selected post, and replies continue below like a social thread.'
+                : 'Friend posts are shown first, then the rest of the community, with newest posts leading each group.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {forumView === 'thread' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setForumView('feed');
+                  setForumThread(null);
+                }}
+                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              >
+                Back
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (forumView === 'thread' && forumThread?.selected?.id) {
+                  void loadForumThread(forumThread.selected.id);
+                  return;
+                }
+
+                void loadForumFeed();
+              }}
+              disabled={forumFeedLoading || forumThreadLoading}
+              className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-3 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+              title={forumView === 'thread' ? 'Refresh thread' : 'Refresh forum feed'}
+            >
+              <RefreshCw className={clsx('h-4 w-4', (forumFeedLoading || forumThreadLoading) && 'animate-spin')} />
+            </button>
+          </div>
+        </div>
+
+        {forumView === 'thread' ? (
+          forumThreadLoading && !forumThread?.selected ? (
+            <div className="glass-panel p-6 text-sm font-semibold text-[var(--text-secondary)]">Loading thread...</div>
+          ) : !forumThread?.selected ? (
+            <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              That thread could not be loaded right now. Use Back to return to the feed.
+            </div>
+          ) : (
+            <div className="mx-auto w-full space-y-4 lg:w-1/2">
+              {(forumThread.parents || []).map((entry) => renderForumEntryCard(entry, { compact: true }))}
+              {renderForumEntryCard(forumThread.selected, {
+                interactive: false,
+                showReplies: true
+              })}
+            </div>
+          )
+        ) : forumFeedLoading && forumFeed.length === 0 ? (
+          <div className="glass-panel p-6 text-sm font-semibold text-[var(--text-secondary)]">Loading public forum posts...</div>
+        ) : forumFeed.length === 0 ? (
+          <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+            No public posts have been shared yet. The first post here will become the start of Rentz Forum.
+          </div>
+        ) : (
+          <div className="mx-auto w-full space-y-4 lg:w-1/2">
+            {forumFeed.map((entry) => renderForumEntryCard(entry))}
+          </div>
+        )}
+      </section>
+
+      <button
+        type="button"
+        onClick={() => {
+          if (!isAuthenticated) {
+            setActiveTab('login');
+            showTopPrompt('Log in to create a Rentz Forum post.', 'info');
+            return;
+          }
+
+          setIsForumComposerOpen(true);
+        }}
+        className="fixed bottom-24 right-4 z-[55] flex h-16 w-16 items-center justify-center rounded-full border-2 border-white/80 text-[var(--nav-active-text)] shadow-[var(--nav-active-shadow)] transition hover:scale-[1.05] hover:brightness-105 focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)] active:scale-[0.98] md:bottom-8 md:right-8"
+        style={{
+          background: 'var(--nav-active-bg)',
+          boxShadow: 'var(--nav-active-shadow), 0 0 0 6px color-mix(in srgb, var(--surface-soft) 42%, transparent)'
+        }}
+        title="Create a post"
+      >
+        <Plus className="h-7 w-7" strokeWidth={3} />
+      </button>
+    </div>
+  );
+
+  const renderSearchResultsContent = () => {
+    const activeResults = forumSearchState.activeView === 'posts'
+      ? forumSearchState.posts
+      : forumSearchState.activeView === 'friends'
+        ? forumSearchState.friends
+        : forumSearchState.users;
+
+    return (
+      <div className="space-y-5">
+        <section className="glass-panel p-5 sm:p-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Search preview</div>
+              <div className="mt-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
+                “{forumSearchState.query || 'No search yet'}”
+              </div>
+              <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                Posts match public post text only. Users and Friends match account usernames and open the existing profile preview.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'posts', label: `Posts (${forumSearchState.posts.length})` },
+                { id: 'users', label: `Users (${forumSearchState.users.length})` },
+                { id: 'friends', label: `Friends (${forumSearchState.friends.length})` }
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setForumSearchState((current) => ({ ...current, activeView: option.id }))}
+                  className={clsx(
+                    'rounded-full border px-4 py-2 text-sm font-black uppercase tracking-[0.14em] transition',
+                    forumSearchState.activeView === option.id
+                      ? 'border-white/80 text-[var(--nav-active-text)] shadow-[var(--nav-active-shadow)]'
+                      : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  )}
+                  style={forumSearchState.activeView === option.id ? { background: 'var(--nav-active-bg)' } : {}}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {forumSearchState.loading ? (
+          <div className="glass-panel p-6 text-sm font-semibold text-[var(--text-secondary)]">Loading search results...</div>
+        ) : forumSearchState.activeView === 'posts' ? (
+          forumSearchState.posts.length === 0 ? (
+            <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              No public posts matched that search text.
+            </div>
+          ) : (
+            <div className="mx-auto w-full space-y-4 lg:w-1/2">
+              {forumSearchState.posts.map((entry) => renderForumEntryCard(entry, { compact: true, switchTabOnOpen: true }))}
+            </div>
+          )
+        ) : forumSearchState.activeView === 'friends' && !isAuthenticated ? (
+          <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+            Log in to filter your own friends list here.
+          </div>
+        ) : activeResults.length === 0 ? (
+          <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+            {forumSearchState.activeView === 'friends'
+              ? 'No friends matched that search.'
+              : 'No users matched that search.'}
+          </div>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {activeResults.map((entry) => renderForumUserPreviewCard(entry, {
+              eyebrow: forumSearchState.activeView === 'friends' ? 'Friend result' : 'User result'
+            }))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderMainContent = () => {
     if (activeTab === 'play') {
       return renderPlayContent();
@@ -7407,17 +9257,15 @@ endif`}
     }
 
     if (activeTab === 'library') {
-      return renderPlaceholderModule(
-        'Library',
-        'Saved rulesets, picks from the Ruleset Rater, and your own authored presets will be surfaced here. The editor tab now gives us the creation flow to pair with this library view.'
-      );
+      return renderLibraryContent();
     }
 
     if (activeTab === 'ruleset-rater') {
-      return renderPlaceholderModule(
-        'Ruleset Rater',
-        'Shared community rulesets will appear here with ratings, downloads, and quick-save actions once the Ruleset Rater endpoints are fully hooked up.'
-      );
+      return renderForumContent();
+    }
+
+    if (activeTab === 'search-results') {
+      return renderSearchResultsContent();
     }
 
     return null;
@@ -7426,21 +9274,42 @@ endif`}
   return (
     <div className="app-shell relative min-h-screen w-full overflow-hidden p-0 pt-2 font-sans transition-colors duration-700 sm:pt-4 md:p-3 md:pt-3 lg:p-4">
       <div className="app-window macos-window relative z-20 mx-auto flex h-[calc(100dvh-0.5rem)] w-full max-w-[1680px] flex-col border border-[var(--glass-border)] shadow-2xl transition-colors duration-500 sm:h-[calc(100dvh-1rem)] md:h-[96vh]">
-        <div className="relative z-30 flex h-14 shrink-0 items-center border-b border-[var(--glass-border)] px-3 shadow-sm transition-colors duration-500 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
-          <div className="flex w-20 gap-2.5 md:w-24">
+        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center gap-3 border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
+          <div className="flex w-auto shrink-0 gap-2.5 md:w-24">
             <div className="h-3.5 w-3.5 rounded-full border border-[#e0443e] bg-[#ff5f56] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             <div className="h-3.5 w-3.5 rounded-full border border-[#dea123] bg-[#ffbd2e] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             <div className="h-3.5 w-3.5 rounded-full border border-[#1aab29] bg-[#27c93f] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
           </div>
 
-          <div className="flex flex-1 items-center justify-center gap-2">
-            <Droplet fill="currentColor" className="h-4 w-4 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
-            <span className="font-display text-[10px] font-semibold uppercase tracking-widest text-[var(--text-primary)] opacity-60 sm:text-xs">
-              Rentz Arena
-            </span>
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className="flex shrink-0 items-center gap-2">
+              <Droplet fill="currentColor" className="h-4 w-4 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
+              <span className="font-display text-[10px] font-semibold uppercase tracking-widest text-[var(--text-primary)] opacity-60 sm:text-xs">
+                Rentz Arena
+              </span>
+            </div>
+
+            <form onSubmit={handleForumSearchSubmit} className="ml-auto w-full max-w-[10.5rem] min-w-0 sm:max-w-[12rem] md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
+              <div className="flex items-center gap-1.5 rounded-full border border-[var(--glass-border)] bg-[var(--surface-input)] px-2.5 py-1.5 shadow-[inset_0_1px_2px_rgba(255,255,255,0.35)]">
+                <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
+                <input
+                  value={forumSearchInput}
+                  onChange={(event) => setForumSearchInput(event.target.value)}
+                  placeholder="Search"
+                  className="min-w-0 flex-1 bg-transparent text-xs font-semibold text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)] sm:text-sm"
+                />
+                <button
+                  type="submit"
+                  className="inline-flex shrink-0 items-center justify-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-1.5 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                  title="Search Rentz Arena"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </form>
           </div>
 
-          <div className="flex w-20 justify-end md:w-24">
+          <div className="flex w-auto shrink-0 justify-end md:w-24">
             <button
               onClick={() => handleNavSelect('settings')}
               className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
@@ -7452,7 +9321,7 @@ endif`}
         </div>
 
         {topPrompts.length > 0 && (
-          <div className="pointer-events-none absolute inset-x-0 top-16 z-40 px-4">
+          <div className="pointer-events-none absolute inset-x-0 top-[4.85rem] z-40 px-4">
             <div className="relative mx-auto h-14 w-full">
               {topPrompts.map((topPrompt) => (
                 <div
@@ -7538,7 +9407,7 @@ endif`}
                     <div className="min-w-0 flex flex-col gap-1.5 pt-1">
                       <h2 className="flex items-center gap-3 font-display font-black capitalize leading-[1.08] tracking-tight text-[var(--text-primary)] drop-shadow-sm text-[2rem] sm:text-3xl md:text-[4rem]">
                         {activeTab === 'play' && !inLobby && <Swords className="h-8 w-8 opacity-70 sm:h-10 sm:w-10" />}
-                        {activeTab}
+                        {activeTabLabel}
                       </h2>
                       <div
                         className="h-1.5 w-24 rounded-full"
@@ -7965,6 +9834,68 @@ endif`}
                 Every available built-in ruleset is already in this section.
               </div>
             )}
+          </div>
+        </ModalShell>
+      )}
+
+      {forumRulesetSaveTarget && (
+        <ModalShell
+          title="Save Attached Ruleset"
+          eyebrow="Profile library"
+          onClose={() => setForumRulesetSaveTarget(null)}
+        >
+          <div className="space-y-3">
+            <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              Save <span className="font-black text-[var(--text-primary)]">{forumRulesetSaveTarget.attachedRuleset?.label || 'this ruleset'}</span> into your profile library.
+              Saved rulesets appear in the Library tab and stay available for later previewing or copying into the editor.
+            </div>
+
+            <button
+              type="button"
+              disabled={forumActionBusyKey === `${forumRulesetSaveTarget.id}:save-ruleset`}
+              onClick={() => void handleForumSaveRulesetToProfile()}
+              className="w-full rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-left transition hover:bg-[var(--surface-medium)] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <div className="text-lg font-black text-[var(--text-primary)]">
+                {forumActionBusyKey === `${forumRulesetSaveTarget.id}:save-ruleset` ? 'Saving...' : 'Save to Library'}
+              </div>
+              <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">Duplicate-safe profile save</div>
+            </button>
+          </div>
+        </ModalShell>
+      )}
+
+      {forumDeleteTarget && (
+        <ModalShell
+          title="Delete Post"
+          eyebrow="Rentz Forum"
+          onClose={() => setForumDeleteTarget(null)}
+        >
+          <div className="space-y-4">
+            <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              Delete this {forumDeleteTarget.parentPostId ? 'reply' : 'post'} from Rentz Forum?
+              If it already has replies, the content will be replaced with a deleted-state placeholder so the thread stays intact.
+            </div>
+
+            {renderForumEntryCard(forumDeleteTarget, { compact: true, interactive: false })}
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setForumDeleteTarget(null)}
+                className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={forumActionBusyKey === `${forumDeleteTarget.id}:delete`}
+                onClick={() => void handleDeleteForumPost()}
+                className="rounded-[1.2rem] border border-red-200 bg-red-50 px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {forumActionBusyKey === `${forumDeleteTarget.id}:delete` ? 'Deleting...' : 'Delete Post'}
+              </button>
+            </div>
           </div>
         </ModalShell>
       )}
