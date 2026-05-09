@@ -30,8 +30,11 @@ const ROOM_CUSTOM_RULESET_LIMIT = 20;
 const ROOM_RULESET_NAME_MAX_LENGTH = 80;
 const ROOM_RULESET_ABBREVIATION_MAX_LENGTH = 12;
 const ROOM_RULESET_CODE_MAX_LENGTH = 20000;
+const CHAT_MESSAGE_MAX_LENGTH = 400;
+const CHAT_HISTORY_LIMIT = 120;
 const RULESET_TYPES = new Set(['per_round', 'end_game']);
 const EMOJI_REACTION_IDS = new Set(['grin', 'wink', 'laugh', 'shock', 'love', 'gg']);
+const CHAT_SCOPES = new Set(['lobby', 'game']);
 const SUIT_NAMES = {
   H: 'Hearts',
   D: 'Diamonds',
@@ -125,7 +128,8 @@ function serializeLobby(lobby) {
     spectators: lobby.spectators,
     rulesetId: lobby.rulesetId,
     roomSettings: serializeRoomSettings(lobby),
-    status: lobby.status
+    status: lobby.status,
+    chatMessages: serializeChatMessages(lobby.chatMessages)
   };
 }
 
@@ -389,6 +393,61 @@ function getAvatarSource(member) {
     member?.image ||
     DEFAULT_PROFILE_PICTURE_PATH
   );
+}
+
+function normalizeChatContent(value) {
+  const normalized = String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u0000/g, '')
+    .trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.slice(0, CHAT_MESSAGE_MAX_LENGTH);
+}
+
+function serializeChatSender(user, member = null) {
+  const source = member || user || {};
+
+  return {
+    userId: source.userId || user?.userId || '',
+    name: getUserDisplayName(source) || getUserDisplayName(user),
+    displayName: getUserDisplayName(source) || getUserDisplayName(user),
+    avatarUrl: getAvatarSource(source),
+    guest: Boolean(source.guest ?? user?.guest)
+  };
+}
+
+function serializeChatMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => ({
+    id: message.id,
+    roomId: message.roomId,
+    scope: message.scope,
+    sender: {
+      ...(message.sender || {})
+    },
+    content: message.content,
+    createdAt: message.createdAt
+  }));
+}
+
+function appendChatMessage(entity, message) {
+  const history = Array.isArray(entity.chatMessages) ? entity.chatMessages : [];
+  entity.chatMessages = [...history, message].slice(-CHAT_HISTORY_LIMIT);
+  return message;
+}
+
+function createScopedChatMessage(roomId, scope, user, member, content) {
+  return {
+    id: `chat_${Date.now().toString(36)}_${randomFriendCode().toLowerCase()}`,
+    roomId,
+    scope,
+    sender: serializeChatSender(user, member),
+    content,
+    createdAt: new Date().toISOString()
+  };
 }
 
 function createDefaultPermissionsForPlayer(customRulesets = []) {
@@ -813,7 +872,8 @@ function buildGameSessionSnapshot(roomId, game, userId, { isSpectator = false } 
     latestRoundStats: game.lastRoundStats || null,
     matchComplete: gameFinished || (game.phase === 'round_stats' && !hasRemainingChoices(game)),
     standings: buildStandings(game),
-    startingHandSize: game.startingHandSize || 0
+    startingHandSize: game.startingHandSize || 0,
+    chatMessages: serializeChatMessages(game.chatMessages)
   };
 }
 
@@ -1635,6 +1695,7 @@ function attachSocketManager(io) {
         useTurnTimer: true,
         turnTimerSeconds: DEFAULT_TURN_TIMER_SECONDS,
         bannedUserIds: [],
+        chatMessages: [],
         status: 'waiting'
       };
       ensureRulesetPermissionsForPlayers(lobby);
@@ -1756,6 +1817,61 @@ function attachSocketManager(io) {
       });
 
       callback({ success: true });
+    });
+
+    socket.on('send_chat_message', ({ roomId, scope, content } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) {
+        return callback({ error: 'Not authenticated' });
+      }
+
+      const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+      const normalizedScope = String(scope || '').trim().toLowerCase();
+      if (!normalizedRoomId || !CHAT_SCOPES.has(normalizedScope)) {
+        return callback({ error: 'Chat target is invalid' });
+      }
+
+      const normalizedContent = normalizeChatContent(content);
+      if (!normalizedContent) {
+        return callback({ error: 'Write a message before sending it' });
+      }
+
+      const lobby = lobbies.get(normalizedRoomId);
+      if (!lobby) {
+        return callback({ error: 'Lobby not found' });
+      }
+
+      const member = getMemberByUserId(lobby, user.userId);
+      if (!member) {
+        return callback({ error: 'You are not in that room' });
+      }
+
+      if (normalizedScope === 'game') {
+        const game = activeGames.get(normalizedRoomId);
+        if (!game) {
+          return callback({ error: 'Game chat is not available right now' });
+        }
+
+        const message = appendChatMessage(
+          game,
+          createScopedChatMessage(normalizedRoomId, normalizedScope, user, member, normalizedContent)
+        );
+        io.to(normalizedRoomId).emit('chat_message', {
+          scope: normalizedScope,
+          message
+        });
+        return callback({ success: true, message });
+      }
+
+      const message = appendChatMessage(
+        lobby,
+        createScopedChatMessage(normalizedRoomId, normalizedScope, user, member, normalizedContent)
+      );
+      io.to(normalizedRoomId).emit('chat_message', {
+        scope: normalizedScope,
+        message
+      });
+      callback({ success: true, message });
     });
 
     // 3. Toggle Ready Status
@@ -2061,6 +2177,7 @@ function attachSocketManager(io) {
           acc[playerId] = [];
           return acc;
         }, {}),
+        chatMessages: [],
         roundStats: null,
         lastRoundStats: null,
         timerId: null,
@@ -2106,7 +2223,8 @@ function attachSocketManager(io) {
             playerPoints: buildPointTotals(gameState),
             collectedHandsByPlayer: buildCollectedHands(gameState),
             choiceState: serializeChoiceState(gameState),
-            availableRulesets: getAvailableRulesets(gameState.customRulesets)
+            availableRulesets: getAvailableRulesets(gameState.customRulesets),
+            chatMessages: serializeChatMessages(gameState.chatMessages)
           });
         });
 
@@ -2123,7 +2241,8 @@ function attachSocketManager(io) {
             playerPoints: buildPointTotals(gameState),
             collectedHandsByPlayer: buildCollectedHands(gameState),
             choiceState: serializeChoiceState(gameState),
-            availableRulesets: getAvailableRulesets(gameState.customRulesets)
+            availableRulesets: getAvailableRulesets(gameState.customRulesets),
+            chatMessages: serializeChatMessages(gameState.chatMessages)
           });
         });
 

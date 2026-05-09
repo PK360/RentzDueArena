@@ -3996,6 +3996,11 @@
       max-height: 16rem;
     }
 
+    .rentz-mobile-panels > .rentz-chat-panel-mobile {
+      min-height: 16rem;
+      max-height: 21rem;
+    }
+
     .rentz-log-panel-mobile {
       display: flex;
     }
@@ -4055,6 +4060,11 @@
       height: auto;
       min-height: 9.25rem;
       max-height: 13.5rem;
+    }
+
+    .rentz-mobile-panels > .rentz-chat-panel-mobile {
+      min-height: 15rem;
+      max-height: 20rem;
     }
 
     .rentz-player-row {

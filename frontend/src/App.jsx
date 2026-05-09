@@ -105,6 +105,7 @@ const JOKER_CARD_LABELS = {
 const CARD_ASSET_BASE_PATH = `${import.meta.env.BASE_URL}cards/`;
 const CARD_ASSET_ASPECT_RATIO = 167.0869141 / 242.6669922;
 const MAX_ACTIVITY_FEED_ITEMS = 60;
+const CHAT_MESSAGE_MAX_LENGTH = 400;
 const TRICK_CARD_CENTER_BOX_PERCENT = 3.2;
 const TRICK_CARD_ROTATION_LIMIT_DEGREES = 18;
 const HAND_CARD_MAX_ADVANCE_RATIO = 0.76;
@@ -328,7 +329,9 @@ async function requestJson(url, options = {}) {
 
   if (!response.ok) {
     const message = payload?.error || 'Request failed';
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
@@ -534,6 +537,73 @@ function formatForumTimestamp(value) {
 
 function formatForumRatingLabel(value) {
   return typeof value === 'number' ? `${value.toFixed(1)} avg` : 'No rating yet';
+}
+
+function normalizeChatMessageContent(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .split('\u0000').join('')
+    .trim()
+    .slice(0, CHAT_MESSAGE_MAX_LENGTH);
+}
+
+function normalizeChatMessage(message, fallbackScope = 'lobby') {
+  if (!message?.id) {
+    return null;
+  }
+
+  const content = normalizeChatMessageContent(message.content);
+  if (!content) {
+    return null;
+  }
+
+  return {
+    id: String(message.id),
+    roomId: String(message.roomId || ''),
+    scope: String(message.scope || fallbackScope || 'lobby'),
+    sender: {
+      userId: String(message.sender?.userId || ''),
+      name: getPlayerName(message.sender),
+      displayName: getPlayerName(message.sender),
+      avatarUrl: getPlayerAvatarSource(message.sender),
+      guest: Boolean(message.sender?.guest)
+    },
+    content,
+    createdAt: message.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizeChatMessages(messages, scope = 'lobby') {
+  const seen = new Set();
+
+  return (Array.isArray(messages) ? messages : [])
+    .map((message) => normalizeChatMessage(message, scope))
+    .filter(Boolean)
+    .filter((message) => {
+      if (seen.has(message.id)) {
+        return false;
+      }
+
+      seen.add(message.id);
+      return true;
+    })
+    .sort((left, right) => new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime());
+}
+
+function appendChatMessage(currentMessages, nextMessage) {
+  const normalizedMessage = normalizeChatMessage(nextMessage, nextMessage?.scope || 'lobby');
+  if (!normalizedMessage) {
+    return currentMessages;
+  }
+
+  const existingIndex = currentMessages.findIndex((message) => message.id === normalizedMessage.id);
+  if (existingIndex === -1) {
+    return [...currentMessages, normalizedMessage];
+  }
+
+  const nextMessages = [...currentMessages];
+  nextMessages[existingIndex] = normalizedMessage;
+  return nextMessages;
 }
 
 function hashString(value) {
@@ -1977,6 +2047,12 @@ function App() {
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [localTimerDeadline, setLocalTimerDeadline] = useState(null);
   const [activityFeed, setActivityFeed] = useState([]);
+  const [roomChatMessages, setRoomChatMessages] = useState([]);
+  const [gameChatMessages, setGameChatMessages] = useState([]);
+  const [chatDrafts, setChatDrafts] = useState({ lobby: '', game: '' });
+  const [chatBusyScope, setChatBusyScope] = useState('');
+  const [isDesktopChatOpen, setIsDesktopChatOpen] = useState(false);
+  const [desktopChatUnread, setDesktopChatUnread] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const [finalStandings, setFinalStandings] = useState([]);
   const [topPrompts, setTopPrompts] = useState([]);
@@ -2016,11 +2092,16 @@ function App() {
   const playerActionMenuRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const showReactionBubbleRef = useRef(() => {});
+  const desktopChatOpenRef = useRef(false);
+  const activeChatScopeRef = useRef('');
   const turnTimerWarningStateRef = useRef({ deadline: null, halfShown: false, quarterShown: false });
   const turnTimerNoticeTimeoutRef = useRef(null);
   const reactionTimeoutsRef = useRef(new Map());
   const mobileReactionSpotlightTimeoutRef = useRef(null);
   const forumReplyPreviewUrlsRef = useRef([]);
+  const desktopChatListRef = useRef(null);
+  const roomChatListRef = useRef(null);
+  const gameChatListRef = useRef(null);
 
   const [editorTitle, setEditorTitle] = useState('My House Rules');
   const [editorShortName, setEditorShortName] = useState('MHR');
@@ -2127,6 +2208,43 @@ function App() {
   useEffect(() => () => {
     forumReplyPreviewUrlsRef.current.forEach((previewUrl) => revokeObjectPreview(previewUrl));
   }, []);
+
+  useEffect(() => {
+    desktopChatOpenRef.current = isDesktopChatOpen;
+  }, [isDesktopChatOpen]);
+
+  useEffect(() => {
+    const nextScope = gameStarted && !gameFinished ? 'game' : (inLobby ? 'lobby' : '');
+    activeChatScopeRef.current = nextScope;
+  }, [gameFinished, gameStarted, inLobby]);
+
+  useEffect(() => {
+    if (isDesktopChatOpen) {
+      setDesktopChatUnread(0);
+    }
+  }, [isDesktopChatOpen]);
+
+  useEffect(() => {
+    setDesktopChatUnread(0);
+  }, [gameFinished, gameStarted, inLobby, roomId]);
+
+  useEffect(() => {
+    if (desktopChatListRef.current && isDesktopChatOpen) {
+      desktopChatListRef.current.scrollTop = desktopChatListRef.current.scrollHeight;
+    }
+  }, [gameChatMessages.length, isDesktopChatOpen, roomChatMessages.length]);
+
+  useEffect(() => {
+    if (roomChatListRef.current) {
+      roomChatListRef.current.scrollTop = roomChatListRef.current.scrollHeight;
+    }
+  }, [roomChatMessages.length]);
+
+  useEffect(() => {
+    if (gameChatListRef.current) {
+      gameChatListRef.current.scrollTop = gameChatListRef.current.scrollHeight;
+    }
+  }, [gameChatMessages.length]);
 
   const clearGuestIdentity = () => {
     storeGuestProfile(null);
@@ -2452,6 +2570,8 @@ function App() {
     setRoomName(response.lobby.roomName || nextRoomSettings.roomName || '');
     setRoomVisibility(response.lobby.visibility || nextRoomSettings.visibility || DEFAULT_ROOM_VISIBILITY);
     setActivityFeed([]);
+    setRoomChatMessages(normalizeChatMessages(response.lobby.chatMessages, 'lobby'));
+    setGameChatMessages(restoredGame?.chatMessages ? normalizeChatMessages(restoredGame.chatMessages, 'game') : []);
     setErrorMsg('');
 
     if (!restoredGame) {
@@ -2535,6 +2655,12 @@ function App() {
     setTrickWinnerId(null);
     setPlayView('table');
     setActivityFeed([]);
+    setRoomChatMessages([]);
+    setGameChatMessages([]);
+    setChatDrafts({ lobby: '', game: '' });
+    setChatBusyScope('');
+    setIsDesktopChatOpen(false);
+    setDesktopChatUnread(0);
     setErrorMsg('');
     setFinalStandings([]);
     setTopPrompts([]);
@@ -2640,9 +2766,10 @@ function App() {
       setDraftRoomSettings(nextRoomSettings);
       setRoomName(lobby?.roomName || nextRoomSettings.roomName || '');
       setRoomVisibility(lobby?.visibility || nextRoomSettings.visibility || DEFAULT_ROOM_VISIBILITY);
+      setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
     });
 
-    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState }) => {
+    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
       const resolvedHand = nextHand || [];
@@ -2664,6 +2791,7 @@ function App() {
       setAnimatingWinner(null);
       setTrickWinnerId(null);
       setActivityFeed([]);
+      setGameChatMessages(normalizeChatMessages(nextChatMessages, 'game'));
       setFinalStandings([]);
       setChoiceState(nextChoiceState || null);
       setLatestRoundStats(null);
@@ -2819,6 +2947,28 @@ function App() {
       });
     });
 
+    socket.on('chat_message', ({ scope, message }) => {
+      const normalizedMessage = normalizeChatMessage(message, scope || 'lobby');
+      if (!normalizedMessage) {
+        return;
+      }
+
+      if (normalizedMessage.scope === 'game') {
+        setGameChatMessages((current) => appendChatMessage(current, normalizedMessage));
+      } else {
+        setRoomChatMessages((current) => appendChatMessage(current, normalizedMessage));
+      }
+
+      if (
+        normalizedMessage.scope === activeChatScopeRef.current
+        && !desktopChatOpenRef.current
+        && normalizedMessage.sender?.userId
+        && normalizedMessage.sender.userId !== activeProfileRef.current?.userId
+      ) {
+        setDesktopChatUnread((current) => current + 1);
+      }
+    });
+
     socket.on('lobby_removed', ({ reason }) => {
       resetActiveRoomState();
       showTopPrompt(reason || 'You were removed from the room.', 'error');
@@ -2883,6 +3033,7 @@ function App() {
       socket.off('trick_end');
       socket.off('round_finished');
       socket.off('game_finished');
+      socket.off('chat_message');
       socket.off('lobby_removed');
       socket.off('lobby_deleted');
       socket.off('game_error');
@@ -3022,6 +3173,7 @@ function App() {
     setDraftRoomSettings(nextRoomSettings);
     setRoomName(lobby?.roomName || nextRoomSettings.roomName || '');
     setRoomVisibility(lobby?.visibility || nextRoomSettings.visibility || DEFAULT_ROOM_VISIBILITY);
+    setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
   };
 
   const populateEditorFromRuleset = (ruleset, { linkedRoomRulesetId = null, switchToEditor = false } = {}) => {
@@ -3569,11 +3721,66 @@ function App() {
       setForumThread(response?.thread || null);
       setForumView('thread');
     } catch (error) {
-      if (!suppressErrors) {
+      if (error?.status === 404) {
+        setForumThread(null);
+        setForumView('thread');
+      } else if (!suppressErrors) {
         showTopPrompt(error.message || 'Unable to load that thread right now.', 'error');
       }
     } finally {
       setForumThreadLoading(false);
+    }
+  };
+
+  const updateChatDraft = (scope, value) => {
+    if (!scope) {
+      return;
+    }
+
+    setChatDrafts((current) => ({
+      ...current,
+      [scope]: String(value || '').slice(0, CHAT_MESSAGE_MAX_LENGTH)
+    }));
+  };
+
+  const handleSendChatMessage = async (scope) => {
+    if (!scope || !roomId || !inLobby) {
+      return;
+    }
+
+    if (!activeProfile) {
+      showTopPrompt('Choose a guest name or sign in before chatting.', 'info');
+      return;
+    }
+
+    const content = normalizeChatMessageContent(chatDrafts[scope]);
+    if (!content) {
+      showTopPrompt('Write a message before sending it.', 'info');
+      return;
+    }
+
+    setChatBusyScope(scope);
+
+    try {
+      await new Promise((resolve, reject) => {
+        socket.emit('send_chat_message', { roomId, scope, content }, (response) => {
+          if (response?.error) {
+            reject(new Error(response.error));
+            return;
+          }
+
+          resolve(response);
+        });
+      });
+
+      setChatDrafts((current) => ({
+        ...current,
+        [scope]: ''
+      }));
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to send that chat message right now.', 'error');
+    } finally {
+      setChatBusyScope('');
     }
   };
 
@@ -3822,25 +4029,25 @@ function App() {
       const response = await requestJson(`/api/forum/posts/${encodeURIComponent(deletingPostId)}`, {
         method: 'DELETE'
       });
+      const deletedWasParentPreview = Array.isArray(forumThread?.parents)
+        && forumThread.parents.some((parent) => parent.id === deletingPostId);
 
       if (forumReplyTarget?.id === deletingPostId) {
         setForumReplyTarget(null);
       }
 
-      if (response?.removed) {
-        removeForumPostEverywhere(deletingPostId);
+      removeForumPostEverywhere(deletingPostId);
 
-        if (wasSelectedThreadEntry) {
-          if (response.parentPostId) {
-            await loadForumThread(response.parentPostId, { suppressErrors: true });
-          } else {
-            setForumView('feed');
-            setForumThread(null);
-            await loadForumFeed({ suppressErrors: true });
-          }
+      if (wasSelectedThreadEntry) {
+        if (response?.parentPostId) {
+          await loadForumThread(response.parentPostId, { suppressErrors: true });
+        } else {
+          setForumView('feed');
+          setForumThread(null);
+          await loadForumFeed({ suppressErrors: true });
         }
-      } else if (response?.post) {
-        syncForumPostEverywhere(response.post);
+      } else if (deletedWasParentPreview && forumThread?.selected?.id) {
+        await loadForumThread(forumThread.selected.id, { suppressErrors: true });
       }
 
       setForumDeleteTarget(null);
@@ -4690,6 +4897,9 @@ function App() {
   const canAddGuestRoomRulesets = Boolean(activeProfile?.guest && amIHost && !gameStarted);
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
+  const activeChatScope = gameStarted && !gameFinished ? 'game' : (inLobby ? 'lobby' : '');
+  const activeChatMessages = activeChatScope === 'game' ? gameChatMessages : roomChatMessages;
+  const activeChatTitle = activeChatScope === 'game' ? 'Game Chat' : 'Room Chat';
   const isMyTurn = gameStarted && !gameFinished && myIndex === turnIndex;
   const currentFriendRelationship = playerProfileModal
     ? getFriendRelationshipStatus(userProfile, playerProfileModal)
@@ -5833,6 +6043,210 @@ function App() {
 
   const isCompactGameHeader = activeTab === 'play' && inLobby && gameStarted;
 
+  const renderChatMessageEntry = (message, { compact = false } = {}) => {
+    const isOwnMessage = Boolean(message.sender?.userId && message.sender.userId === activeProfile?.userId);
+    const avatarSizeClass = compact ? 'h-9 w-9 text-[10px]' : 'h-10 w-10 text-xs';
+    const bubbleToneClass = isOwnMessage
+      ? 'border-sky-200/80 bg-[linear-gradient(180deg,rgba(236,248,255,0.99)_0%,rgba(205,227,245,0.96)_100%)] shadow-[0_14px_28px_rgba(56,112,156,0.14)]'
+      : 'border-[var(--glass-border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(238,245,250,0.94)_100%)] shadow-[0_14px_28px_rgba(15,23,42,0.1)]';
+    const bubbleTailClass = isOwnMessage
+      ? 'right-[-0.35rem] border-r border-b border-sky-200/80'
+      : 'left-[-0.35rem] border-l border-b border-[var(--glass-border)]';
+    const bubbleTransformClass = isOwnMessage ? 'rotate-[20deg]' : '-rotate-[20deg]';
+
+    return (
+      <div key={message.id} className={clsx('flex w-full', isOwnMessage ? 'justify-end' : 'justify-start')}>
+        <div className={clsx('flex max-w-[95%] items-end gap-2.5 sm:max-w-[85%]', isOwnMessage ? 'flex-row-reverse' : 'flex-row')}>
+          <button
+            type="button"
+            onClick={() => void openPlayerProfileModal(message.sender)}
+            className="shrink-0 text-left"
+            title={`View ${getPlayerName(message.sender)}'s profile`}
+          >
+            <AvatarFace
+              player={message.sender}
+              alt={`${getPlayerName(message.sender)} avatar`}
+              wrapperClassName={clsx('seat-avatar shrink-0 shadow-[0_10px_22px_rgba(15,23,42,0.12)]', avatarSizeClass)}
+              imageClassName="h-full w-full rounded-full object-cover"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+            />
+          </button>
+
+          <div
+            className={clsx(
+              'relative min-w-0 flex-1 rounded-[1.35rem] border px-3.5 py-3',
+              compact ? 'px-3 py-2.5' : 'px-3.5 py-3',
+              bubbleToneClass
+            )}
+          >
+            <span
+              aria-hidden="true"
+              className={clsx(
+                'pointer-events-none absolute bottom-3 h-3 w-3 rounded-[0.2rem] bg-inherit',
+                bubbleTailClass,
+                bubbleTransformClass
+              )}
+            />
+
+            <div className={clsx('flex items-center', isOwnMessage ? 'justify-end' : 'justify-start')}>
+              <button
+                type="button"
+                onClick={() => void openPlayerProfileModal(message.sender)}
+                className={clsx(
+                  'truncate text-sm font-black text-[var(--text-primary)] transition hover:opacity-80',
+                  isOwnMessage ? 'text-right' : 'text-left'
+                )}
+              >
+                {getPlayerName(message.sender)}
+              </button>
+            </div>
+            <div className={clsx(
+              'mt-1.5 whitespace-pre-wrap break-words text-sm font-semibold leading-6 text-[var(--text-primary)]',
+              isOwnMessage && 'text-right'
+            )}
+            >
+              {message.content}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderChatComposer = (scope, { compact = false } = {}) => {
+    const isBusy = chatBusyScope === scope;
+    const isDisabled = !scope || !inLobby || !activeProfile || isBusy;
+    const placeholder = scope === 'game'
+      ? 'Talk to the table...'
+      : 'Talk to the room...';
+
+    return (
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleSendChatMessage(scope);
+        }}
+        className={clsx(
+          'border-t border-[var(--glass-border)]',
+          compact ? 'p-3' : 'p-3.5'
+        )}
+      >
+        <div className={clsx('flex items-center gap-2 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-3 py-2 shadow-[inset_0_1px_3px_rgba(255,255,255,0.4)]', compact && 'px-3 py-2.5')}>
+          <input
+            value={chatDrafts[scope] || ''}
+            onChange={(event) => updateChatDraft(scope, event.target.value)}
+            maxLength={CHAT_MESSAGE_MAX_LENGTH}
+            placeholder={placeholder}
+            className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]"
+          />
+          <button
+            type="submit"
+            disabled={isDisabled}
+            className="inline-flex shrink-0 items-center justify-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2.5 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            title={isBusy ? 'Sending...' : 'Send message'}
+          >
+            <SendHorizontal className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+          <span>{scope === 'game' ? 'Game-scoped live chat' : 'Room-scoped live chat'}</span>
+          <span>{(chatDrafts[scope] || '').length}/{CHAT_MESSAGE_MAX_LENGTH}</span>
+        </div>
+      </form>
+    );
+  };
+
+  const renderMobileChatPanel = (scope) => {
+    const messages = scope === 'game' ? gameChatMessages : roomChatMessages;
+    const listRef = scope === 'game' ? gameChatListRef : roomChatListRef;
+    const title = scope === 'game' ? 'Chat' : 'Room Chat';
+
+    return (
+      <section className="rentz-log-panel rentz-chat-panel-mobile lg:hidden">
+        <ChromePanelHeader title={title} />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div ref={listRef} className="rentz-log-list">
+            {messages.length === 0 ? (
+              <div className="rentz-log-entry is-empty">
+                {scope === 'game'
+                  ? 'Game messages will appear here for everyone at the table.'
+                  : 'Room messages will appear here for everyone in the lobby.'}
+              </div>
+            ) : (
+              messages.map((message) => renderChatMessageEntry(message, { compact: true }))
+            )}
+          </div>
+          {renderChatComposer(scope, { compact: true })}
+        </div>
+      </section>
+    );
+  };
+
+  const renderDesktopChatWindow = () => {
+    if (activeTab !== 'play' || !inLobby || !activeChatScope) {
+      return null;
+    }
+
+    return (
+      <div className="pointer-events-none fixed bottom-6 right-6 z-[44] hidden lg:flex">
+        <div className="pointer-events-auto flex flex-col items-end">
+          {isDesktopChatOpen ? (
+            <section className="mb-3 flex h-[28rem] w-[22rem] flex-col overflow-hidden rounded-[1.7rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[0_26px_64px_rgba(15,23,42,0.24)] backdrop-blur-2xl">
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3">
+                <div>
+                  <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                    {activeChatScope === 'game' ? 'Active match' : 'Current room'}
+                  </div>
+                  <div className="mt-1 text-base font-black text-[var(--text-primary)]">{activeChatTitle}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsDesktopChatOpen(false)}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                  title="Collapse chat"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div ref={desktopChatListRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
+                {activeChatMessages.length === 0 ? (
+                  <div className="rounded-[1.2rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                    {activeChatScope === 'game'
+                      ? 'No one has chatted in this game yet.'
+                      : 'No one has chatted in this room yet.'}
+                  </div>
+                ) : (
+                  activeChatMessages.map((message) => renderChatMessageEntry(message))
+                )}
+              </div>
+
+              {renderChatComposer(activeChatScope)}
+            </section>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsDesktopChatOpen((current) => !current);
+              setDesktopChatUnread(0);
+            }}
+            className="inline-flex items-center gap-3 rounded-full border border-white/75 px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-[var(--nav-active-text)] shadow-[0_18px_40px_rgba(15,23,42,0.24)] transition hover:-translate-y-0.5 hover:brightness-105"
+            style={{ background: 'var(--nav-active-bg)' }}
+          >
+            <MessageCircle className="h-4 w-4" />
+            {activeChatTitle}
+            {desktopChatUnread > 0 && (
+              <span className="inline-flex min-w-[1.55rem] items-center justify-center rounded-full bg-white/90 px-2 py-1 text-[10px] font-black tracking-[0.08em] text-[#153247]">
+                {desktopChatUnread > 99 ? '99+' : desktopChatUnread}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderLobbyView = () => (
     <div className="relative z-10 w-full max-w-5xl">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -5992,6 +6406,8 @@ function App() {
             </div>
           </section>
         </div>
+
+        {renderMobileChatPanel('lobby')}
 
         <div className="glass-panel h-fit p-5 sm:p-6">
           <div className="mb-4">
@@ -6818,6 +7234,8 @@ function App() {
                 ))}
               </div>
             </section>
+
+            {renderMobileChatPanel('game')}
 
             <section className="rentz-log-panel rentz-log-panel-mobile">
               <ChromePanelHeader title="Log" />
@@ -9068,7 +9486,7 @@ endif`}
             <div className="glass-panel p-6 text-sm font-semibold text-[var(--text-secondary)]">Loading thread...</div>
           ) : !forumThread?.selected ? (
             <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-              That thread could not be loaded right now. Use Back to return to the feed.
+              This post no longer exists. Use Back to return to the feed.
             </div>
           ) : (
             <div className="mx-auto w-full space-y-4 lg:w-1/2">
@@ -9430,6 +9848,8 @@ endif`}
           </main>
         </div>
       </div>
+
+      {renderDesktopChatWindow()}
 
       {isRecoveryPromptOpen && recoverableGuestProfile && (
         <ModalShell
@@ -9874,7 +10294,7 @@ endif`}
           <div className="space-y-4">
             <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
               Delete this {forumDeleteTarget.parentPostId ? 'reply' : 'post'} from Rentz Forum?
-              If it already has replies, the content will be replaced with a deleted-state placeholder so the thread stays intact.
+              It will be removed from public forum views, search results, thread previews, and library/forum references.
             </div>
 
             {renderForumEntryCard(forumDeleteTarget, { compact: true, interactive: false })}

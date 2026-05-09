@@ -30,6 +30,7 @@ const FEED_LIMIT = 60;
 const SEARCH_POST_LIMIT = 30;
 const SEARCH_USER_LIMIT = 24;
 const LIBRARY_BOOKMARK_LIMIT = 24;
+const VISIBLE_FORUM_POST_FILTER = { deletedAt: null };
 
 function readPostId(value) {
   return String(value || '').trim();
@@ -63,8 +64,19 @@ function applyForumPostPopulate(query) {
     });
 }
 
-async function loadPopulatedForumPost(postId) {
-  return applyForumPostPopulate(ForumPost.findById(postId)).lean();
+function buildVisibleForumFilter(filter = {}) {
+  return {
+    ...filter,
+    ...VISIBLE_FORUM_POST_FILTER
+  };
+}
+
+async function loadPopulatedForumPost(postId, { includeDeleted = false } = {}) {
+  const query = includeDeleted
+    ? ForumPost.findById(postId)
+    : ForumPost.findOne(buildVisibleForumFilter({ _id: postId }));
+
+  return applyForumPostPopulate(query).lean();
 }
 
 async function loadSerializedPost(postId, viewer) {
@@ -73,7 +85,7 @@ async function loadSerializedPost(postId, viewer) {
     return null;
   }
 
-  const replyCount = await ForumPost.countDocuments({ parentPost: post._id });
+  const replyCount = await ForumPost.countDocuments(buildVisibleForumFilter({ parentPost: post._id }));
   return serializeForumPost(post, viewer, { replyCount, replies: [] });
 }
 
@@ -103,12 +115,12 @@ async function loadThreadPayload(postId, viewer) {
 
   const rootId = getEntityId(selectedPost.rootPost) || getEntityId(selectedPost);
   const threadPosts = await applyForumPostPopulate(
-    ForumPost.find({
+    ForumPost.find(buildVisibleForumFilter({
       $or: [
         { _id: rootId },
         { rootPost: rootId }
       ]
-    }).sort({ createdAt: 1 })
+    })).sort({ createdAt: 1 })
   ).lean();
   const postsById = new Map(threadPosts.map((post) => [getEntityId(post), post]));
   const repliesByParentId = new Map();
@@ -163,7 +175,7 @@ router.get('/feed', async (req, res, next) => {
   try {
     const viewer = await getViewer(req);
     const rootPosts = await applyForumPostPopulate(
-      ForumPost.find({ parentPost: null })
+      ForumPost.find(buildVisibleForumFilter({ parentPost: null }))
         .sort({ createdAt: -1 })
         .limit(FEED_LIMIT)
     ).lean();
@@ -172,7 +184,7 @@ router.get('/feed', async (req, res, next) => {
     const replyPosts = rootPostIds.length === 0
       ? []
       : await applyForumPostPopulate(
-        ForumPost.find({ rootPost: { $in: rootPostIds } })
+        ForumPost.find(buildVisibleForumFilter({ rootPost: { $in: rootPostIds } }))
           .sort({ createdAt: 1 })
       ).lean();
 
@@ -205,10 +217,10 @@ router.get('/library', async (req, res, next) => {
       .map((ruleset) => serializeStoredRuleset(ruleset, user));
 
     const bookmarkedPosts = await applyForumPostPopulate(
-      ForumPost.find({
+      ForumPost.find(buildVisibleForumFilter({
         bookmarkedBy: user._id,
         'attachedRuleset.ruleset': { $exists: true }
-      })
+      }))
         .sort({ createdAt: -1 })
         .limit(LIBRARY_BOOKMARK_LIMIT)
     ).lean();
@@ -248,7 +260,7 @@ router.post('/posts', async (req, res, next) => {
         return res.status(400).json({ error: 'Reply target is invalid' });
       }
 
-      parentPost = await ForumPost.findById(parentPostId);
+      parentPost = await ForumPost.findOne(buildVisibleForumFilter({ _id: parentPostId }));
       if (!parentPost) {
         return res.status(404).json({ error: 'Reply target not found' });
       }
@@ -295,6 +307,10 @@ router.delete('/posts/:postId', async (req, res, next) => {
       return res.status(404).json({ error: 'Forum post not found' });
     }
 
+    if (post.deletedAt) {
+      return res.status(404).json({ error: 'Forum post not found' });
+    }
+
     if (String(post.author) !== String(user._id)) {
       return res.status(403).json({ error: 'You can only delete your own forum posts' });
     }
@@ -318,11 +334,10 @@ router.delete('/posts/:postId', async (req, res, next) => {
 
     return res.json({
       ok: true,
-      removed: false,
+      removed: true,
       deletedPostId: postId,
       parentPostId,
-      rootPostId,
-      post: await loadSerializedPost(postId, user)
+      rootPostId
     });
   } catch (error) {
     next(error);
@@ -341,7 +356,7 @@ router.post('/posts/:postId/like', async (req, res, next) => {
       return res.status(400).json({ error: 'Forum post is invalid' });
     }
 
-    const post = await ForumPost.findById(postId).select('likedBy');
+    const post = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId })).select('likedBy');
     if (!post) {
       return res.status(404).json({ error: 'Forum post not found' });
     }
@@ -377,7 +392,7 @@ router.post('/posts/:postId/bookmark', async (req, res, next) => {
       return res.status(400).json({ error: 'Forum post is invalid' });
     }
 
-    const post = await ForumPost.findById(postId).select('bookmarkedBy');
+    const post = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId })).select('bookmarkedBy');
     if (!post) {
       return res.status(404).json({ error: 'Forum post not found' });
     }
@@ -439,7 +454,7 @@ router.post('/posts/:postId/save-ruleset', async (req, res, next) => {
       return res.status(400).json({ error: 'Forum post is invalid' });
     }
 
-    const post = await ForumPost.findById(postId).select('attachedRuleset.ruleset');
+    const post = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId })).select('attachedRuleset.ruleset');
     if (!post) {
       return res.status(404).json({ error: 'Forum post not found' });
     }
@@ -477,7 +492,7 @@ router.post('/posts/:postId/rate-ruleset', async (req, res, next) => {
     }
 
     const ratingValue = normalizeRulesetRatingValue(req.body.value);
-    const post = await ForumPost.findById(postId).select('attachedRuleset.ruleset');
+    const post = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId })).select('attachedRuleset.ruleset');
     if (!post) {
       return res.status(404).json({ error: 'Forum post not found' });
     }
@@ -531,6 +546,7 @@ router.get('/search', async (req, res, next) => {
     const postDocs = await applyForumPostPopulate(
       ForumPost.find({
         parentPost: null,
+        deletedAt: null,
         $text: { $search: query }
       }, {
         score: { $meta: 'textScore' }
