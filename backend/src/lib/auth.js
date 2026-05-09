@@ -4,6 +4,7 @@ const util = require('util');
 
 const User = require('../../models/User');
 const { normalizeRelationshipIds } = require('./friends');
+const { getRankNameFromElo, getRankTierForElo, normalizeEloValue } = require('./elo');
 
 const scryptAsync = util.promisify(crypto.scrypt);
 
@@ -137,6 +138,9 @@ function serializeAccount(user) {
     avatarUrl: user.profilePicture || '',
     banner: user.banner || '',
     description: user.description || '',
+    elo: normalizeEloValue(user.elo),
+    rankName: getRankNameFromElo(user.elo),
+    rankTierKey: getRankTierForElo(user.elo).key,
     favouriteRulesets: Array.isArray(user.favouriteRulesets) ? user.favouriteRulesets : [],
     rulesetLoadout: Array.isArray(user.rulesetLoadout) ? user.rulesetLoadout : [],
     accountCreatedAt: user.accountCreatedAt || user.createdAt || null,

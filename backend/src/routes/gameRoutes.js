@@ -1,21 +1,54 @@
 const express = require('express');
+const mongoose = require('mongoose');
 
-const Game = require('../../models/Game');
+const SavedGame = require('../../models/SavedGame');
+const { clearSessionCookie, getAuthenticatedUserFromRequest } = require('../lib/auth');
 
 const router = express.Router();
 
-router.get('/:roomCode', async (req, res, next) => {
-  try {
-    const game = await Game.findOne({ roomCode: req.params.roomCode })
-      .populate('host', 'displayName friendCode')
-      .populate('ruleset', 'title type')
-      .populate('players.user', 'displayName friendCode');
+async function requireAuthenticatedAccount(req, res, message = 'You must be logged in to use this feature') {
+  const user = await getAuthenticatedUserFromRequest(req);
 
-    if (!game) {
-      return res.status(404).json({ error: 'Game not found' });
+  if (!user) {
+    clearSessionCookie(res);
+    res.status(401).json({ error: message });
+    return null;
+  }
+
+  return user;
+}
+
+router.post('/saved/:savedGameId/end', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(req, res, 'You must be logged in to end a saved game');
+    if (!user) {
+      return;
     }
 
-    res.json({ ok: true, game });
+    const savedGameId = String(req.params.savedGameId || '').trim();
+    if (!mongoose.isValidObjectId(savedGameId)) {
+      return res.status(400).json({ error: 'Saved game id is invalid' });
+    }
+
+    const savedGame = await SavedGame.findOne({
+      _id: savedGameId,
+      ownerUserId: user._id,
+      status: 'saved'
+    });
+
+    if (!savedGame) {
+      return res.status(404).json({ error: 'Saved game not found' });
+    }
+
+    savedGame.status = 'ended';
+    savedGame.endedAt = new Date();
+    await savedGame.save();
+
+    res.json({
+      ok: true,
+      endedSavedGameId: savedGameId,
+      message: 'Saved game ended.'
+    });
   } catch (error) {
     next(error);
   }

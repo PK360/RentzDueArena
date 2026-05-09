@@ -22,6 +22,11 @@ const {
   sanitizeRelationshipReferences
 } = require('../lib/friends');
 const {
+  buildCompetitiveSummaryForUser,
+  getRankLeaderboardForUser,
+  getRankLeaderboardForUserId
+} = require('../lib/elo');
+const {
   clearSessionCookie,
   getAuthenticatedUserFromRequest,
   hashPassword,
@@ -105,11 +110,22 @@ async function syncFriendStateForUsers(req, users) {
   );
 }
 
+async function serializeAuthenticatedAccount(user) {
+  if (!user) {
+    return null;
+  }
+
+  return {
+    ...serializeAccount(user),
+    ...(await buildCompetitiveSummaryForUser(user))
+  };
+}
+
 async function buildFriendActionResponse(user, targetUser, message) {
   return {
     ok: true,
     message,
-    user: serializeAccount(user),
+    user: await serializeAuthenticatedAccount(user),
     friendState: await buildFriendStatePayload(user),
     profile: await buildProfileSummary(targetUser, user)
   };
@@ -261,7 +277,7 @@ router.post('/register', async (req, res, next) => {
 
     res.status(201).json({
       ok: true,
-      user: serializeAccount(user)
+      user: await serializeAuthenticatedAccount(user)
     });
   } catch (error) {
     const mappedError = mapUserValidationError(error);
@@ -293,7 +309,7 @@ router.post('/login', async (req, res, next) => {
 
     res.json({
       ok: true,
-      user: serializeAccount(user)
+      user: await serializeAuthenticatedAccount(user)
     });
   } catch (error) {
     next(error);
@@ -332,7 +348,7 @@ router.get('/me', async (req, res, next) => {
     res.json({
       ok: true,
       authenticated: true,
-      user: serializeAccount(user)
+      user: await serializeAuthenticatedAccount(user)
     });
   } catch (error) {
     clearSessionCookie(res);
@@ -396,7 +412,7 @@ router.patch('/me', async (req, res, next) => {
 
     res.json({
       ok: true,
-      user: serializeAccount(user)
+      user: await serializeAuthenticatedAccount(user)
     });
   } catch (error) {
     const mappedError = mapUserValidationError(error);
@@ -454,7 +470,7 @@ router.get('/friends/state', async (req, res, next) => {
 
     res.json({
       ok: true,
-      user: serializeAccount(user),
+      user: await serializeAuthenticatedAccount(user),
       friendState: await buildFriendStatePayload(user)
     });
   } catch (error) {
@@ -743,6 +759,54 @@ router.get('/account-rulesets', async (req, res, next) => {
           code: definition?.code || ''
         };
       })
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/leaderboard/current-rank', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(
+      req,
+      res,
+      'You must be logged in to view your rank leaderboard'
+    );
+
+    if (!user) {
+      return;
+    }
+
+    res.json({
+      ok: true,
+      leaderboard: await getRankLeaderboardForUser(user)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/leaderboard/rank/:userId', async (req, res, next) => {
+  try {
+    const viewer = await getAuthenticatedUserFromRequest(req);
+    const targetUserId = readTargetUserId(req.params.userId);
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Profile target is required' });
+    }
+
+    if (!isValidTargetUserId(targetUserId)) {
+      return res.status(400).json({ error: 'Invalid profile target' });
+    }
+
+    const leaderboard = await getRankLeaderboardForUserId(targetUserId, { viewer });
+    if (!leaderboard) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    res.json({
+      ok: true,
+      leaderboard
     });
   } catch (error) {
     next(error);
