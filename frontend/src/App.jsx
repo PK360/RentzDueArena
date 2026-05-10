@@ -2253,7 +2253,7 @@ function App() {
   const [trickPending, setTrickPending] = useState(false);
   const [hand, setHand] = useState([]);
   const [spectatorVisibleHand, setSpectatorVisibleHand] = useState([]);
-  const [spectatorVisiblePlayerId, setSpectatorVisiblePlayerId] = useState('');
+  const [, setSpectatorVisiblePlayerId] = useState('');
   const [spectatorVisiblePlayerName, setSpectatorVisiblePlayerName] = useState('');
   const [startingHandSize, setStartingHandSize] = useState(0);
   const [cardCounts, setCardCounts] = useState({});
@@ -2293,6 +2293,7 @@ function App() {
   const [pendingSpectatorJoin, setPendingSpectatorJoin] = useState(null);
   const [rulesetPreview, setRulesetPreview] = useState(null);
   const [banNoticeModal, setBanNoticeModal] = useState(null);
+  const [roomStartBlockedModal, setRoomStartBlockedModal] = useState(null);
   const [leaveMatchConfirmModal, setLeaveMatchConfirmModal] = useState(null);
   const [savedGameRulesetTableModal, setSavedGameRulesetTableModal] = useState(null);
   const [emojiPickerState, setEmojiPickerState] = useState(null);
@@ -2750,6 +2751,16 @@ function App() {
   }, [isAuthenticated, userProfile?.userId]);
 
   useEffect(() => {
+    if (activeTab !== 'library' || !isAuthenticated) {
+      return;
+    }
+
+    void loadLibraryData({ suppressErrors: true });
+    // Re-entering the Library should always rehydrate account-scoped sections.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, isAuthenticated, userProfile?.userId]);
+
+  useEffect(() => {
     if (!forumSearchState.hasResultsTab || !forumSearchState.query) {
       return;
     }
@@ -2796,7 +2807,18 @@ function App() {
   }, [isAuthenticated]);
 
   function applySpectatorVisibleHandState(payload = null) {
-    setSpectatorVisibleHand(Array.isArray(payload?.spectatorVisibleHand) ? payload.spectatorVisibleHand : []);
+    const nextVisibleHand = Array.isArray(payload?.spectatorVisibleHand) ? payload.spectatorVisibleHand : [];
+    const nextStartingHandSize = Math.max(
+      Number(payload?.startingHandSize || 0),
+      nextVisibleHand.length
+    );
+
+    if (nextStartingHandSize > startingHandSizeRef.current) {
+      startingHandSizeRef.current = nextStartingHandSize;
+      setStartingHandSize((current) => Math.max(current, nextStartingHandSize));
+    }
+
+    setSpectatorVisibleHand(nextVisibleHand);
     setSpectatorVisiblePlayerId(payload?.spectatorVisiblePlayerId || '');
     setSpectatorVisiblePlayerName(payload?.spectatorVisiblePlayerName || '');
   }
@@ -2933,6 +2955,7 @@ function App() {
     setChatMuteBusyTargetId('');
     setPendingSpectatorJoin(null);
     setRulesetPreview(null);
+    setRoomStartBlockedModal(null);
     setLeaveMatchConfirmModal(null);
     reactionTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
@@ -3044,11 +3067,12 @@ function App() {
       setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
     });
 
-    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
       const resolvedHand = nextHand || [];
-      startingHandSizeRef.current = resolvedHand.length;
+      const resolvedStartingHandSize = nextStartingHandSize || resolvedHand.length || (nextSpectatorVisibleHand || []).length;
+      startingHandSizeRef.current = resolvedStartingHandSize;
       setGameStarted(true);
       setIsSpectatingGame(Boolean(isSpectator));
       setGameFinished(false);
@@ -3060,7 +3084,7 @@ function App() {
         spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
         spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
       });
-      setStartingHandSize(resolvedHand.length);
+      setStartingHandSize(resolvedStartingHandSize);
       setMyIndex(typeof playerIndex === 'number' ? playerIndex : -1);
       setTurnIndex(nextTurnIndex);
       setTrickSuit(nextTrickSuit || null);
@@ -5423,11 +5447,22 @@ function App() {
       const response = await requestJson(`/api/games/saved/${encodeURIComponent(savedGameId)}/end`, {
         method: 'POST'
       });
+      let refreshedAccount = null;
+      try {
+        const accountResponse = await requestJson('/api/auth/me');
+        refreshedAccount = accountResponse?.authenticated ? accountResponse.user : null;
+      } catch {
+        // The saved-game action already succeeded, so a profile refresh miss should stay silent.
+      }
       setSavedGameRulesetTableModal((current) => (current?.id === savedGameId ? null : current));
       setLibraryState((current) => ({
         ...current,
         savedGames: current.savedGames.filter((entry) => entry.id !== savedGameId)
       }));
+      if (refreshedAccount) {
+        applyAuthenticatedUser(refreshedAccount);
+      }
+      await loadLibraryData({ suppressErrors: true });
       showTopPrompt(response?.message || 'Saved game ended.', 'info');
     } catch (error) {
       showTopPrompt(error.message || 'Unable to end that saved game right now.', 'error');
@@ -5436,13 +5471,32 @@ function App() {
     }
   };
 
+  const showRoomStartBlockedModal = (unreadyPlayers = players.filter((player) => !player.isReady)) => {
+    const playerNames = unreadyPlayers.map((player) => getPlayerName(player));
+    setRoomStartBlockedModal({
+      playerNames,
+      count: playerNames.length
+    });
+  };
+
   const startGame = () => {
     if (players.length < MIN_PLAYERS_TO_START) {
       showTopPrompt(`At least ${MIN_PLAYERS_TO_START} active players are required to start the game.`, 'error');
       return;
     }
 
+    const unreadyPlayers = players.filter((player) => !player.isReady);
+    if (unreadyPlayers.length > 0) {
+      showRoomStartBlockedModal(unreadyPlayers);
+      return;
+    }
+
     socket.emit('start_game', { roomId }, (response) => {
+      if (response?.error === 'Not all players are ready') {
+        showRoomStartBlockedModal();
+        return;
+      }
+
       if (response.error) {
         showErrorMessage(response.error);
       }
@@ -6453,20 +6507,22 @@ function App() {
     : null;
   const visibleHandSpreadMetrics = handSpreadMetrics || fallbackHandSpreadMetrics;
   const playersForMobilePanel = [...players].sort((left, right) => {
-    if (left.userId === nextTurnPlayer?.userId) {
-      return -1;
+    const leftPoints = Number(getPlayerPoints(left) || 0);
+    const rightPoints = Number(getPlayerPoints(right) || 0);
+    if (rightPoints !== leftPoints) {
+      return rightPoints - leftPoints;
     }
 
-    if (right.userId === nextTurnPlayer?.userId) {
-      return 1;
+    const leftSeatIndex = Number.isInteger(left?.seatIndex) ? left.seatIndex : Number.MAX_SAFE_INTEGER;
+    const rightSeatIndex = Number.isInteger(right?.seatIndex) ? right.seatIndex : Number.MAX_SAFE_INTEGER;
+    if (leftSeatIndex !== rightSeatIndex) {
+      return leftSeatIndex - rightSeatIndex;
     }
 
-    if (left.userId === myPlayerId) {
-      return -1;
-    }
-
-    if (right.userId === myPlayerId) {
-      return 1;
+    const leftJoinOrder = Number.isInteger(left?.joinOrder) ? left.joinOrder : Number.MAX_SAFE_INTEGER;
+    const rightJoinOrder = Number.isInteger(right?.joinOrder) ? right.joinOrder : Number.MAX_SAFE_INTEGER;
+    if (leftJoinOrder !== rightJoinOrder) {
+      return leftJoinOrder - rightJoinOrder;
     }
 
     return getPlayerName(left).localeCompare(getPlayerName(right));
@@ -7160,8 +7216,8 @@ function App() {
   };
 
   const renderLobbyView = () => (
-    <div className="relative z-10 w-full max-w-5xl">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div className="relative z-10 flex w-full max-w-[90rem] min-h-0 flex-1 flex-col gap-5 overflow-x-hidden">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <h3 className="text-2xl font-display font-extrabold text-[var(--text-primary)] sm:text-3xl">
             {roomName || 'Room'}
@@ -7193,9 +7249,9 @@ function App() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(17rem,21rem)]">
-        <div className="space-y-6">
-          <section>
+      <div className="grid gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_minmax(17.5rem,19.75rem)]">
+        <div className="space-y-5 lg:grid lg:min-h-0 lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] lg:space-y-0">
+          <section className="lg:flex lg:min-h-0 lg:flex-col">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Active Players</h4>
@@ -7220,7 +7276,7 @@ function App() {
               </div>
             </div>
 
-            <div className="grid gap-4">
+            <div className="grid gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
               {players.length > 0 ? (
                 players.map((player, index) => {
                   const isHostPlayer = player.userId === lobbyHostId;
@@ -7289,7 +7345,7 @@ function App() {
             </div>
           </section>
 
-          <section>
+          <section className="lg:flex lg:min-h-0 lg:flex-col">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Spectators</h4>
@@ -7302,7 +7358,7 @@ function App() {
               </div>
             </div>
 
-            <div className="grid gap-4">
+            <div className="grid gap-4 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
               {spectators.length > 0 ? (
                 spectators.map((spectator, index) => {
                   const isHostSpectator = spectator.userId === lobbyHostId;
@@ -7350,15 +7406,15 @@ function App() {
 
         {renderMobileChatPanel('lobby')}
 
-        <div className="glass-panel h-fit p-5 sm:p-6">
-          <div className="mb-4">
+        <div className="glass-panel h-fit p-4 sm:p-5 lg:sticky lg:top-0 lg:self-start">
+          <div className="mb-3.5">
             <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
               Your lobby role
             </div>
-            <div className="mt-2 text-2xl font-black text-[var(--text-primary)]">
+            <div className="mt-1.5 text-[1.65rem] font-black text-[var(--text-primary)] sm:text-[1.85rem]">
               {amISpectator ? 'Spectator' : 'Active Player'}
             </div>
-            <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+            <p className="mt-1.5 text-[0.92rem] font-semibold leading-5 text-[var(--text-secondary)]">
               {amISpectator
                 ? (areActiveSeatsFull
                   ? `All ${MAX_ACTIVE_PLAYERS} player seats are currently taken.`
@@ -7367,14 +7423,14 @@ function App() {
             </p>
           </div>
 
-          <div className="mb-4 rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
+          <div className="mb-3.5 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-3.5">
             <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
               Room rules
             </div>
-            <div className="mt-2 text-base font-black text-[var(--text-primary)]">
+            <div className="mt-1.5 text-[0.95rem] font-black leading-6 text-[var(--text-primary)]">
               {selectedRoomRuleLabels.length > 0 ? selectedRoomRuleLabels.join(', ') : 'No rules selected'}
             </div>
-            <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+            <p className="mt-1.5 text-[0.88rem] font-semibold leading-5 text-[var(--text-secondary)]">
               {amIHost
                 ? 'You can change these before the match starts.'
                 : 'Only the host can change the room rule selection.'}
@@ -7383,7 +7439,7 @@ function App() {
               <button
                 type="button"
                 onClick={handleOpenRoomSettings}
-                className="mt-3 inline-flex items-center gap-2 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className="mt-2.5 inline-flex items-center gap-2 rounded-[1.05rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3.5 py-2.5 text-[0.82rem] font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
               >
                 <Settings className="h-4 w-4" />
                 Room Settings
@@ -7391,13 +7447,13 @@ function App() {
             )}
           </div>
 
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2.5">
             {!amISpectator ? (
               <>
                 <button
                   onClick={toggleReady}
                   className={clsx(
-                    'rounded-[1.6rem] px-6 py-4 text-base font-black uppercase tracking-[0.16em] transition-[transform,background-color,color,box-shadow] duration-300 sm:px-8 sm:text-lg sm:tracking-[0.18em]',
+                    'rounded-[1.45rem] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.16em] transition-[transform,background-color,color,box-shadow] duration-300 sm:px-6 sm:text-base sm:tracking-[0.18em]',
                     amIReady ? 'ready-button-active' : 'ready-button'
                   )}
                 >
@@ -7405,7 +7461,7 @@ function App() {
                 </button>
                 <button
                   onClick={() => setLobbyRole('spectator')}
-                  className="rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-6 py-4 text-base font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] sm:px-8 sm:text-lg sm:tracking-[0.18em]"
+                  className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] sm:px-6 sm:text-base sm:tracking-[0.18em]"
                 >
                   Become Spectator
                 </button>
@@ -7415,7 +7471,7 @@ function App() {
                 onClick={() => setLobbyRole('player')}
                 disabled={areActiveSeatsFull}
                 className={clsx(
-                  'rounded-[1.6rem] px-6 py-4 text-base font-black uppercase tracking-[0.16em] transition-[transform,background-color,color,box-shadow] duration-300 sm:px-8 sm:text-lg sm:tracking-[0.18em]',
+                  'rounded-[1.45rem] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.16em] transition-[transform,background-color,color,box-shadow] duration-300 sm:px-6 sm:text-base sm:tracking-[0.18em]',
                   areActiveSeatsFull
                     ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
                     : 'ready-button'
@@ -7426,7 +7482,11 @@ function App() {
             )}
 
             {amIHost && (
-              <button onClick={startGame} className="frutiger-button px-6 py-4 text-base sm:px-8 sm:text-lg">
+              <button
+                onClick={startGame}
+                className="inline-flex items-center justify-center gap-3 rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(241,255,235,0.98)_0%,rgba(168,245,132,0.96)_52%,rgba(34,112,58,0.98)_100%)] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.18em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.94),0_18px_36px_rgba(52,148,73,0.32)] transition hover:-translate-y-0.5 hover:brightness-[1.04] sm:px-6 sm:text-base"
+              >
+                <Crown className="h-5 w-5" />
                 Start Match
               </button>
             )}
@@ -7434,14 +7494,14 @@ function App() {
             <button
               type="button"
               onClick={handleLeaveRoom}
-              className="inline-flex items-center justify-center gap-2 rounded-[1.6rem] border border-red-200/75 bg-[linear-gradient(180deg,rgba(255,243,243,0.97)_0%,rgba(254,205,211,0.9)_100%)] px-6 py-4 text-base font-black uppercase tracking-[0.16em] text-red-950 transition hover:-translate-y-0.5 hover:brightness-[1.02] sm:px-8 sm:text-lg sm:tracking-[0.18em]"
+              className="inline-flex items-center justify-center gap-2 rounded-[1.45rem] border border-red-200/75 bg-[linear-gradient(180deg,rgba(255,243,243,0.97)_0%,rgba(254,205,211,0.9)_100%)] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.16em] text-red-950 transition hover:-translate-y-0.5 hover:brightness-[1.02] sm:px-6 sm:text-base sm:tracking-[0.18em]"
             >
               <LogOut className="h-4 w-4" />
               {gameStarted ? (isSpectatingGame ? 'Leave Spectating' : 'Abandon Match') : 'Leave Room'}
             </button>
 
             {gameFinished && (
-              <button onClick={() => setPlayView('stats')} className="rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-6 py-4 text-base font-black uppercase tracking-[0.16em] transition hover:bg-[var(--surface-hover)] sm:px-8 sm:text-lg sm:tracking-[0.18em]">
+              <button onClick={() => setPlayView('stats')} className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3.5 text-[0.95rem] font-black uppercase tracking-[0.16em] transition hover:bg-[var(--surface-hover)] sm:px-6 sm:text-base sm:tracking-[0.18em]">
                 View Last Game Stats
               </button>
             )}
@@ -8110,7 +8170,7 @@ function App() {
                   <button
                     type="button"
                     onClick={handleLeaveRoom}
-                    className="rentz-verify-button w-full !min-h-0 shrink-0 py-2 sm:py-3 transition-transform hover:-translate-y-0.5"
+                    className="rentz-verify-button col-span-full w-full !min-h-0 shrink-0 py-2 sm:py-3 transition-transform hover:-translate-y-0.5"
                   >
                     <span className="inline-flex items-center justify-center gap-1.5 text-[0.85rem] sm:text-[0.95rem]">
                       <LogOut className="h-4 w-4" />
@@ -8300,18 +8360,20 @@ function App() {
             </div>
           </div>
         )}
+        {isSpectatorReadOnlyHand ? (
+          <div className="pointer-events-none absolute inset-x-3 top-3 z-[105] flex justify-center sm:inset-x-5">
+            <div className="rounded-full border border-white/35 bg-[linear-gradient(180deg,rgba(7,18,30,0.34)_0%,rgba(15,23,42,0.22)_100%)] px-4 py-2 text-center shadow-[0_12px_24px_rgba(15,23,42,0.14)] backdrop-blur-sm">
+              <div className="text-sm font-black text-white sm:text-base">
+                Spectating this match
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div
           ref={mode === 'choice' ? choiceHandScrollRef : handScrollRef}
           className="rentz-hand-scroll"
           data-rentz-modal-scroll={mode === 'choice' ? 'x' : undefined}
         >
-          {isSpectatorReadOnlyHand ? (
-            <div className="mx-4 mb-3 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]">
-              {sortedDisplayedHand.length > 0
-                ? `You are spectating. Showing ${spectatorHandLabel} in read-only mode.`
-                : 'You are spectating. Waiting for a current player hand to view.'}
-            </div>
-          ) : null}
           <div
             className="rentz-hand-row"
             style={sortedDisplayedHand.length > 0 && visibleHandSpreadMetrics ? { width: `${visibleHandSpreadMetrics.spreadWidth}px` } : undefined}
@@ -8425,7 +8487,7 @@ function App() {
 
             {displayedHand.length === 0 && (
               <div className="rentz-empty-hand">
-                {isSpectatingGame ? 'Spectating this match...' : 'Waiting for the next hand...'}
+                {isSpectatingGame ? 'Spectating this match' : 'Waiting for the next hand...'}
               </div>
             )}
           </div>
@@ -8734,15 +8796,18 @@ function App() {
       </section>
 
       <section className="space-y-5">
-        <div className="glass-panel p-5 sm:p-6">
-          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
+        <div>
           <div
-            className="mb-4 flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
+            className="flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
             role="status"
             aria-live="polite"
           >
-            {editorStatus || <span className="opacity-0">Editor status</span>}
+            {editorStatus || 'Compiler messages will appear here after compile, save, import, and related editor actions.'}
           </div>
+        </div>
+
+        <div className="glass-panel p-5 sm:p-6">
+          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
           {editorAst ? (
             <pre className="max-h-[24rem] overflow-auto rounded-[1.3rem] bg-slate-950/80 p-4 text-xs text-lime-100">
               {JSON.stringify(editorAst, null, 2)}
@@ -10316,6 +10381,65 @@ endif`}
     );
   };
 
+  const renderRoomStartBlockedModal = () => {
+    if (!roomStartBlockedModal) {
+      return null;
+    }
+
+    const waitingPlayers = Array.isArray(roomStartBlockedModal.playerNames)
+      ? roomStartBlockedModal.playerNames
+      : [];
+
+    return (
+      <ModalShell
+        title="A Player Is Not Ready"
+        eyebrow="Start blocked"
+        onClose={() => setRoomStartBlockedModal(null)}
+        panelClassName="max-w-2xl"
+        footer={(
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRoomStartBlockedModal(null)}
+              className="rounded-[1.3rem] border border-rose-200/80 bg-rose-100/90 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-rose-950 transition hover:bg-rose-200/85"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="rounded-[1.5rem] border border-rose-200/80 bg-[linear-gradient(180deg,rgba(255,244,246,0.98)_0%,rgba(254,205,211,0.9)_100%)] p-5 shadow-[0_22px_44px_rgba(225,29,72,0.16)]">
+            <div className="text-[11px] font-black uppercase tracking-[0.22em] text-rose-800">Cannot start yet</div>
+            <p className="mt-3 text-base font-black leading-7 text-rose-950 sm:text-lg">
+              Everyone in the active player list must ready up before the host can start the match.
+            </p>
+          </div>
+
+          <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+              Waiting on {waitingPlayers.length === 1 ? 'this player' : 'these players'}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {waitingPlayers.length > 0 ? waitingPlayers.map((playerName) => (
+                <span
+                  key={playerName}
+                  className="inline-flex rounded-full border border-rose-200/80 bg-white/92 px-3 py-1.5 text-xs font-black uppercase tracking-[0.12em] text-rose-900"
+                >
+                  {playerName}
+                </span>
+              )) : (
+                <span className="text-sm font-semibold text-[var(--text-secondary)]">
+                  One or more players are still marked as waiting.
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  };
+
   const renderLeaveMatchConfirmModal = () => {
     if (!leaveMatchConfirmModal) {
       return null;
@@ -10528,6 +10652,12 @@ endif`}
     const viewerUserId = activeProfile?.userId;
     const standings = Array.isArray(entry.standings) ? entry.standings : [];
     const viewerSummary = entry.viewerSummary || null;
+    const shouldShowRankShift = Boolean(
+      viewerSummary?.rankChanged
+      && viewerSummary.previousRankName
+      && viewerSummary.nextRankName
+      && viewerSummary.previousRankName !== viewerSummary.nextRankName
+    );
 
     return (
       <article key={entry.id} className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 shadow-[0_18px_36px_rgba(0,0,0,0.08)]">
@@ -10542,7 +10672,7 @@ endif`}
         </div>
 
         {viewerSummary ? (
-          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className={clsx('mt-4 grid gap-3', shouldShowRankShift ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
             <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
               <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Your finish</div>
               <div className="mt-2 text-2xl font-black text-[var(--text-primary)]">#{viewerSummary.finalRank || '--'}</div>
@@ -10553,12 +10683,14 @@ endif`}
                 {(viewerSummary.eloDelta || 0) >= 0 ? '+' : ''}{viewerSummary.eloDelta || 0}
               </div>
             </div>
-            <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
-              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Rank shift</div>
-              <div className="mt-2 text-sm font-black leading-6 text-[var(--text-primary)]">
-                {viewerSummary.previousRankName || 'Unknown'} → {viewerSummary.nextRankName || 'Unknown'}
+            {shouldShowRankShift ? (
+              <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Rank shift</div>
+                <div className="mt-2 text-sm font-black leading-6 text-[var(--text-primary)]">
+                  {viewerSummary.previousRankName} → {viewerSummary.nextRankName}
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -10615,24 +10747,26 @@ endif`}
 
     return (
       <div className="space-y-5">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => void loadLibraryData()}
+            disabled={libraryState.loading}
+            className="inline-flex items-center gap-2 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+            title="Refresh library"
+          >
+            <RefreshCw className={clsx('h-4 w-4', libraryState.loading && 'animate-spin')} />
+            Refresh Library
+          </button>
+        </div>
+
         <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
           <div className="grid gap-5">
             <section className="glass-panel p-5 sm:p-6">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Saved Rulesets</h4>
-                <div className="flex items-center gap-2">
-                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-                    {libraryState.savedRulesets.length} saved
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void loadLibraryData()}
-                    disabled={libraryState.loading}
-                    className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2.5 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
-                    title="Refresh library"
-                  >
-                    <RefreshCw className={clsx('h-4 w-4', libraryState.loading && 'animate-spin')} />
-                  </button>
+                <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                  {libraryState.savedRulesets.length} saved
                 </div>
               </div>
               {libraryState.loading && libraryState.savedRulesets.length === 0 ? (
@@ -10667,7 +10801,7 @@ endif`}
                     Completed ranked matches will appear here with your finish, ELO movement, and rank changes.
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="max-h-[30rem] space-y-4 overflow-y-auto pr-1">
                     {libraryState.matchHistory.map((entry) => renderMatchHistoryCard(entry))}
                   </div>
                 )}
@@ -10689,7 +10823,7 @@ endif`}
                     Use Save & Quit from round stats to store a resumable match here.
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="max-h-[30rem] space-y-4 overflow-y-auto pr-1">
                     {libraryState.savedGames.map((savedGame) => renderSavedGameCard(savedGame))}
                   </div>
                 )}
@@ -11549,6 +11683,7 @@ endif`}
       {renderPlayerProfileModal()}
       {renderRankLeaderboardModal()}
       {renderBanNoticeModal()}
+      {renderRoomStartBlockedModal()}
       {renderLeaveMatchConfirmModal()}
       {renderSavedGameRulesetTableModal()}
 

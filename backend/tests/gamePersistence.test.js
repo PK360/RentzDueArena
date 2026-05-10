@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
+  buildSavedGameStandings,
   serializeMatchHistoryForLibrary,
   serializeSavedGameForLibrary
 } = require('../src/lib/gamePersistence');
@@ -40,6 +41,40 @@ test('serializeSavedGameForLibrary exposes saved-game preview data for the libra
   assert.ok(serialized.availableRulesets.some((rule) => rule.id === 'whist'));
   assert.strictEqual(serialized.selectedRulesets.whist, true);
   assert.strictEqual(serialized.usedChoices['player-1'].whist, true);
+});
+
+test('buildSavedGameStandings preserves saved-game final ordering fields for history generation', () => {
+  const standings = buildSavedGameStandings({
+    players: [
+      { userId: 'player-1', name: 'Alice', elo: 700, rankName: 'Starting-out Rentz Rookie' },
+      { userId: 'player-2', name: 'Bob', elo: 730, rankName: 'Starting-out Rentz Rookie' },
+      { userId: 'player-3', name: 'Cara', isBot: true }
+    ],
+    pointsByPlayer: {
+      'player-1': 14,
+      'player-2': 14,
+      'player-3': 3
+    },
+    collectedByPlayer: {
+      'player-1': [[{ card: 'A-S' }], [{ card: 'K-H' }]],
+      'player-2': [[{ card: 'Q-D' }]],
+      'player-3': []
+    },
+    handsReady: {
+      'player-1': ['2-C'],
+      'player-2': [],
+      'player-3': ['3-H', '4-H']
+    }
+  });
+
+  assert.deepStrictEqual(
+    standings.map((entry) => ({ userId: entry.userId, points: entry.points, tricksWon: entry.tricksWon, cardsLeft: entry.cardsLeft })),
+    [
+      { userId: 'player-1', points: 14, tricksWon: 2, cardsLeft: 1 },
+      { userId: 'player-2', points: 14, tricksWon: 1, cardsLeft: 0 },
+      { userId: 'player-3', points: 3, tricksWon: 0, cardsLeft: 2 }
+    ]
+  );
 });
 
 test('serializeMatchHistoryForLibrary returns the viewer summary alongside final standings', () => {

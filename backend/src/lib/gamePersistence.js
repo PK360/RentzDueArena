@@ -1,6 +1,12 @@
 const SavedGame = require('../../models/SavedGame');
 const MatchHistory = require('../../models/MatchHistory');
-const { getRankNameFromElo, getRankTierForElo, normalizeEloValue } = require('./elo');
+const User = require('../../models/User');
+const {
+  calculateMultiplayerEloChanges,
+  getRankNameFromElo,
+  getRankTierForElo,
+  normalizeEloValue
+} = require('./elo');
 const { getAvailableRulesets } = require('../../rulesets');
 
 function cloneJsonSafe(value) {
@@ -107,6 +113,50 @@ async function createSavedGameDocument({ ownerUserId, roomId, lobby, game }) {
   return savedGame;
 }
 
+function buildSavedGameStandings(savedGameOrSnapshot, eloDeltaByUserId = {}) {
+  const snapshot = savedGameOrSnapshot?.snapshot || savedGameOrSnapshot || {};
+  const players = Array.isArray(snapshot.players) ? snapshot.players : [];
+  const pointsByPlayer = snapshot.pointsByPlayer || {};
+  const collectedByPlayer = snapshot.collectedByPlayer || {};
+  const handsReady = snapshot.handsReady || {};
+
+  return players
+    .map((player) => ({
+      userId: player.userId,
+      name: player.name || player.displayName || 'Player',
+      guest: Boolean(player.guest),
+      isBot: Boolean(player.isBot),
+      connectionStatus: player.connectionStatus || (player.isConnected === false ? 'reconnecting' : 'connected'),
+      replacementForUserId: player.replacementForUserId || null,
+      replacementForName: player.replacementForName || null,
+      elo: typeof player.elo === 'number' ? player.elo : null,
+      rankName: player.rankName || null,
+      rankTierKey: player.rankTierKey || null,
+      eloDelta: eloDeltaByUserId?.[player.userId] ?? 0,
+      points: Number(pointsByPlayer?.[player.userId] || 0),
+      tricksWon: Array.isArray(collectedByPlayer?.[player.userId]) ? collectedByPlayer[player.userId].length : 0,
+      cardsLeft: Array.isArray(handsReady?.[player.userId]) ? handsReady[player.userId].length : 0
+    }))
+    .sort((left, right) => {
+      if (right.points !== left.points) {
+        return right.points - left.points;
+      }
+
+      if (right.tricksWon !== left.tricksWon) {
+        return right.tricksWon - left.tricksWon;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+}
+
+function buildNumberedSavedGameStandings(savedGameOrSnapshot, eloDeltaByUserId = {}) {
+  return buildSavedGameStandings(savedGameOrSnapshot, eloDeltaByUserId).map((standing, index) => ({
+    ...standing,
+    finalRank: index + 1
+  }));
+}
+
 function serializeSavedGameForLibrary(savedGame) {
   if (!savedGame) {
     return null;
@@ -190,6 +240,67 @@ async function createMatchHistoryOnce({ game, standings, savedGameId = null }) {
   return MatchHistory.create(document);
 }
 
+async function finalizeEndedSavedGame(savedGame) {
+  if (!savedGame?.matchKey) {
+    return null;
+  }
+
+  const existingHistory = await MatchHistory.findOne({ matchKey: savedGame.matchKey });
+  if (existingHistory) {
+    return existingHistory;
+  }
+
+  const baseStandings = buildSavedGameStandings(savedGame);
+  const ratedParticipantIds = baseStandings
+    .filter((standing) => !standing.guest && !standing.isBot && standing.userId)
+    .map((standing) => String(standing.userId));
+
+  let eloResults = [];
+  if (ratedParticipantIds.length >= 2) {
+    const persistedUsers = await User.find({ _id: { $in: ratedParticipantIds } }).select('_id elo');
+    const usersById = new Map(persistedUsers.map((user) => [String(user._id), user]));
+    const participants = ratedParticipantIds
+      .map((userId) => usersById.get(userId))
+      .filter(Boolean)
+      .map((user) => ({
+        userId: String(user._id),
+        elo: user.elo
+      }));
+
+    if (participants.length >= 2) {
+      const calculation = calculateMultiplayerEloChanges(participants, baseStandings);
+      if (calculation.applied && calculation.results.length > 0) {
+        await User.bulkWrite(
+          calculation.results.map((result) => ({
+            updateOne: {
+              filter: { _id: result.userId },
+              update: { $set: { elo: result.nextElo } }
+            }
+          }))
+        );
+        eloResults = calculation.results;
+      }
+    }
+  }
+
+  const eloDeltaByUserId = eloResults.reduce((acc, result) => {
+    acc[result.userId] = result.delta;
+    return acc;
+  }, {});
+  const standings = buildNumberedSavedGameStandings(savedGame, eloDeltaByUserId);
+
+  return createMatchHistoryOnce({
+    game: {
+      matchKey: savedGame.matchKey,
+      roomName: savedGame.roomName || savedGame.snapshot?.roomName || 'Saved Match',
+      roundNumber: Number(savedGame.roundsFinished || savedGame.snapshot?.roundNumber || 0),
+      lastEloResults: eloResults
+    },
+    standings,
+    savedGameId: savedGame._id
+  });
+}
+
 function serializeMatchHistoryForLibrary(matchHistory, viewerUserId) {
   if (!matchHistory) {
     return null;
@@ -213,9 +324,11 @@ function serializeMatchHistoryForLibrary(matchHistory, viewerUserId) {
 module.exports = {
   MatchHistory,
   SavedGame,
+  buildSavedGameStandings,
   buildSavedGameSnapshot,
   createMatchHistoryOnce,
   createSavedGameDocument,
+  finalizeEndedSavedGame,
   serializeMatchHistoryForLibrary,
   serializeSavedGameForLibrary
 };
