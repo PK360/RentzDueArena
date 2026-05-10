@@ -3866,6 +3866,7 @@ function attachSocketManager(io) {
           io.to(p.socketId).emit('game_started', {
             message: 'The game has begun!',
             hand: gameState.handsReady[p.userId] || [],
+            startingHandSize: gameState.startingHandSize || 0,
             playerIndex: index,
             isSpectator: false,
             turnIndex: 0,
@@ -3887,6 +3888,7 @@ function attachSocketManager(io) {
           io.to(spectator.socketId).emit('game_started', {
             message: 'The game has begun!',
             hand: [],
+            startingHandSize: gameState.startingHandSize || spectatorVisibleHandState.visibleHand.length || 0,
             playerIndex: -1,
             isSpectator: true,
             turnIndex: 0,

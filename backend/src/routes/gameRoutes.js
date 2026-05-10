@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 
 const SavedGame = require('../../models/SavedGame');
 const { clearSessionCookie, getAuthenticatedUserFromRequest } = require('../lib/auth');
+const { finalizeEndedSavedGame } = require('../lib/gamePersistence');
 
 const router = express.Router();
 
@@ -30,23 +31,29 @@ router.post('/saved/:savedGameId/end', async (req, res, next) => {
       return res.status(400).json({ error: 'Saved game id is invalid' });
     }
 
-    const savedGame = await SavedGame.findOne({
+    const savedGame = await SavedGame.findOneAndUpdate({
       _id: savedGameId,
       ownerUserId: user._id,
       status: 'saved'
+    }, {
+      $set: {
+        status: 'ended',
+        endedAt: new Date()
+      }
+    }, {
+      new: true
     });
 
     if (!savedGame) {
       return res.status(404).json({ error: 'Saved game not found' });
     }
 
-    savedGame.status = 'ended';
-    savedGame.endedAt = new Date();
-    await savedGame.save();
+    const matchHistory = await finalizeEndedSavedGame(savedGame);
 
     res.json({
       ok: true,
       endedSavedGameId: savedGameId,
+      matchHistoryId: matchHistory?._id ? String(matchHistory._id) : null,
       message: 'Saved game ended.'
     });
   } catch (error) {
