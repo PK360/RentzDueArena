@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const User = require('../../models/User');
+const { getRankNameFromElo, getRankTierForElo, normalizeEloValue } = require('./elo');
 
 const RELATIONSHIP_FIELDS = ['friends', 'incomingFriendRequests', 'outgoingFriendRequests'];
 
@@ -113,6 +114,9 @@ function serializeRelationshipProfile(user) {
     avatarUrl: user.profilePicture || '',
     banner: user.banner || '',
     description: user.description || '',
+    elo: normalizeEloValue(user.elo),
+    rankName: getRankNameFromElo(user.elo),
+    rankTierKey: getRankTierForElo(user.elo).key,
     accountCreatedAt: user.accountCreatedAt || user.createdAt || null,
     favouriteRulesets: Array.isArray(user.favouriteRulesets) ? user.favouriteRulesets : [],
     rulesetLoadout: Array.isArray(user.rulesetLoadout) ? user.rulesetLoadout : []

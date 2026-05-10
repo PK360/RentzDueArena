@@ -4,7 +4,13 @@ const mongoose = require('mongoose');
 const ForumPost = require('../../models/ForumPost');
 const Ruleset = require('../../models/Ruleset');
 const User = require('../../models/User');
+const SavedGame = require('../../models/SavedGame');
+const MatchHistory = require('../../models/MatchHistory');
 const { clearSessionCookie, getAuthenticatedUserFromRequest } = require('../lib/auth');
+const {
+  serializeMatchHistoryForLibrary,
+  serializeSavedGameForLibrary
+} = require('../lib/gamePersistence');
 const {
   buildForumThread,
   escapeRegex,
@@ -25,11 +31,13 @@ const {
 
 const router = express.Router();
 
-const FORUM_AUTHOR_SELECT = 'username displayName profilePicture banner';
+const FORUM_AUTHOR_SELECT = 'username displayName profilePicture banner elo rankName';
 const FEED_LIMIT = 60;
 const SEARCH_POST_LIMIT = 30;
 const SEARCH_USER_LIMIT = 24;
 const LIBRARY_BOOKMARK_LIMIT = 24;
+const LIBRARY_SAVED_GAMES_LIMIT = 24;
+const LIBRARY_MATCH_HISTORY_LIMIT = 36;
 const VISIBLE_FORUM_POST_FILTER = { deletedAt: null };
 
 function readPostId(value) {
@@ -225,9 +233,27 @@ router.get('/library', async (req, res, next) => {
         .limit(LIBRARY_BOOKMARK_LIMIT)
     ).lean();
 
+    const [savedGames, matchHistory] = await Promise.all([
+      SavedGame.find({
+        ownerUserId: user._id,
+        status: 'saved'
+      })
+        .sort({ savedAt: -1, createdAt: -1 })
+        .limit(LIBRARY_SAVED_GAMES_LIMIT)
+        .lean(),
+      MatchHistory.find({
+        participantUserIds: user._id
+      })
+        .sort({ completedAt: -1, createdAt: -1 })
+        .limit(LIBRARY_MATCH_HISTORY_LIMIT)
+        .lean()
+    ]);
+
     res.json({
       ok: true,
       savedRulesets,
+      savedGames: savedGames.map((entry) => serializeSavedGameForLibrary(entry)).filter(Boolean),
+      matchHistory: matchHistory.map((entry) => serializeMatchHistoryForLibrary(entry, user._id)).filter(Boolean),
       bookmarkedRulesetPosts: bookmarkedPosts.map((post) => serializeForumPost(post, user, {
         replies: [],
         replyCount: 0

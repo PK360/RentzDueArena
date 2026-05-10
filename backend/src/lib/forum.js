@@ -189,7 +189,8 @@ function serializeForumAuthor(user) {
     profilePicture: avatarUrl,
     avatarUrl,
     banner: String(user.banner || ''),
-    elo: user.elo ?? user.rating ?? user.mmr ?? user.rank ?? null
+    elo: user.elo ?? user.rating ?? user.mmr ?? user.rank ?? null,
+    rankName: user.rankName || null
   };
 }
 

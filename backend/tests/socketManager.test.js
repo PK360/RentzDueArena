@@ -7,7 +7,10 @@ const {
   findNextChooser,
   getEligibleRuleIdsForPlayer,
   getStartGameValidationError,
+  addBotToLobby,
   removeWaitingLobbyMember,
+  removeBotFromLobby,
+  setLobbyChatMutedState,
   deleteCustomRulesetFromLobby,
   sanitizeTurnTimerSeconds,
   sanitizeRulesetPermissions,
@@ -58,6 +61,58 @@ test('lets a spectator claim an open player seat as unready', () => {
   assert.strictEqual(lobby.spectators.length, 0);
   assert.strictEqual(lobby.players[1].userId, 'viewer-1');
   assert.strictEqual(lobby.players[1].isReady, false);
+});
+
+test('lets the host add a ready bot seat before the game starts', () => {
+  const lobby = {
+    roomId: 'BOT123',
+    hostId: 'host-1',
+    players: [
+      { socketId: 'socket-host', userId: 'host-1', isReady: true, role: 'player', elo: 1200 },
+      { socketId: 'socket-p2', userId: 'player-2', isReady: true, role: 'player', elo: 1800 }
+    ],
+    spectators: [],
+    customRulesets: [],
+    selectedRulesets: { whist: true },
+    rulesetPermissions: {
+      'host-1': { whist: true },
+      'player-2': { whist: true }
+    }
+  };
+
+  const result = addBotToLobby(lobby);
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(lobby.players.length, 3);
+  assert.strictEqual(lobby.players[2].isBot, true);
+  assert.strictEqual(lobby.players[2].isReady, true);
+  assert.strictEqual(lobby.players[2].rankName, 'Devoted Rentz Player');
+  assert.deepStrictEqual(lobby.players.map((player) => player.seatIndex), [0, 1, 2]);
+});
+
+test('lets the host remove a bot seat before the game starts', () => {
+  const lobby = {
+    roomId: 'BOT456',
+    hostId: 'host-1',
+    players: [
+      { socketId: 'socket-host', userId: 'host-1', isReady: true, role: 'player', seatIndex: 0 },
+      { socketId: 'bot:BOT456:1:abcd', userId: 'bot_BOT456_1_abcd', isReady: true, role: 'player', isBot: true, seatIndex: 1 }
+    ],
+    spectators: [],
+    customRulesets: [],
+    selectedRulesets: { whist: true },
+    rulesetPermissions: {
+      'host-1': { whist: true },
+      'bot_BOT456_1_abcd': { whist: true }
+    }
+  };
+
+  const result = removeBotFromLobby(lobby, 'bot_BOT456_1_abcd');
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(lobby.players.length, 1);
+  assert.strictEqual(lobby.players[0].seatIndex, 0);
+  assert.strictEqual(lobby.rulesetPermissions['bot_BOT456_1_abcd'], undefined);
 });
 
 test('prevents moving a spectator into the player list when all six seats are taken', () => {
@@ -123,6 +178,45 @@ test('marks the room for deletion when the last active player leaves even if spe
   assert.strictEqual(lobby.hostId, 'viewer-1');
   assert.strictEqual(lobby.players.length, 0);
   assert.strictEqual(lobby.spectators.length, 1);
+});
+
+test('removing a waiting lobby member also clears their chat mute state', () => {
+  const lobby = {
+    hostId: 'host-1',
+    players: [
+      { socketId: 'socket-host', userId: 'host-1', isReady: true, role: 'player' },
+      { socketId: 'socket-player', userId: 'player-2', isReady: false, role: 'player' }
+    ],
+    spectators: [],
+    mutedChatUserIds: ['player-2'],
+    rulesetPermissions: {
+      'host-1': { whist: true },
+      'player-2': { whist: true }
+    }
+  };
+
+  const result = removeWaitingLobbyMember(lobby, 'player-2');
+
+  assert.strictEqual(result.member.userId, 'player-2');
+  assert.deepStrictEqual(lobby.mutedChatUserIds, []);
+});
+
+test('setLobbyChatMutedState toggles chat mute entries without duplicates', () => {
+  const lobby = {
+    mutedChatUserIds: ['player-2']
+  };
+
+  const unchangedMute = setLobbyChatMutedState(lobby, 'player-2', true);
+  assert.deepStrictEqual(unchangedMute, { changed: false, muted: true });
+  assert.deepStrictEqual(lobby.mutedChatUserIds, ['player-2']);
+
+  const muted = setLobbyChatMutedState(lobby, 'player-3', true);
+  assert.deepStrictEqual(muted, { changed: true, muted: true });
+  assert.deepStrictEqual(lobby.mutedChatUserIds, ['player-2', 'player-3']);
+
+  const unmuted = setLobbyChatMutedState(lobby, 'player-2', false);
+  assert.deepStrictEqual(unmuted, { changed: true, muted: false });
+  assert.deepStrictEqual(lobby.mutedChatUserIds, ['player-3']);
 });
 
 test('bumps the gameplay state version monotonically for room sync events', () => {

@@ -4,6 +4,7 @@ const {
   MAX_RULESET_LOADOUT,
   normalizeRulesetIndexes
 } = require('../src/lib/accountRulesets');
+const { DEFAULT_ACCOUNT_ELO, normalizeEloValue } = require('../src/lib/elo');
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,24}$/;
 const ASSET_FIELD_MAX_LENGTH = 2048;
@@ -122,6 +123,11 @@ const userSchema = new mongoose.Schema({
     trim: true,
     maxlength: DESCRIPTION_MAX_LENGTH
   },
+  elo: {
+    type: Number,
+    default: DEFAULT_ACCOUNT_ELO,
+    min: 0
+  },
   accountCreatedAt: { type: Date, default: Date.now },
   favouriteRulesets: {
     type: [Number],
@@ -153,6 +159,8 @@ const userSchema = new mongoose.Schema({
   createdRulesets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Ruleset' }],
 }, { timestamps: true });
 
+userSchema.index({ elo: -1, usernameLower: 1 });
+
 userSchema.pre('validate', function normalizeAccountFields(next) {
   try {
     this.username = String(this.username || '').trim();
@@ -161,6 +169,7 @@ userSchema.pre('validate', function normalizeAccountFields(next) {
     this.profilePicture = String(this.profilePicture || '').trim();
     this.banner = String(this.banner || '').trim();
     this.description = String(this.description || '').trim();
+    this.elo = normalizeEloValue(this.elo, DEFAULT_ACCOUNT_ELO);
     this.favouriteRulesets = normalizeRulesetIndexes(this.favouriteRulesets, {
       maxItems: MAX_FAVOURITE_RULESETS,
       fieldName: 'favouriteRulesets'

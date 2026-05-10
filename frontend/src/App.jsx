@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Ban,
   BarChart3,
+  Bot,
   Bookmark,
   Check,
   Clock,
@@ -106,6 +107,8 @@ const CARD_ASSET_BASE_PATH = `${import.meta.env.BASE_URL}cards/`;
 const CARD_ASSET_ASPECT_RATIO = 167.0869141 / 242.6669922;
 const MAX_ACTIVITY_FEED_ITEMS = 60;
 const CHAT_MESSAGE_MAX_LENGTH = 400;
+const TABLE_CHAT_BUBBLE_MAX_LENGTH = 120;
+const TABLE_CHAT_BUBBLE_DURATION_MS = 4200;
 const TRICK_CARD_CENTER_BOX_PERCENT = 3.2;
 const TRICK_CARD_ROTATION_LIMIT_DEGREES = 18;
 const HAND_CARD_MAX_ADVANCE_RATIO = 0.76;
@@ -381,6 +384,7 @@ function normalizeRoomSettings(roomSettings) {
     selectedRulesets,
     rulesetPermissions,
     nvAllowed: roomSettings?.nvAllowed ?? true,
+    autoBotReplacementEnabled: roomSettings?.autoBotReplacementEnabled ?? true,
     useTurnTimer: roomSettings?.useTurnTimer ?? true,
     turnTimerSeconds: clampNumber(
       Number(roomSettings?.turnTimerSeconds ?? TURN_TIMER_RANGE.defaultValue),
@@ -445,6 +449,8 @@ function createEmptyLibraryState() {
   return {
     loading: false,
     savedRulesets: [],
+    savedGames: [],
+    matchHistory: [],
     bookmarkedRulesetPosts: []
   };
 }
@@ -545,6 +551,42 @@ function normalizeChatMessageContent(value) {
     .split('\u0000').join('')
     .trim()
     .slice(0, CHAT_MESSAGE_MAX_LENGTH);
+}
+
+function normalizeMutedChatUserIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function getBubbleTimestampValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (!value) {
+    return 0;
+  }
+
+  const parsedValue = new Date(value).getTime();
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+}
+
+function getTableChatBubbleCopy(content) {
+  const normalizedContent = normalizeChatMessageContent(content);
+  if (normalizedContent.length <= TABLE_CHAT_BUBBLE_MAX_LENGTH) {
+    return normalizedContent;
+  }
+
+  return `${normalizedContent.slice(0, TABLE_CHAT_BUBBLE_MAX_LENGTH - 1).trimEnd()}…`;
 }
 
 function normalizeChatMessage(message, fallbackScope = 'lobby') {
@@ -729,6 +771,10 @@ function getPlayerName(player) {
   return player?.name || player?.displayName || 'Player';
 }
 
+function isBotPlayer(player) {
+  return Boolean(player?.isBot);
+}
+
 function getPlayerInitials(player) {
   const name = getPlayerName(player).trim();
   if (!name) {
@@ -799,6 +845,14 @@ function getFriendRelationshipStatus(viewer, target) {
     return {
       code: 'unavailable',
       label: 'Profile unavailable',
+      canSendRequest: false
+    };
+  }
+
+  if (isBotPlayer(target)) {
+    return {
+      code: 'bot-player',
+      label: 'AI bot',
       canSendRequest: false
     };
   }
@@ -877,13 +931,64 @@ function buildGuestProfileSummary(player) {
     avatarUrl: getPlayerAvatarSource(player),
     banner: '',
     description: player?.description || 'This player is using a guest profile.',
+    elo: null,
+    rankName: 'Guest',
     accountCreatedAt: null,
     favouriteRulesets: [],
     rulesetLoadout: []
   };
 }
 
+function buildBotProfileSummary(player) {
+  return {
+    userId: getPlayerUserId(player),
+    username: getPlayerName(player),
+    name: getPlayerName(player),
+    displayName: getPlayerName(player),
+    guest: false,
+    isBot: true,
+    profilePicture: getPlayerAvatarSource(player),
+    avatarUrl: getPlayerAvatarSource(player),
+    banner: '',
+    description: player?.description || 'Computer-controlled Rentz player.',
+    elo: getPlayerRating(player) ?? 500,
+    rankName: player?.rankName || 'Starting-out Rentz Rookie',
+    accountCreatedAt: null,
+    favouriteRulesets: [],
+    rulesetLoadout: [],
+    replacementForName: player?.replacementForName || null,
+    averageHumanElo: player?.averageHumanElo ?? null
+  };
+}
+
+function getPlayerConnectionStatus(player) {
+  if (player?.connectionStatus) {
+    return player.connectionStatus;
+  }
+
+  if (typeof player?.isConnected === 'boolean') {
+    return player.isConnected ? 'connected' : 'reconnecting';
+  }
+
+  return 'connected';
+}
+
+function getPlayerConnectionLabel(player) {
+  const status = getPlayerConnectionStatus(player);
+  if (status === 'reconnecting') {
+    return 'Reconnecting';
+  }
+
+  if (status === 'abandoned') {
+    return 'Abandoned';
+  }
+
+  return '';
+}
+
 function PlayerNameLabel({ player, isLocal = false, className = '', nameClassName = '', suffixClassName = '' }) {
+  const connectionLabel = getPlayerConnectionLabel(player);
+
   return (
     <span className={clsx('rentz-player-name-label', className)}>
       <span className={clsx('rentz-player-name-value', nameClassName)}>
@@ -891,6 +996,16 @@ function PlayerNameLabel({ player, isLocal = false, className = '', nameClassNam
       </span>
       {isLocal ? (
         <span className={clsx('rentz-player-name-self', suffixClassName)}>(You)</span>
+      ) : null}
+      {isBotPlayer(player) ? (
+        <span className="inline-flex items-center rounded-full border border-sky-200/80 bg-sky-100/85 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.16em] text-sky-900">
+          AI
+        </span>
+      ) : null}
+      {connectionLabel ? (
+        <span className="inline-flex items-center rounded-full border border-amber-200/80 bg-amber-100/85 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.16em] text-amber-900">
+          {connectionLabel}
+        </span>
       ) : null}
     </span>
   );
@@ -900,11 +1015,29 @@ function getPlayerRating(player) {
   return player?.elo ?? player?.rating ?? player?.mmr ?? player?.rank ?? null;
 }
 
+function getPlayerCompetitiveLabel(player) {
+  if (isBotPlayer(player)) {
+    const rating = getPlayerRating(player);
+    return rating == null ? 'AI ELO 500' : `AI ELO ${rating}`;
+  }
+
+  if (player?.guest) {
+    return 'Guest';
+  }
+
+  const rating = getPlayerRating(player);
+  return rating == null ? 'ELO --' : `ELO ${rating}`;
+}
+
 function getPlayerPoints(player) {
   return player?.points ?? player?.score ?? player?.totalPoints ?? null;
 }
 
 function getPlayerPresence(player) {
+  if (isBotPlayer(player)) {
+    return true;
+  }
+
   if (typeof player?.isConnected === 'boolean') {
     return player.isConnected;
   }
@@ -1021,8 +1154,47 @@ function EmojiReactionBubble({ player, reaction, placement = 'left', className =
   );
 }
 
-function MobileReactionSpotlight({ player, reaction }) {
-  if (!player || !reaction) {
+function ChatTableBubble({ player, message, placement = 'left', className = '' }) {
+  const bubbleCopy = getTableChatBubbleCopy(message?.content);
+
+  if (!bubbleCopy) {
+    return null;
+  }
+
+  return (
+    <div
+      className={clsx('rentz-reaction-bubble rentz-chat-table-bubble', placement === 'right' && 'is-right', className)}
+      role="status"
+      aria-live="polite"
+      aria-label={`${getPlayerName(player)} says ${bubbleCopy}`}
+    >
+      <span className="rentz-chat-table-bubble-copy">{bubbleCopy}</span>
+      <span className="rentz-reaction-bubble-tail" aria-hidden="true" />
+    </div>
+  );
+}
+
+function TablePresenceBubble({ player, reaction = null, chatBubble = null, placement = 'left', className = '' }) {
+  const reactionTimestamp = getBubbleTimestampValue(reaction?.createdAt);
+  const chatTimestamp = getBubbleTimestampValue(chatBubble?.createdAt);
+
+  if (chatTimestamp > reactionTimestamp) {
+    return <ChatTableBubble player={player} message={chatBubble} placement={placement} className={className} />;
+  }
+
+  if (reaction) {
+    return <EmojiReactionBubble player={player} reaction={reaction} placement={placement} className={className} />;
+  }
+
+  if (chatBubble) {
+    return <ChatTableBubble player={player} message={chatBubble} placement={placement} className={className} />;
+  }
+
+  return null;
+}
+
+function MobileReactionSpotlight({ player, reaction = null, chatBubble = null }) {
+  if (!player || (!reaction && !chatBubble)) {
     return null;
   }
 
@@ -1030,7 +1202,12 @@ function MobileReactionSpotlight({ player, reaction }) {
     <div className="rentz-mobile-reaction-spotlight" role="status" aria-live="polite">
       <div className="rentz-mobile-reaction-player">
         <div className="rentz-avatar-wrap rentz-mobile-reaction-avatar-wrap">
-          <EmojiReactionBubble player={player} reaction={reaction} className="is-spotlight" />
+          <TablePresenceBubble
+            player={player}
+            reaction={reaction}
+            chatBubble={chatBubble}
+            className="is-spotlight"
+          />
           <div className="rentz-avatar-shell rentz-mobile-reaction-avatar-shell">
             <AvatarFace
               player={player}
@@ -1385,11 +1562,11 @@ function RentzSeatCluster({
   points = null,
   mobileHero = false,
   reaction = null,
+  chatBubble = null,
   reactionPlacement = 'left',
   onEmojiClick,
   onProfileAction = null
 }) {
-  const rating = getPlayerRating(player);
   const isConnected = getPlayerPresence(player);
   const showTurnMarker = isCurrent && !mobileHero;
 
@@ -1432,7 +1609,12 @@ function RentzSeatCluster({
       )}
 
       <div className="rentz-avatar-wrap">
-        <EmojiReactionBubble player={player} reaction={reaction} placement={reactionPlacement} />
+        <TablePresenceBubble
+          player={player}
+          reaction={reaction}
+          chatBubble={chatBubble}
+          placement={reactionPlacement}
+        />
         {isLocal && onEmojiClick && (
           <button
             type="button"
@@ -1468,7 +1650,7 @@ function RentzSeatCluster({
               {showElo && (
                 <div className="rentz-elo-badge">
                   <Trophy className="h-3 w-3" />
-                  <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+                  <span>{getPlayerCompetitiveLabel(player)}</span>
                 </div>
               )}
             </div>
@@ -1486,7 +1668,7 @@ function RentzSeatCluster({
             {showElo && (
               <div className="rentz-elo-badge">
                 <Trophy className="h-3 w-3" />
-                <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+                <span>{getPlayerCompetitiveLabel(player)}</span>
               </div>
             )}
           </div>
@@ -1514,7 +1696,6 @@ function RentzSeatCluster({
 }
 
 function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, points, onProfileAction = null }) {
-  const rating = getPlayerRating(player);
   const identityContent = (
     <>
       <AvatarFace
@@ -1531,7 +1712,7 @@ function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, po
           className="rentz-player-row-name"
         />
         <div className="rentz-player-row-meta">
-          <span>{rating == null ? 'ELO --' : `ELO ${rating}`}</span>
+          <span>{getPlayerCompetitiveLabel(player)}</span>
           <span>{cardCount} cards</span>
           <span>{tricksWon} hands</span>
           <span>{formatMetaValue(points)} pts</span>
@@ -1561,8 +1742,6 @@ function CompactPlayerRow({ player, isCurrent, isLocal, cardCount, tricksWon, po
 }
 
 function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, points, onProfileAction = null }) {
-  const rating = getPlayerRating(player);
-
   return (
     <article className={clsx('rentz-desktop-player-card', isCurrent && 'is-current', isLocal && 'is-local')}>
       {onProfileAction ? (
@@ -1589,7 +1768,7 @@ function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, p
                 className="rentz-desktop-player-card-name"
               />
               <div className="rentz-desktop-player-card-rating">
-                {rating == null ? 'ELO --' : `ELO ${rating}`} <span aria-hidden="true">★</span>
+                {getPlayerCompetitiveLabel(player)} <span aria-hidden="true">★</span>
               </div>
               <div className="rentz-desktop-player-card-stats">
                 <span>{cardCount} cards</span>
@@ -1617,7 +1796,7 @@ function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, p
               className="rentz-desktop-player-card-name"
             />
             <div className="rentz-desktop-player-card-rating">
-              {rating == null ? 'ELO --' : `ELO ${rating}`} <span aria-hidden="true">★</span>
+              {getPlayerCompetitiveLabel(player)} <span aria-hidden="true">★</span>
             </div>
             <div className="rentz-desktop-player-card-stats">
               <span>{cardCount} cards</span>
@@ -1828,7 +2007,19 @@ function ToggleCheck({ checked, disabled = false, onChange, label, compact = fal
   );
 }
 
-function StatsOverlay({ stats, players, onClose, onContinue, canContinue, matchComplete }) {
+function StatsOverlay({
+  stats,
+  players,
+  onClose,
+  onContinue,
+  onEndGame,
+  onSaveQuit,
+  canContinue,
+  canEndGame,
+  canSaveQuit,
+  actionBusy = '',
+  matchComplete
+}) {
   if (!stats) {
     return null;
   }
@@ -1862,11 +2053,41 @@ function StatsOverlay({ stats, players, onClose, onContinue, canContinue, matchC
       wide
       footer={(
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+          {!matchComplete && !canContinue && !canEndGame && !canSaveQuit ? (
+            <div className="rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)] sm:mr-auto">
+              Waiting for the host to continue, end, or save the match.
+            </div>
+          ) : null}
           {canContinue && !matchComplete && (
-            <button type="button" onClick={onContinue} className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]">
-              Continue Match
+            <button
+              type="button"
+              onClick={onContinue}
+              disabled={actionBusy !== ''}
+              className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {actionBusy === 'continue' ? 'Continuing...' : 'Continue Match'}
             </button>
           )}
+          {canEndGame && !matchComplete ? (
+            <button
+              type="button"
+              onClick={onEndGame}
+              disabled={actionBusy !== ''}
+              className="rounded-[1.3rem] border border-amber-200/80 bg-amber-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-amber-950 transition hover:bg-amber-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {actionBusy === 'end' ? 'Ending...' : 'End Game'}
+            </button>
+          ) : null}
+          {canSaveQuit && !matchComplete ? (
+            <button
+              type="button"
+              onClick={onSaveQuit}
+              disabled={actionBusy !== ''}
+              className="rounded-[1.3rem] border border-sky-200/80 bg-sky-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-sky-950 transition hover:bg-sky-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {actionBusy === 'save' ? 'Saving...' : 'Save & Quit'}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -2031,6 +2252,9 @@ function App() {
   const [gameFinished, setGameFinished] = useState(false);
   const [trickPending, setTrickPending] = useState(false);
   const [hand, setHand] = useState([]);
+  const [spectatorVisibleHand, setSpectatorVisibleHand] = useState([]);
+  const [spectatorVisiblePlayerId, setSpectatorVisiblePlayerId] = useState('');
+  const [spectatorVisiblePlayerName, setSpectatorVisiblePlayerName] = useState('');
   const [startingHandSize, setStartingHandSize] = useState(0);
   const [cardCounts, setCardCounts] = useState({});
   const [currentTrick, setCurrentTrick] = useState([]);
@@ -2044,6 +2268,7 @@ function App() {
   const [latestRoundStats, setLatestRoundStats] = useState(null);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [matchCompletePending, setMatchCompletePending] = useState(false);
+  const [roundActionBusy, setRoundActionBusy] = useState('');
   const [timerNow, setTimerNow] = useState(() => Date.now());
   const [localTimerDeadline, setLocalTimerDeadline] = useState(null);
   const [activityFeed, setActivityFeed] = useState([]);
@@ -2051,6 +2276,7 @@ function App() {
   const [gameChatMessages, setGameChatMessages] = useState([]);
   const [chatDrafts, setChatDrafts] = useState({ lobby: '', game: '' });
   const [chatBusyScope, setChatBusyScope] = useState('');
+  const [mutedChatUserIds, setMutedChatUserIds] = useState([]);
   const [isDesktopChatOpen, setIsDesktopChatOpen] = useState(false);
   const [desktopChatUnread, setDesktopChatUnread] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
@@ -2061,12 +2287,19 @@ function App() {
   const [playerActionMenu, setPlayerActionMenu] = useState(null);
   const [playerProfileModal, setPlayerProfileModal] = useState(null);
   const [playerProfileLoading, setPlayerProfileLoading] = useState(false);
+  const [rankLeaderboardModal, setRankLeaderboardModal] = useState(null);
   const [friendActionBusyTargetId, setFriendActionBusyTargetId] = useState('');
+  const [chatMuteBusyTargetId, setChatMuteBusyTargetId] = useState('');
   const [pendingSpectatorJoin, setPendingSpectatorJoin] = useState(null);
   const [rulesetPreview, setRulesetPreview] = useState(null);
+  const [banNoticeModal, setBanNoticeModal] = useState(null);
+  const [leaveMatchConfirmModal, setLeaveMatchConfirmModal] = useState(null);
+  const [savedGameRulesetTableModal, setSavedGameRulesetTableModal] = useState(null);
   const [emojiPickerState, setEmojiPickerState] = useState(null);
   const [activeReactions, setActiveReactions] = useState({});
+  const [activeChatBubbles, setActiveChatBubbles] = useState({});
   const [mobileReactionSpotlight, setMobileReactionSpotlight] = useState(null);
+  const [mobileChatSpotlight, setMobileChatSpotlight] = useState(null);
   const [desktopSeatLayout, setDesktopSeatLayout] = useState([]);
   const [desktopStageTightness, setDesktopStageTightness] = useState(0);
   const [handSpreadMetrics, setHandSpreadMetrics] = useState(null);
@@ -2092,12 +2325,15 @@ function App() {
   const playerActionMenuRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const showReactionBubbleRef = useRef(() => {});
+  const showChatTableBubbleRef = useRef(() => {});
   const desktopChatOpenRef = useRef(false);
   const activeChatScopeRef = useRef('');
   const turnTimerWarningStateRef = useRef({ deadline: null, halfShown: false, quarterShown: false });
   const turnTimerNoticeTimeoutRef = useRef(null);
   const reactionTimeoutsRef = useRef(new Map());
+  const chatBubbleTimeoutsRef = useRef(new Map());
   const mobileReactionSpotlightTimeoutRef = useRef(null);
+  const mobileChatSpotlightTimeoutRef = useRef(null);
   const forumReplyPreviewUrlsRef = useRef([]);
   const desktopChatListRef = useRef(null);
   const roomChatListRef = useRef(null);
@@ -2137,6 +2373,7 @@ function App() {
   const [forumSearchInput, setForumSearchInput] = useState('');
   const [forumSearchState, setForumSearchState] = useState(() => createEmptyForumSearchState());
   const [libraryState, setLibraryState] = useState(() => createEmptyLibraryState());
+  const [librarySavedGameBusyId, setLibrarySavedGameBusyId] = useState('');
   const [savedCustomRulesets, setSavedCustomRulesets] = useState([]);
   const [editorSaveBusy, setEditorSaveBusy] = useState(false);
 
@@ -2259,6 +2496,9 @@ function App() {
     setIsAuthenticated(authenticated);
     setUserProfile(authenticated ? user : null);
     setFriendState((current) => (authenticated ? current : createEmptyFriendState()));
+    if (!authenticated) {
+      setRankLeaderboardModal(null);
+    }
 
     if (authenticated) {
       clearGuestIdentity();
@@ -2344,6 +2584,12 @@ function App() {
     }
 
     const targetUserId = getPlayerUserId(playerOrProfile);
+    if (isBotPlayer(playerOrProfile)) {
+      setPlayerProfileLoading(false);
+      setPlayerProfileModal(buildBotProfileSummary(playerOrProfile));
+      return;
+    }
+
     if (playerOrProfile.guest) {
       setPlayerProfileLoading(false);
       setPlayerProfileModal(buildGuestProfileSummary(playerOrProfile));
@@ -2366,6 +2612,8 @@ function App() {
       profilePicture: getPlayerAvatarSource(playerOrProfile),
       banner: playerOrProfile.banner || '',
       description: playerOrProfile.description || '',
+      elo: getPlayerRating(playerOrProfile),
+      rankName: playerOrProfile.rankName || '',
       accountCreatedAt: playerOrProfile.accountCreatedAt || null
     });
 
@@ -2547,6 +2795,12 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
+  function applySpectatorVisibleHandState(payload = null) {
+    setSpectatorVisibleHand(Array.isArray(payload?.spectatorVisibleHand) ? payload.spectatorVisibleHand : []);
+    setSpectatorVisiblePlayerId(payload?.spectatorVisiblePlayerId || '');
+    setSpectatorVisiblePlayerName(payload?.spectatorVisiblePlayerName || '');
+  }
+
   function applyRestoredSession(response) {
     if (!response?.success || !response.roomId || !response.lobby) {
       return;
@@ -2564,6 +2818,7 @@ function App() {
     setPlayers(response.lobby.players || []);
     setSpectators(response.lobby.spectators || []);
     setLobbyHostId(response.lobby.hostId || '');
+    setMutedChatUserIds(normalizeMutedChatUserIds(response.lobby.mutedChatUserIds));
     const nextRoomSettings = normalizeRoomSettings(response.lobby.roomSettings);
     setRoomSettings(nextRoomSettings);
     setDraftRoomSettings(nextRoomSettings);
@@ -2573,6 +2828,7 @@ function App() {
     setRoomChatMessages(normalizeChatMessages(response.lobby.chatMessages, 'lobby'));
     setGameChatMessages(restoredGame?.chatMessages ? normalizeChatMessages(restoredGame.chatMessages, 'game') : []);
     setErrorMsg('');
+    setRoundActionBusy('');
 
     if (!restoredGame) {
       setGameStarted(false);
@@ -2580,6 +2836,7 @@ function App() {
       setGameFinished(false);
       setChoiceState(null);
       setHand([]);
+      applySpectatorVisibleHandState(null);
       setStartingHandSize(0);
       startingHandSizeRef.current = 0;
       setLatestRoundStats(null);
@@ -2597,6 +2854,7 @@ function App() {
     setTrickPending(Boolean(restoredGame.trickPending));
     setPlayView('table');
     setHand(restoredHand);
+    applySpectatorVisibleHandState(restoredGame);
     setStartingHandSize(restoredStartingHandSize);
     setMyIndex(typeof restoredGame.playerIndex === 'number' ? restoredGame.playerIndex : -1);
     setTurnIndex(restoredGame.turnIndex || 0);
@@ -2643,6 +2901,7 @@ function App() {
     setDraftRoomSettings(defaultRoomSettings);
     setChoiceState(null);
     setHand([]);
+    applySpectatorVisibleHandState(null);
     setStartingHandSize(0);
     setMyIndex(-1);
     setTurnIndex(0);
@@ -2659,6 +2918,7 @@ function App() {
     setGameChatMessages([]);
     setChatDrafts({ lobby: '', game: '' });
     setChatBusyScope('');
+    setMutedChatUserIds([]);
     setIsDesktopChatOpen(false);
     setDesktopChatUnread(0);
     setErrorMsg('');
@@ -2670,24 +2930,38 @@ function App() {
     setPlayerActionMenu(null);
     setPlayerProfileModal(null);
     setPlayerProfileLoading(false);
+    setChatMuteBusyTargetId('');
     setPendingSpectatorJoin(null);
     setRulesetPreview(null);
+    setLeaveMatchConfirmModal(null);
     reactionTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
     });
     reactionTimeoutsRef.current.clear();
+    chatBubbleTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    chatBubbleTimeoutsRef.current.clear();
     setActiveReactions({});
+    setActiveChatBubbles({});
     setEmojiPickerState(null);
     if (mobileReactionSpotlightTimeoutRef.current) {
       window.clearTimeout(mobileReactionSpotlightTimeoutRef.current);
       mobileReactionSpotlightTimeoutRef.current = null;
     }
+    if (mobileChatSpotlightTimeoutRef.current) {
+      window.clearTimeout(mobileChatSpotlightTimeoutRef.current);
+      mobileChatSpotlightTimeoutRef.current = null;
+    }
     setMobileReactionSpotlight(null);
+    setMobileChatSpotlight(null);
     setLatestRoundStats(null);
     setIsStatsOpen(false);
     setMatchCompletePending(false);
+    setRoundActionBusy('');
     setIsRoomSettingsOpen(false);
     setEditorRoomRulesetId(null);
+    setSavedGameRulesetTableModal(null);
   }
 
   useEffect(() => {
@@ -2761,6 +3035,7 @@ function App() {
       setPlayers(lobbyPlayers || []);
       setSpectators(lobbySpectators || []);
       setLobbyHostId(nextHostId || '');
+      setMutedChatUserIds(normalizeMutedChatUserIds(lobby?.mutedChatUserIds));
       const nextRoomSettings = normalizeRoomSettings(lobby?.roomSettings);
       setRoomSettings(nextRoomSettings);
       setDraftRoomSettings(nextRoomSettings);
@@ -2769,7 +3044,7 @@ function App() {
       setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
     });
 
-    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages }) => {
+    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
       const resolvedHand = nextHand || [];
@@ -2780,6 +3055,11 @@ function App() {
       setTrickPending(false);
       setPlayView('table');
       setHand(resolvedHand);
+      applySpectatorVisibleHandState({
+        spectatorVisibleHand: nextSpectatorVisibleHand,
+        spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+        spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+      });
       setStartingHandSize(resolvedHand.length);
       setMyIndex(typeof playerIndex === 'number' ? playerIndex : -1);
       setTurnIndex(nextTurnIndex);
@@ -2800,9 +3080,14 @@ function App() {
       applyPlayerPoints(nextPlayerPoints);
     });
 
-    socket.on('choice_state_update', ({ choiceState: nextChoiceState, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion }) => {
+    socket.on('choice_state_update', ({ choiceState: nextChoiceState, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       setChoiceState(nextChoiceState || null);
+      applySpectatorVisibleHandState({
+        spectatorVisibleHand: nextSpectatorVisibleHand,
+        spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+        spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+      });
       if (nextChoiceState?.phase && nextChoiceState.phase !== 'round_stats') {
         setIsStatsOpen(false);
         setMatchCompletePending(false);
@@ -2813,9 +3098,14 @@ function App() {
       applyPlayerPoints(nextPlayerPoints);
     });
 
-    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion }) => {
+    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       setChoiceState(nextChoiceState || null);
+      applySpectatorVisibleHandState({
+        spectatorVisibleHand: nextSpectatorVisibleHand,
+        spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+        spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+      });
       setIsStatsOpen(false);
       setMatchCompletePending(false);
       setCurrentTrick(nextTrick || []);
@@ -2837,7 +3127,7 @@ function App() {
       }
     });
 
-    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState }) => {
+    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       setCurrentTrick(nextTrick);
       setTurnIndex(nextTurnIndex);
@@ -2845,6 +3135,11 @@ function App() {
       setTrickPending(false);
       setAnimatingWinner(null);
       setTrickWinnerId(null);
+      applySpectatorVisibleHandState({
+        spectatorVisibleHand: nextSpectatorVisibleHand,
+        spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+        spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+      });
       if (nextChoiceState) {
         setChoiceState(nextChoiceState);
       }
@@ -2862,11 +3157,16 @@ function App() {
       setHand(resolvedHand);
     });
 
-    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState }) => {
+    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       setAnimatingWinner(winnerName);
       setTrickWinnerId(winnerId);
       setTrickPending(true);
+      applySpectatorVisibleHandState({
+        spectatorVisibleHand: nextSpectatorVisibleHand,
+        spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+        spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+      });
       if (nextChoiceState) {
         setChoiceState(nextChoiceState);
       }
@@ -2882,7 +3182,7 @@ function App() {
       });
     });
 
-    socket.on('trick_end', ({ nextTurnIndex, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState }) => {
+    socket.on('trick_end', ({ nextTurnIndex, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       scheduleVersionedGameStateUpdate(stateVersion, () => {
         setTurnIndex(nextTurnIndex);
         setCurrentTrick([]);
@@ -2901,12 +3201,18 @@ function App() {
         if (nextChoiceState) {
           setChoiceState(nextChoiceState);
         }
+        applySpectatorVisibleHandState({
+          spectatorVisibleHand: nextSpectatorVisibleHand,
+          spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+          spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+        });
         applyPlayerPoints(nextPlayerPoints);
       });
     });
 
-    socket.on('round_finished', ({ roundStats, matchComplete, standings, choiceState: nextChoiceState, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion }) => {
+    socket.on('round_finished', ({ roundStats, matchComplete, standings, choiceState: nextChoiceState, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        setRoundActionBusy('');
         setLatestRoundStats(roundStats || null);
         setIsStatsOpen(Boolean(roundStats));
         setMatchCompletePending(Boolean(matchComplete));
@@ -2922,12 +3228,18 @@ function App() {
         if (nextCardCounts) {
           setCardCounts(nextCardCounts);
         }
+        applySpectatorVisibleHandState({
+          spectatorVisibleHand: nextSpectatorVisibleHand,
+          spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+          spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+        });
         applyPlayerPoints(nextPlayerPoints);
       });
     });
 
-    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState }) => {
+    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        setRoundActionBusy('');
         setGameFinished(true);
         setTrickPending(false);
         setTrickWinnerId(winnerId);
@@ -2942,9 +3254,23 @@ function App() {
         if (nextCardCounts) {
           setCardCounts(nextCardCounts);
         }
+        applySpectatorVisibleHandState({
+          spectatorVisibleHand: nextSpectatorVisibleHand,
+          spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId,
+          spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName
+        });
         applyPlayerPoints(nextPlayerPoints);
         setActivityFeed((current) => [`Game finished. ${winnerName} won the final hand.`, ...current].slice(0, MAX_ACTIVITY_FEED_ITEMS));
       });
+    });
+
+    socket.on('game_activity', ({ message, tone }) => {
+      if (!message) {
+        return;
+      }
+
+      setActivityFeed((current) => [message, ...current].slice(0, MAX_ACTIVITY_FEED_ITEMS));
+      showTopPrompt(message, tone === 'warning' ? 'info' : tone === 'error' ? 'error' : 'info');
     });
 
     socket.on('chat_message', ({ scope, message }) => {
@@ -2955,6 +3281,7 @@ function App() {
 
       if (normalizedMessage.scope === 'game') {
         setGameChatMessages((current) => appendChatMessage(current, normalizedMessage));
+        showChatTableBubbleRef.current(normalizedMessage);
       } else {
         setRoomChatMessages((current) => appendChatMessage(current, normalizedMessage));
       }
@@ -2970,7 +3297,17 @@ function App() {
     });
 
     socket.on('lobby_removed', ({ reason }) => {
+      const normalizedReason = String(reason || '');
+      const wasBanned = normalizedReason.toLowerCase().includes('banned');
       resetActiveRoomState();
+      if (wasBanned) {
+        setBanNoticeModal({
+          title: 'Removed From Game',
+          message: normalizedReason || 'You were banned from this game. You cannot rejoin this game.'
+        });
+        return;
+      }
+
       showTopPrompt(reason || 'You were removed from the room.', 'error');
     });
 
@@ -2980,6 +3317,21 @@ function App() {
         deletedBy === activeProfileRef.current?.userId ? 'Room deleted.' : (reason || 'The room was deleted.'),
         deletedBy === activeProfileRef.current?.userId ? 'info' : 'error'
       );
+    });
+
+    socket.on('live_game_session_closed', ({ reason, savedGame }) => {
+      const shouldOpenLibrary = Boolean(
+        savedGame
+        && savedGame.ownerUserId
+        && savedGame.ownerUserId === activeProfileRef.current?.userId
+      );
+
+      resetActiveRoomState();
+      if (shouldOpenLibrary) {
+        setActiveTab('library');
+        void loadLibraryData({ suppressErrors: true });
+      }
+      showTopPrompt(reason || 'The live match session closed.', 'info');
     });
 
     socket.on('game_error', (message) => {
@@ -3033,9 +3385,11 @@ function App() {
       socket.off('trick_end');
       socket.off('round_finished');
       socket.off('game_finished');
+      socket.off('game_activity');
       socket.off('chat_message');
       socket.off('lobby_removed');
       socket.off('lobby_deleted');
+      socket.off('live_game_session_closed');
       socket.off('game_error');
       socket.off('friend_state_update');
       socket.off('player_reaction');
@@ -3133,9 +3487,17 @@ function App() {
       window.clearTimeout(timeoutId);
     });
     reactionTimeoutsRef.current.clear();
+    chatBubbleTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    chatBubbleTimeoutsRef.current.clear();
     if (mobileReactionSpotlightTimeoutRef.current) {
       window.clearTimeout(mobileReactionSpotlightTimeoutRef.current);
       mobileReactionSpotlightTimeoutRef.current = null;
+    }
+    if (mobileChatSpotlightTimeoutRef.current) {
+      window.clearTimeout(mobileChatSpotlightTimeoutRef.current);
+      mobileChatSpotlightTimeoutRef.current = null;
     }
   }, []);
 
@@ -3168,6 +3530,7 @@ function App() {
     setPlayers(lobby?.players || []);
     setSpectators(lobby?.spectators || []);
     setLobbyHostId(lobby?.hostId || '');
+    setMutedChatUserIds(normalizeMutedChatUserIds(lobby?.mutedChatUserIds));
     const nextRoomSettings = normalizeRoomSettings(lobby?.roomSettings);
     setRoomSettings(nextRoomSettings);
     setDraftRoomSettings(nextRoomSettings);
@@ -3380,6 +3743,49 @@ function App() {
     }
 
     return true;
+  };
+
+  const openRankLeaderboardModal = async ({
+    targetUserId = '',
+    fallbackRankName = 'Current Rank',
+    sourceLabel = 'rank'
+  } = {}) => {
+    const resolvedTargetUserId = String(targetUserId || userProfile?.userId || '').trim();
+    if (!resolvedTargetUserId) {
+      showTopPrompt('This rank leaderboard is not available right now.', 'error');
+      return;
+    }
+
+    setRankLeaderboardModal({
+      loading: true,
+      error: '',
+      currentUserId: userProfile?.userId || null,
+      highlightedUserId: resolvedTargetUserId,
+      rankName: fallbackRankName,
+      rankTierKey: '',
+      rankMinElo: null,
+      rankMaxElo: null,
+      sourceLabel,
+      entries: []
+    });
+
+    try {
+      const response = await requestJson(`/api/auth/leaderboard/rank/${encodeURIComponent(resolvedTargetUserId)}`);
+      setRankLeaderboardModal({
+        loading: false,
+        error: '',
+        ...(response?.leaderboard || {}),
+        sourceLabel,
+        entries: Array.isArray(response?.leaderboard?.entries) ? response.leaderboard.entries : []
+      });
+    } catch (error) {
+      setRankLeaderboardModal((current) => ({
+        ...(current || {}),
+        loading: false,
+        error: error.message || 'Unable to load this leaderboard right now.',
+        entries: []
+      }));
+    }
   };
 
   const getAccountRulesetDefinition = (index) => {
@@ -3694,6 +4100,8 @@ function App() {
       setLibraryState({
         loading: false,
         savedRulesets,
+        savedGames: Array.isArray(response?.savedGames) ? response.savedGames : [],
+        matchHistory: Array.isArray(response?.matchHistory) ? response.matchHistory : [],
         bookmarkedRulesetPosts: Array.isArray(response?.bookmarkedRulesetPosts) ? response.bookmarkedRulesetPosts : []
       });
       setSavedCustomRulesets(savedRulesets);
@@ -3753,6 +4161,11 @@ function App() {
       return;
     }
 
+    if (activeProfile?.userId && mutedChatUserIds.includes(activeProfile.userId)) {
+      showTopPrompt('Chat muted by the host for this room right now.', 'error');
+      return;
+    }
+
     const content = normalizeChatMessageContent(chatDrafts[scope]);
     if (!content) {
       showTopPrompt('Write a message before sending it.', 'info');
@@ -3781,6 +4194,44 @@ function App() {
       showTopPrompt(error.message || 'Unable to send that chat message right now.', 'error');
     } finally {
       setChatBusyScope('');
+    }
+  };
+
+  const handleSetChatMute = async (targetUserId, muted) => {
+    const normalizedTargetUserId = String(targetUserId || '').trim();
+    if (!roomId || !amIHost || !normalizedTargetUserId) {
+      return false;
+    }
+
+    setChatMuteBusyTargetId(normalizedTargetUserId);
+
+    try {
+      const response = await new Promise((resolve, reject) => {
+        socket.emit('set_chat_mute', { roomId, targetUserId: normalizedTargetUserId, muted }, (result) => {
+          if (result?.error) {
+            reject(new Error(result.error));
+            return;
+          }
+
+          resolve(result);
+        });
+      });
+
+      if (response?.lobby) {
+        applyLobbyState(response.lobby);
+      }
+
+      setPlayerActionMenu(null);
+      showTopPrompt(
+        muted ? 'Player chat muted for this room.' : 'Player chat unmuted for this room.',
+        'info'
+      );
+      return true;
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to update chat mute right now.', 'error');
+      return false;
+    } finally {
+      setChatMuteBusyTargetId('');
     }
   };
 
@@ -4727,6 +5178,7 @@ function App() {
       roomName: draftRoomSettings.roomName,
       visibility: draftRoomSettings.visibility,
       nvAllowed: draftRoomSettings.nvAllowed,
+      autoBotReplacementEnabled: draftRoomSettings.autoBotReplacementEnabled,
       useTurnTimer: draftRoomSettings.useTurnTimer,
       turnTimerSeconds: draftRoomSettings.turnTimerSeconds,
       selectedRulesets: draftRoomSettings.selectedRulesets,
@@ -4745,6 +5197,57 @@ function App() {
       showTopPrompt('Room settings updated.', 'success');
     });
   };
+
+  const handleAddBotToLobby = () => new Promise((resolve) => {
+    socket.emit('add_bot_to_lobby', { roomId }, (response) => {
+      if (response?.error) {
+        showErrorMessage(response.error);
+        resolve(false);
+        return;
+      }
+
+      if (response?.lobby) {
+        applyLobbyState(response.lobby);
+      }
+
+      showTopPrompt('Bot added to the room.', 'success');
+      resolve(true);
+    });
+  });
+
+  const handleRemoveBotFromLobby = (targetUserId) => new Promise((resolve) => {
+    socket.emit('remove_bot_from_lobby', { roomId, targetUserId }, (response) => {
+      if (response?.error) {
+        showErrorMessage(response.error);
+        resolve(false);
+        return;
+      }
+
+      if (response?.lobby) {
+        applyLobbyState(response.lobby);
+      }
+
+      showTopPrompt('Bot removed from the room.', 'info');
+      resolve(true);
+    });
+  });
+
+  const handleReplacePlayerWithBot = (targetUserId) => new Promise((resolve) => {
+    socket.emit('replace_player_with_bot', { roomId, targetUserId }, (response) => {
+      if (response?.error) {
+        showErrorMessage(response.error);
+        resolve(false);
+        return;
+      }
+
+      if (response?.lobby) {
+        applyLobbyState(response.lobby);
+      }
+
+      showTopPrompt('Abandoned player replaced with a bot.', 'success');
+      resolve(true);
+    });
+  });
 
   const handleTransferHost = (targetUserId) => {
     socket.emit('transfer_host', { roomId, targetUserId }, (response) => {
@@ -4796,6 +5299,27 @@ function App() {
   };
 
   const handleLeaveRoom = () => {
+    if (gameStarted) {
+      if (isSpectatingGame) {
+        socket.emit('leave_spectating', { roomId }, (response) => {
+          if (response?.error) {
+            showErrorMessage(response.error);
+            return;
+          }
+
+          resetActiveRoomState();
+          showTopPrompt(response?.message || 'You stopped spectating the match.', 'info');
+        });
+        return;
+      }
+
+      setLeaveMatchConfirmModal({
+        title: 'Abandon Match',
+        message: 'Leaving now will immediately abandon your seat and let the server replace you with a bot if needed. Continue?'
+      });
+      return;
+    }
+
     socket.emit('leave_lobby', { roomId }, (response) => {
       if (response?.error) {
         showErrorMessage(response.error);
@@ -4804,6 +5328,19 @@ function App() {
 
       resetActiveRoomState();
       showTopPrompt(response?.message || 'You left the room.', response?.roomDeleted ? 'info' : 'success');
+    });
+  };
+
+  const handleConfirmLeaveMatch = () => {
+    socket.emit('abandon_match', { roomId }, (response) => {
+      if (response?.error) {
+        showErrorMessage(response.error);
+        return;
+      }
+
+      setLeaveMatchConfirmModal(null);
+      resetActiveRoomState();
+      showTopPrompt(response?.message || 'You abandoned the match.', 'info');
     });
   };
 
@@ -4824,7 +5361,9 @@ function App() {
   };
 
   const handleContinueMatch = () => {
+    setRoundActionBusy('continue');
     socket.emit('continue_match', { roomId }, (response) => {
+      setRoundActionBusy('');
       if (response?.error) {
         showErrorMessage(response.error);
         return;
@@ -4832,6 +5371,69 @@ function App() {
       setIsStatsOpen(false);
       setMatchCompletePending(false);
     });
+  };
+
+  const handleEndGame = () => {
+    setRoundActionBusy('end');
+    socket.emit('end_game', { roomId }, (response) => {
+      setRoundActionBusy('');
+      if (response?.error) {
+        showErrorMessage(response.error);
+      }
+    });
+  };
+
+  const handleSaveAndQuit = () => {
+    setRoundActionBusy('save');
+    socket.emit('save_and_quit', { roomId }, (response) => {
+      setRoundActionBusy('');
+      if (response?.error) {
+        showErrorMessage(response.error);
+      }
+    });
+  };
+
+  const handleResumeSavedGame = (savedGameId) => {
+    if (!savedGameId) {
+      return;
+    }
+
+    setLibrarySavedGameBusyId(savedGameId);
+    socket.emit('resume_saved_game', { savedGameId }, (response) => {
+      setLibrarySavedGameBusyId('');
+      if (response?.error) {
+        showErrorMessage(response.error);
+        return;
+      }
+
+      applyRestoredSession(response);
+      setSavedGameRulesetTableModal(null);
+      showTopPrompt(`Resumed ${response?.lobby?.roomName || 'saved match'}.`, 'success');
+      void loadLibraryData({ suppressErrors: true });
+    });
+  };
+
+  const handleEndSavedGame = async (savedGameId) => {
+    if (!savedGameId) {
+      return;
+    }
+
+    setLibrarySavedGameBusyId(savedGameId);
+    try {
+      const response = await requestJson(`/api/games/saved/${encodeURIComponent(savedGameId)}/end`, {
+        method: 'POST'
+      });
+      setSavedGameRulesetTableModal((current) => (current?.id === savedGameId ? null : current));
+      setLibraryState((current) => ({
+        ...current,
+        savedGames: current.savedGames.filter((entry) => entry.id !== savedGameId)
+      }));
+      showTopPrompt(response?.message || 'Saved game ended.', 'info');
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to end that saved game right now.', 'error');
+    } finally {
+      setLibrarySavedGameBusyId('');
+    }
   };
 
   const startGame = () => {
@@ -4930,8 +5532,12 @@ function App() {
     (isRecoveryPromptOpen && recoverableGuestProfile) ||
     isRoomSettingsOpen ||
     playerProfileModal ||
+    rankLeaderboardModal ||
+    banNoticeModal ||
+    leaveMatchConfirmModal ||
     pendingSpectatorJoin ||
     rulesetPreview ||
+    savedGameRulesetTableModal ||
     isChoosingNv ||
     isChoosingRuleset ||
     (isStatsOpen && latestRoundStats)
@@ -4943,6 +5549,7 @@ function App() {
     !matchCompletePending &&
     !gameFinished
   );
+  const canManageRoundStats = canContinueRoundFromStats;
   const activeRoundTimerDeadline = isPlayingRound ? localTimerDeadline : null;
   const turnTimerRemainingMs = activeRoundTimerDeadline
     ? Math.max(0, activeRoundTimerDeadline - timerNow)
@@ -5011,9 +5618,37 @@ function App() {
     }
 
     const relationship = getFriendRelationshipStatus(userProfile, playerActionMenu.player);
-    const busy = friendActionBusyTargetId === getPlayerUserId(playerActionMenu.player);
+    const targetUserId = getPlayerUserId(playerActionMenu.player);
+    const busy = friendActionBusyTargetId === targetUserId;
+    const isChatMuteBusy = chatMuteBusyTargetId === targetUserId;
+    const isSelfProfile = Boolean(targetUserId && targetUserId === activeProfile?.userId);
+    const canModerateChat = Boolean(
+      inLobby
+      && amIHost
+      && targetUserId
+      && !isBotPlayer(playerActionMenu.player)
+      && !isSelfProfile
+      && [...players, ...spectators].some((member) => member.userId === targetUserId)
+    );
+    const isTargetChatMuted = Boolean(targetUserId && mutedChatUserIds.includes(targetUserId));
+    const canRemoveBot = Boolean(inLobby && amIHost && !gameStarted && isBotPlayer(playerActionMenu.player));
+    const canBanMember = Boolean(
+      inLobby
+      && amIHost
+      && targetUserId
+      && !isSelfProfile
+      && !isBotPlayer(playerActionMenu.player)
+      && [...players, ...spectators].some((member) => member.userId === targetUserId)
+    );
+    const canReplaceAbandonedPlayer = Boolean(
+      inLobby
+      && amIHost
+      && gameStarted
+      && !isBotPlayer(playerActionMenu.player)
+      && getPlayerConnectionStatus(playerActionMenu.player) === 'abandoned'
+    );
     const menuWidth = Math.min(280, Math.max(220, window.innerWidth - 24));
-    const estimatedMenuHeight = 188;
+    const estimatedMenuHeight = 248;
     const rect = playerActionMenu.anchorRect;
     const desktopLeft = rect
       ? Math.min(
@@ -5075,6 +5710,71 @@ function App() {
               <UserRound className="h-4 w-4" />
               View Profile
             </button>
+
+            {canModerateChat ? (
+              <button
+                type="button"
+                disabled={isChatMuteBusy}
+                onClick={async () => {
+                  const success = await handleSetChatMute(targetUserId, !isTargetChatMuted);
+                  if (success) {
+                    setPlayerActionMenu(null);
+                  }
+                }}
+                className="rentz-player-action-menu-button"
+              >
+                {isTargetChatMuted ? <MessageCircle className="h-4 w-4" /> : <Ban className="h-4 w-4" />}
+                {isChatMuteBusy
+                  ? (isTargetChatMuted ? 'Unmuting...' : 'Muting...')
+                  : (isTargetChatMuted ? 'Unmute Chat' : 'Mute Chat')}
+              </button>
+            ) : null}
+
+            {canRemoveBot ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  const success = await handleRemoveBotFromLobby(targetUserId);
+                  if (success) {
+                    setPlayerActionMenu(null);
+                  }
+                }}
+                className="rentz-player-action-menu-button"
+              >
+                <Trash2 className="h-4 w-4" />
+                Remove Bot
+              </button>
+            ) : null}
+
+            {canBanMember ? (
+              <button
+                type="button"
+                onClick={() => {
+                  handleBanMember(targetUserId);
+                  setPlayerActionMenu(null);
+                }}
+                className="rentz-player-action-menu-button"
+              >
+                <Ban className="h-4 w-4" />
+                Ban From Game
+              </button>
+            ) : null}
+
+            {canReplaceAbandonedPlayer ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  const success = await handleReplacePlayerWithBot(targetUserId);
+                  if (success) {
+                    setPlayerActionMenu(null);
+                  }
+                }}
+                className="rentz-player-action-menu-button"
+              >
+                <Bot className="h-4 w-4" />
+                Replace With Bot
+              </button>
+            ) : null}
 
             {relationship.canSendRequest ? (
               <button
@@ -5357,7 +6057,7 @@ function App() {
     return (
       <ModalShell
         title={playerProfileModal.username || playerProfileModal.displayName || 'Player Profile'}
-        eyebrow={playerProfileModal.guest ? 'Guest profile' : 'Table profile'}
+        eyebrow={playerProfileModal.isBot ? 'AI profile' : (playerProfileModal.guest ? 'Guest profile' : 'Table profile')}
         onClose={() => setPlayerProfileModal(null)}
         wide
         footer={<div className="flex flex-col gap-3 sm:flex-row sm:justify-end">{footerButtons}</div>}
@@ -5392,8 +6092,29 @@ function App() {
                       <span className="inline-flex rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">
                         {relationship.label}
                       </span>
+                      <span className="inline-flex rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                        {getPlayerCompetitiveLabel(playerProfileModal)}
+                      </span>
+                      {!playerProfileModal.guest && !playerProfileModal.isBot && playerProfileModal.rankName ? (
+                        <button
+                          type="button"
+                          onClick={() => void openRankLeaderboardModal({
+                            targetUserId: playerProfileModal.userId,
+                            fallbackRankName: playerProfileModal.rankName,
+                            sourceLabel: 'profile-preview'
+                          })}
+                          className="inline-flex rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)] transition hover:bg-[var(--surface-hover)] focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+                          title="Open leaderboard for this rank"
+                        >
+                          {playerProfileModal.rankName}
+                        </button>
+                      ) : null}
                       <span className="text-sm font-semibold text-[var(--text-secondary)]">
-                        {playerProfileModal.accountCreatedAt
+                        {playerProfileModal.isBot
+                          ? (playerProfileModal.replacementForName
+                            ? `Replacing ${playerProfileModal.replacementForName}`
+                            : 'Computer-controlled player')
+                          : playerProfileModal.accountCreatedAt
                           ? `Joined ${new Date(playerProfileModal.accountCreatedAt).toLocaleDateString()}`
                           : 'Guest player'}
                       </span>
@@ -5415,7 +6136,7 @@ function App() {
             </div>
           </div>
 
-          {!playerProfileModal.guest && (
+          {!playerProfileModal.guest && !playerProfileModal.isBot && (
             <div className="grid gap-5 min-[1800px]:grid-cols-2">
               {renderReadonlyProfileRulesetDeck({
                 profile: playerProfileModal,
@@ -5432,6 +6153,112 @@ function App() {
                 limit: 3,
                 emptyLabel: 'No ruleset loadout selected.',
                 isLoading: playerProfileLoading
+              })}
+            </div>
+          )}
+        </div>
+      </ModalShell>
+    );
+  };
+
+  const renderRankLeaderboardModal = () => {
+    if (!rankLeaderboardModal) {
+      return null;
+    }
+
+    const {
+      loading,
+      error,
+      entries = [],
+      currentUserId,
+      highlightedUserId,
+      rankName,
+      rankMinElo,
+      rankMaxElo,
+      sourceLabel
+    } = rankLeaderboardModal;
+    const rankRangeLabel = rankMaxElo == null
+      ? `${rankMinElo ?? 0}+ ELO`
+      : `${rankMinElo ?? 0}-${rankMaxElo} ELO`;
+
+    return (
+      <ModalShell
+        title={rankName || 'Rank Leaderboard'}
+        eyebrow={`${sourceLabel === 'profile-preview' ? 'Profile rank leaderboard' : 'Current rank leaderboard'}${rankName ? ` • ${rankRangeLabel}` : ''}`}
+        onClose={() => setRankLeaderboardModal(null)}
+        wide
+        footer={(
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRankLeaderboardModal(null)}
+              className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            >
+              Close
+            </button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          {loading ? (
+            <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+              Loading leaderboard...
+            </div>
+          ) : error ? (
+            <div className="rounded-[1.4rem] border border-red-200/80 bg-red-100/80 p-5 text-sm font-semibold text-red-900">
+              {error}
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+              No ranked accounts are available in this tier yet.
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {entries.map((entry) => {
+                const isCurrentUser = entry.userId && entry.userId === currentUserId;
+                const isHighlightedUser = entry.userId && entry.userId === highlightedUserId;
+
+                return (
+                  <div
+                    key={entry.userId || entry.username}
+                    className={clsx(
+                      'flex flex-wrap items-center gap-3 rounded-[1.35rem] border px-4 py-3 sm:flex-nowrap sm:px-5',
+                      isHighlightedUser
+                        ? 'border-emerald-300 bg-emerald-100/70'
+                        : 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
+                    )}
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <div className={clsx(
+                        'flex h-10 min-w-10 items-center justify-center rounded-full border text-sm font-black',
+                        isHighlightedUser
+                          ? 'border-emerald-400 bg-white text-emerald-900'
+                          : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]'
+                      )}
+                      >
+                        #{entry.placement || '--'}
+                      </div>
+                      <AvatarFace
+                        player={entry}
+                        alt={`${getPlayerName(entry)} avatar`}
+                        wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
+                        imageClassName="h-full w-full rounded-full object-cover"
+                        fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-base font-black text-[var(--text-primary)]">
+                          {getPlayerName(entry)}{isCurrentUser ? ' (You)' : ''}
+                        </div>
+                        <div className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                          {entry.rankName || rankName}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="ml-auto inline-flex rounded-full border border-[var(--glass-border)] bg-white/80 px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                      ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
+                    </div>
+                  </div>
+                );
               })}
             </div>
           )}
@@ -5607,13 +6434,14 @@ function App() {
   const isChoiceHandSpreadVisible = isChoosingRuleset && !choiceState?.nvSelected && !isSpectatingGame;
   const handSpreadLayoutMode = isChoiceHandSpreadVisible ? 'choice' : isTableStageVisible ? 'play' : 'hidden';
   const isHandSpreadVisible = handSpreadLayoutMode !== 'hidden';
-  const sortedHand = sortCards(hand);
-  const fallbackHandSpreadMetrics = sortedHand.length > 0
+  const displayedHand = isSpectatingGame ? spectatorVisibleHand : hand;
+  const sortedDisplayedHand = sortCards(displayedHand);
+  const fallbackHandSpreadMetrics = sortedDisplayedHand.length > 0
     ? (() => {
       const fallbackCardHeight = HAND_CARD_MIN_HEIGHT_PX;
       const fallbackCardWidth = fallbackCardHeight * CARD_ASSET_ASPECT_RATIO;
       const fallbackCardAdvance = fallbackCardWidth * 0.58;
-      const fallbackSpreadWidth = fallbackCardWidth + (Math.max(0, sortedHand.length - 1) * fallbackCardAdvance);
+      const fallbackSpreadWidth = fallbackCardWidth + (Math.max(0, sortedDisplayedHand.length - 1) * fallbackCardAdvance);
 
       return {
         cardHeight: fallbackCardHeight,
@@ -5655,6 +6483,20 @@ function App() {
   const mobileReactionSpotlightPlayer = mobileReactionSpotlight
     ? mobileReactionSpotlight.player || getReactionParticipant(mobileReactionSpotlight.userId)
     : null;
+  const mobileChatSpotlightPlayer = mobileChatSpotlight
+    ? mobileChatSpotlight.player || getReactionParticipant(mobileChatSpotlight.userId)
+    : null;
+  const mobileReactionSpotlightTimestamp = getBubbleTimestampValue(mobileReactionSpotlight?.createdAt);
+  const mobileChatSpotlightTimestamp = getBubbleTimestampValue(mobileChatSpotlight?.createdAt);
+  const useChatSpotlight = Boolean(
+    mobileChatSpotlight
+    && mobileChatSpotlightTimestamp >= mobileReactionSpotlightTimestamp
+  );
+  const mobileSpotlightPlayer = useChatSpotlight
+    ? mobileChatSpotlightPlayer
+    : mobileReactionSpotlightPlayer;
+  const mobileSpotlightReaction = useChatSpotlight ? null : mobileReactionSpotlight;
+  const mobileSpotlightChatBubble = useChatSpotlight ? mobileChatSpotlight : null;
   const showMobileLocalBubble = Boolean(
     myPlayer
     && !isSpectatingGame
@@ -5726,6 +6568,72 @@ function App() {
     }, EMOJI_REACTION_DURATION_MS);
   };
   showReactionBubbleRef.current = showReactionBubble;
+
+  const showChatTableBubble = (message) => {
+    const normalizedMessage = normalizeChatMessage(message, 'game');
+    const userId = normalizedMessage?.sender?.userId || '';
+    if (!userId) {
+      return;
+    }
+
+    const existingTimeout = chatBubbleTimeoutsRef.current.get(userId);
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    setActiveChatBubbles((current) => ({
+      ...current,
+      [userId]: normalizedMessage
+    }));
+
+    const timeoutId = window.setTimeout(() => {
+      chatBubbleTimeoutsRef.current.delete(userId);
+      setActiveChatBubbles((current) => {
+        if (!current[userId]) {
+          return current;
+        }
+
+        const nextState = { ...current };
+        delete nextState[userId];
+        return nextState;
+      });
+    }, TABLE_CHAT_BUBBLE_DURATION_MS);
+
+    chatBubbleTimeoutsRef.current.set(userId, timeoutId);
+
+    const shouldSpotlightOnMobile = userId !== activeProfile?.userId && userId !== nextTurnPlayer?.userId;
+    if (!shouldSpotlightOnMobile) {
+      return;
+    }
+
+    const chatPlayer = getReactionParticipant(userId) || normalizedMessage.sender;
+    if (mobileChatSpotlightTimeoutRef.current) {
+      window.clearTimeout(mobileChatSpotlightTimeoutRef.current);
+    }
+
+    setMobileChatSpotlight({
+      ...normalizedMessage,
+      userId,
+      player: chatPlayer
+        ? {
+          ...chatPlayer,
+          avatarUrl: getPlayerAvatarSource(chatPlayer)
+        }
+        : null
+    });
+
+    mobileChatSpotlightTimeoutRef.current = window.setTimeout(() => {
+      setMobileChatSpotlight((current) => {
+        if (!current || current.id !== normalizedMessage.id) {
+          return current;
+        }
+
+        return null;
+      });
+      mobileChatSpotlightTimeoutRef.current = null;
+    }, TABLE_CHAT_BUBBLE_DURATION_MS);
+  };
+  showChatTableBubbleRef.current = showChatTableBubble;
 
   const handleEmojiPrompt = (event, player) => {
     if (!player?.userId || player.userId !== activeProfile?.userId) {
@@ -6115,10 +7023,13 @@ function App() {
 
   const renderChatComposer = (scope, { compact = false } = {}) => {
     const isBusy = chatBusyScope === scope;
-    const isDisabled = !scope || !inLobby || !activeProfile || isBusy;
-    const placeholder = scope === 'game'
-      ? 'Talk to the table...'
-      : 'Talk to the room...';
+    const isMuted = Boolean(activeProfile?.userId && mutedChatUserIds.includes(activeProfile.userId));
+    const isDisabled = !scope || !inLobby || !activeProfile || isBusy || isMuted;
+    const placeholder = isMuted
+      ? 'Chat muted by host'
+      : scope === 'game'
+        ? 'Talk to the table...'
+        : 'Talk to the room...';
 
     return (
       <form
@@ -6135,6 +7046,7 @@ function App() {
           <input
             value={chatDrafts[scope] || ''}
             onChange={(event) => updateChatDraft(scope, event.target.value)}
+            disabled={isMuted}
             maxLength={CHAT_MESSAGE_MAX_LENGTH}
             placeholder={placeholder}
             className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-[var(--text-primary)] outline-none placeholder:text-[var(--text-secondary)]"
@@ -6149,7 +7061,7 @@ function App() {
           </button>
         </div>
         <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-          <span>{scope === 'game' ? 'Game-scoped live chat' : 'Room-scoped live chat'}</span>
+          <span>{isMuted ? 'Chat muted in this room' : scope === 'game' ? 'Game-scoped live chat' : 'Room-scoped live chat'}</span>
           <span>{(chatDrafts[scope] || '').length}/{CHAT_MESSAGE_MAX_LENGTH}</span>
         </div>
       </form>
@@ -6291,8 +7203,20 @@ function App() {
                   Only these players receive cards and take turns in the match.
                 </p>
               </div>
-              <div className="status-pill px-4 py-2">
-                {players.length}/{MAX_ACTIVE_PLAYERS} seats used
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="status-pill px-4 py-2">
+                  {players.length}/{MAX_ACTIVE_PLAYERS} seats used
+                </div>
+                {amIHost && !gameStarted && players.length < MAX_ACTIVE_PLAYERS ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleAddBotToLobby()}
+                    className="inline-flex items-center gap-2 rounded-[1.1rem] border border-sky-200/80 bg-sky-100/85 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-sky-900 transition hover:bg-sky-200/80"
+                  >
+                    <Bot className="h-4 w-4" />
+                    Add Bot
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -6327,15 +7251,32 @@ function App() {
                           </>
                         )
                       })}
-                      <div className={clsx('status-pill px-4 py-2', player.isReady && 'bg-emerald-200/80 text-emerald-900')}>
-                        {player.isReady ? (
-                          <span className="flex items-center gap-2">
-                            <Check className="h-4 w-4" />
-                            Ready
-                          </span>
-                        ) : (
-                          'Waiting'
-                        )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {player.isBot && amIHost && !gameStarted ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveBotFromLobby(player.userId)}
+                            className="inline-flex items-center gap-2 rounded-[1.1rem] border border-rose-200/80 bg-rose-100/85 px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-rose-900 transition hover:bg-rose-200/85"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            Remove Bot
+                          </button>
+                        ) : null}
+                        <div className={clsx('status-pill px-4 py-2', player.isReady && 'bg-emerald-200/80 text-emerald-900')}>
+                          {player.isBot ? (
+                            <span className="flex items-center gap-2">
+                              <Bot className="h-4 w-4" />
+                              AI Ready
+                            </span>
+                          ) : player.isReady ? (
+                            <span className="flex items-center gap-2">
+                              <Check className="h-4 w-4" />
+                              Ready
+                            </span>
+                          ) : (
+                            'Waiting'
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -6496,7 +7437,7 @@ function App() {
               className="inline-flex items-center justify-center gap-2 rounded-[1.6rem] border border-red-200/75 bg-[linear-gradient(180deg,rgba(255,243,243,0.97)_0%,rgba(254,205,211,0.9)_100%)] px-6 py-4 text-base font-black uppercase tracking-[0.16em] text-red-950 transition hover:-translate-y-0.5 hover:brightness-[1.02] sm:px-8 sm:text-lg sm:tracking-[0.18em]"
             >
               <LogOut className="h-4 w-4" />
-              Leave Room
+              {gameStarted ? (isSpectatingGame ? 'Leave Spectating' : 'Abandon Match') : 'Leave Room'}
             </button>
 
             {gameFinished && (
@@ -7007,10 +7948,11 @@ function App() {
               </div>
 
               <div className="rentz-table-brand">Rentz</div>
-              {mobileReactionSpotlightPlayer && mobileReactionSpotlight ? (
+              {mobileSpotlightPlayer && (mobileSpotlightReaction || mobileSpotlightChatBubble) ? (
                 <MobileReactionSpotlight
-                  player={mobileReactionSpotlightPlayer}
-                  reaction={mobileReactionSpotlight}
+                  player={mobileSpotlightPlayer}
+                  reaction={mobileSpotlightReaction}
+                  chatBubble={mobileSpotlightChatBubble}
                 />
               ) : null}
 
@@ -7056,10 +7998,13 @@ function App() {
                     isCurrent
                     isWinner={trickWinnerId === nextTurnPlayer.userId}
                     isLocal={nextTurnPlayer.userId === myPlayerId}
+                    showElo={false}
+                    showStats={false}
                     cardCount={nextTurnPlayer.userId === myPlayerId ? hand.length : (cardCounts[nextTurnPlayer.userId] || 0)}
                     tricksWon={(collectedHandsByPlayer[nextTurnPlayer.userId] || []).length}
                     points={getPlayerPoints(nextTurnPlayer)}
                     reaction={activeReactions[nextTurnPlayer.userId] || null}
+                    chatBubble={activeChatBubbles[nextTurnPlayer.userId] || null}
                     reactionPlacement="left"
                     onEmojiClick={handleEmojiPrompt}
                     onProfileAction={openPlayerActionMenu}
@@ -7079,6 +8024,7 @@ function App() {
                     tricksWon={(collectedHandsByPlayer[myPlayer.userId] || []).length}
                     points={getPlayerPoints(myPlayer)}
                     reaction={activeReactions[myPlayer.userId] || null}
+                    chatBubble={activeChatBubbles[myPlayer.userId] || null}
                     reactionPlacement="left"
                     onEmojiClick={handleEmojiPrompt}
                     onProfileAction={openPlayerActionMenu}
@@ -7109,6 +8055,7 @@ function App() {
                         showElo={false}
                         showStats={false}
                         reaction={activeReactions[player.userId] || null}
+                        chatBubble={activeChatBubbles[player.userId] || null}
                         reactionPlacement={Math.cos(seatPosition.angle) < -0.34 ? 'right' : 'left'}
                         onEmojiClick={handleEmojiPrompt}
                         onProfileAction={openPlayerActionMenu}
@@ -7158,6 +8105,16 @@ function App() {
                     <span className="inline-flex items-center justify-center gap-1.5 text-[0.85rem] sm:text-[0.95rem]">
                       <BarChart3 className="h-4 w-4" />
                       Stats
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLeaveRoom}
+                    className="rentz-verify-button w-full !min-h-0 shrink-0 py-2 sm:py-3 transition-transform hover:-translate-y-0.5"
+                  >
+                    <span className="inline-flex items-center justify-center gap-1.5 text-[0.85rem] sm:text-[0.95rem]">
+                      <LogOut className="h-4 w-4" />
+                      {isSpectatingGame ? 'Leave Spectating' : 'Abandon Match'}
                     </span>
                   </button>
                 </div>
@@ -7310,10 +8267,14 @@ function App() {
 
   const renderHandSpread = ({ mode = 'play' } = {}) => {
     const isPlayMode = mode === 'play';
+    const isSpectatorReadOnlyHand = isPlayMode && isSpectatingGame;
+    const spectatorHandLabel = spectatorVisiblePlayerName
+      ? `${spectatorVisiblePlayerName}'s hand`
+      : 'current player hand';
 
     return (
       <section className={clsx('rentz-hand-panel relative', mode === 'choice' && 'rentz-choice-hand-panel')}>
-        {isPlayMode && pendingPlayCard && (
+        {isPlayMode && pendingPlayCard && !isSpectatorReadOnlyHand && (
           <div className="absolute right-4 top-1 z-[110] flex origin-top-right scale-[0.93] flex-col items-center gap-1.5 rounded-[1.2rem] border border-[rgba(255,255,255,0.7)] bg-[linear-gradient(180deg,rgba(255,255,255,0.65)_0%,rgba(210,225,240,0.5)_100%)] p-2 shadow-[inset_0_1px_1px_rgba(255,255,255,0.9),0_8px_16px_rgba(30,50,70,0.12)] backdrop-blur-md">
             <span className="text-[0.62rem] font-black uppercase tracking-[0.08em] text-[#1e3445] drop-shadow-[0_1px_1px_rgba(255,255,255,0.8)] pt-0.5">Place card?</span>
             <div className="flex w-full justify-between gap-1.5 px-0.5">
@@ -7344,18 +8305,25 @@ function App() {
           className="rentz-hand-scroll"
           data-rentz-modal-scroll={mode === 'choice' ? 'x' : undefined}
         >
+          {isSpectatorReadOnlyHand ? (
+            <div className="mx-4 mb-3 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]">
+              {sortedDisplayedHand.length > 0
+                ? `You are spectating. Showing ${spectatorHandLabel} in read-only mode.`
+                : 'You are spectating. Waiting for a current player hand to view.'}
+            </div>
+          ) : null}
           <div
             className="rentz-hand-row"
-            style={sortedHand.length > 0 && visibleHandSpreadMetrics ? { width: `${visibleHandSpreadMetrics.spreadWidth}px` } : undefined}
+            style={sortedDisplayedHand.length > 0 && visibleHandSpreadMetrics ? { width: `${visibleHandSpreadMetrics.spreadWidth}px` } : undefined}
           >
             {(() => {
               let hoverShifts = [];
-              if (sortedHand.length > 0) {
-                const N = sortedHand.length;
+              if (sortedDisplayedHand.length > 0) {
+                const N = sortedDisplayedHand.length;
                 hoverShifts = new Array(N).fill(0);
-                const effectiveHoverIndex = hoveredCardIndex !== null
+                const effectiveHoverIndex = !isSpectatorReadOnlyHand && hoveredCardIndex !== null
                   ? hoveredCardIndex
-                  : (pendingPlayCard ? sortedHand.indexOf(pendingPlayCard) : null);
+                  : (!isSpectatorReadOnlyHand && pendingPlayCard ? sortedDisplayedHand.indexOf(pendingPlayCard) : null);
 
                 if (effectiveHoverIndex !== null && visibleHandSpreadMetrics && N > 1) {
                   const H = effectiveHoverIndex;
@@ -7387,22 +8355,25 @@ function App() {
                 }
               }
 
-              return sortedHand.map((card, index) => {
-                const playable = isPlayMode && playableCards[card];
+              return sortedDisplayedHand.map((card, index) => {
+                const playable = !isSpectatorReadOnlyHand && isPlayMode && playableCards[card];
                 const disabled = !playable;
-                const mustFollowSuit = isPlayMode && isMyTurn && trickSuit && !playable && hand.some((handCard) => parseCard(handCard).suit === trickSuit);
-                const roundFinishedEarly = isPlayMode && isRoundStatsPhase && hand.length > 0;
+                const mustFollowSuit = !isSpectatorReadOnlyHand && isPlayMode && isMyTurn && trickSuit && !playable && hand.some((handCard) => parseCard(handCard).suit === trickSuit);
+                const roundFinishedEarly = !isSpectatorReadOnlyHand && isPlayMode && isRoundStatsPhase && hand.length > 0;
                 const roundInteractionBlocked = isPlayMode && !isPlayingRound;
-                const shouldGhostCard = isPlayMode && disabled && (mustFollowSuit || isTurnLocked || roundInteractionBlocked);
-                const disabledTitle = mustFollowSuit
-                  ? `You must follow ${SUIT_NAMES[trickSuit]}.`
-                  : roundFinishedEarly
-                    ? 'This small game has already ended.'
-                    : roundInteractionBlocked
-                      ? 'Cards cannot be played right now.'
-                      : '';
+                const shouldGhostCard = isSpectatorReadOnlyHand || (isPlayMode && disabled && (mustFollowSuit || isTurnLocked || roundInteractionBlocked));
+                const disabledTitle = isSpectatorReadOnlyHand
+                  ? `Read-only spectator view of ${spectatorHandLabel}.`
+                  : mustFollowSuit
+                    ? `You must follow ${SUIT_NAMES[trickSuit]}.`
+                    : roundFinishedEarly
+                      ? 'This small game has already ended.'
+                      : roundInteractionBlocked
+                        ? 'Cards cannot be played right now.'
+                        : '';
 
-                const isCardHovered = (hoveredCardIndex !== null ? hoveredCardIndex : (pendingPlayCard ? sortedHand.indexOf(pendingPlayCard) : null)) === index;
+                const isCardHovered = !isSpectatorReadOnlyHand
+                  && (hoveredCardIndex !== null ? hoveredCardIndex : (pendingPlayCard ? sortedDisplayedHand.indexOf(pendingPlayCard) : null)) === index;
 
                 return (
                   <div
@@ -7412,8 +8383,8 @@ function App() {
                       playable && 'is-playable',
                       isCardHovered && 'is-hovered'
                     )}
-                    onMouseEnter={() => setHoveredCardIndex(index)}
-                    onMouseLeave={() => setHoveredCardIndex(null)}
+                    onMouseEnter={isSpectatorReadOnlyHand ? undefined : () => setHoveredCardIndex(index)}
+                    onMouseLeave={isSpectatorReadOnlyHand ? undefined : () => setHoveredCardIndex(null)}
                     style={{
                       zIndex: index + 1,
                       height: visibleHandSpreadMetrics ? `${visibleHandSpreadMetrics.cardHeight}px` : undefined,
@@ -7426,7 +8397,7 @@ function App() {
                   >
                     <Card
                       cardString={card}
-                      onClick={isPlayMode
+                      onClick={isPlayMode && !isSpectatorReadOnlyHand
                         ? () => {
                           const isMobileDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches || window.innerWidth < 1024;
                           if (disabled) {
@@ -7442,7 +8413,7 @@ function App() {
                           }
                         }
                         : undefined}
-                      disabled={disabled}
+                      disabled={isSpectatorReadOnlyHand || disabled}
                       ghosted={shouldGhostCard}
                       title={disabledTitle}
                       variant="hand"
@@ -7452,7 +8423,7 @@ function App() {
               });
             })()}
 
-            {hand.length === 0 && (
+            {displayedHand.length === 0 && (
               <div className="rentz-empty-hand">
                 {isSpectatingGame ? 'Spectating this match...' : 'Waiting for the next hand...'}
               </div>
@@ -8104,6 +9075,61 @@ function App() {
                     {authBusyAction === 'logout' ? 'Signing out...' : 'Log Out'}
                   </button>
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="glass-panel p-5 sm:p-6">
+            <div className="grid gap-4 lg:grid-cols-4">
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  ELO
+                </div>
+                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
+                  {getPlayerRating(userProfile) == null ? '--' : getPlayerRating(userProfile)}
+                </div>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Rank
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openRankLeaderboardModal({
+                    targetUserId: userProfile?.userId,
+                    fallbackRankName: userProfile?.rankName || 'Current Rank',
+                    sourceLabel: 'account'
+                  })}
+                  className="mt-2 text-left text-lg font-black leading-6 text-[var(--text-primary)] transition hover:opacity-80 focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)] rounded-[0.9rem]"
+                  title="Open leaderboard for this rank"
+                >
+                  {userProfile?.rankName || 'Starting-out Rentz Rookie'}
+                </button>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Global Placement
+                </div>
+                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
+                  {userProfile?.globalPlacement ? `#${userProfile.globalPlacement}` : '#--'}
+                </div>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Rank Leaderboard
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openRankLeaderboardModal({
+                    targetUserId: userProfile?.userId,
+                    fallbackRankName: userProfile?.rankName || 'Current Rank',
+                    sourceLabel: 'account'
+                  })}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                >
+                  <Trophy className="h-4 w-4" />
+                  View Your Rank
+                </button>
               </div>
             </div>
           </section>
@@ -9261,11 +10287,329 @@ endif`}
     </div>
   );
 
+  const renderBanNoticeModal = () => {
+    if (!banNoticeModal) {
+      return null;
+    }
+
+    return (
+      <ModalShell
+        title={banNoticeModal.title || 'Removed From Game'}
+        eyebrow="Ban notice"
+        onClose={() => setBanNoticeModal(null)}
+        footer={(
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setBanNoticeModal(null)}
+              className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]"
+            >
+              Okay
+            </button>
+          </div>
+        )}
+      >
+        <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+          {banNoticeModal.message || 'You were banned from this game. You cannot rejoin it.'}
+        </p>
+      </ModalShell>
+    );
+  };
+
+  const renderLeaveMatchConfirmModal = () => {
+    if (!leaveMatchConfirmModal) {
+      return null;
+    }
+
+    return (
+      <ModalShell
+        title={leaveMatchConfirmModal.title || 'Abandon Match'}
+        eyebrow="Confirm action"
+        onClose={() => setLeaveMatchConfirmModal(null)}
+        footer={(
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={() => setLeaveMatchConfirmModal(null)}
+              className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmLeaveMatch}
+              className="rounded-[1.3rem] border border-red-200/80 bg-red-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-950 transition hover:bg-red-200/80"
+            >
+              Abandon Match
+            </button>
+          </div>
+        )}
+      >
+        <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+          {leaveMatchConfirmModal.message}
+        </p>
+      </ModalShell>
+    );
+  };
+
+  const renderSavedGameRulesetTableModal = () => {
+    if (!savedGameRulesetTableModal) {
+      return null;
+    }
+
+    const playersInSavedGame = Array.isArray(savedGameRulesetTableModal.players)
+      ? savedGameRulesetTableModal.players
+      : [];
+    const availableRulesets = Array.isArray(savedGameRulesetTableModal.availableRulesets)
+      ? savedGameRulesetTableModal.availableRulesets
+      : [];
+    const selectedRulesets = savedGameRulesetTableModal.selectedRulesets || {};
+    const usedChoices = savedGameRulesetTableModal.usedChoices || {};
+
+    return (
+      <ModalShell
+        title={savedGameRulesetTableModal.roomName || 'Saved Game'}
+        eyebrow="Saved ruleset table"
+        wide
+        panelClassName="max-w-5xl"
+        onClose={() => setSavedGameRulesetTableModal(null)}
+      >
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-3">
+            <div className="status-pill px-4 py-2">Rounds finished {savedGameRulesetTableModal.roundsFinished || 0}</div>
+            <div className="status-pill px-4 py-2">
+              Leader {savedGameRulesetTableModal.leaderName || 'No leader yet'}
+              {typeof savedGameRulesetTableModal.leaderPoints === 'number' ? ` • ${savedGameRulesetTableModal.leaderPoints} pts` : ''}
+            </div>
+          </div>
+
+          {availableRulesets.length === 0 ? (
+            <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+              No saved ruleset table is available for this game.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)]">
+              <table className="min-w-full rentz-ruleset-table">
+                <thead>
+                  <tr>
+                    <th className="rentz-ruleset-header-cell text-left">Ruleset</th>
+                    <th className="rentz-ruleset-header-cell text-center">Enabled</th>
+                    {playersInSavedGame.map((player) => (
+                      <th
+                        key={player.userId}
+                        className="rentz-ruleset-header-cell text-center"
+                        data-short-label={getPlayerInitials(player)}
+                        title={getPlayerName(player)}
+                      >
+                        <span className="rentz-ruleset-player-name">{getPlayerName(player)}</span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {availableRulesets.map((rule) => (
+                    <tr key={rule.id}>
+                      <th className="rentz-ruleset-row-header text-left">
+                        <div className="text-lg font-black text-[var(--text-primary)]">{rule.abbreviation || rule.label}</div>
+                        <div className="text-xs font-bold text-[var(--text-secondary)]">{rule.label}</div>
+                      </th>
+                      <td className="text-center">
+                        {selectedRulesets[rule.id] !== false ? (
+                          <span className="inline-flex rounded-full bg-emerald-100/85 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-900">
+                            Enabled
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-slate-200/85 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-slate-700">
+                            Off
+                          </span>
+                        )}
+                      </td>
+                      {playersInSavedGame.map((player) => {
+                        const alreadyUsed = Boolean(usedChoices?.[player.userId]?.[rule.id]);
+                        return (
+                          <td key={`${player.userId}-${rule.id}`} className="text-center">
+                            {alreadyUsed ? (
+                              <span className="inline-flex rounded-full bg-amber-100/85 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-amber-900">
+                                Used
+                              </span>
+                            ) : (
+                              <span className="inline-flex rounded-full bg-sky-100/80 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-sky-900">
+                                Open
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </ModalShell>
+    );
+  };
+
+  const renderSavedGameCard = (savedGame) => {
+    const busy = librarySavedGameBusyId === savedGame.id;
+    const savedPlayers = Array.isArray(savedGame.players) ? savedGame.players : [];
+
+    return (
+      <article key={savedGame.id} className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 shadow-[0_18px_36px_rgba(0,0,0,0.08)]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-lg font-display font-black text-[var(--text-primary)]">{savedGame.roomName || 'Saved Match'}</div>
+            <div className="mt-1 text-xs font-bold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+              Saved {formatForumTimestamp(savedGame.savedAt)}
+            </div>
+          </div>
+          <div className="status-pill px-3 py-2">
+            {savedGame.roundsFinished || 0} rounds finished
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Current leader</div>
+            <div className="mt-2 text-base font-black text-[var(--text-primary)]">
+              {savedGame.leaderName || 'No leader yet'}
+            </div>
+            <div className="text-sm font-semibold text-[var(--text-secondary)]">
+              {typeof savedGame.leaderPoints === 'number' ? `${savedGame.leaderPoints} points` : 'No points yet'}
+            </div>
+          </div>
+          <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Seats</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {savedPlayers.map((player) => (
+                <span
+                  key={player.userId}
+                  className="inline-flex rounded-full border border-[var(--glass-border)] bg-white/85 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-[var(--text-primary)]"
+                >
+                  {getPlayerName(player)}
+                  {player.isBot ? ' • AI' : player.guest ? ' • guest' : ''}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => handleResumeSavedGame(savedGame.id)}
+            className="frutiger-button px-4 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {busy ? 'Working...' : 'Resume'}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => handleEndSavedGame(savedGame.id)}
+            className="rounded-[1.15rem] border border-rose-200/80 bg-rose-100/85 px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-rose-950 transition hover:bg-rose-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            End Saved Game
+          </button>
+          <button
+            type="button"
+            onClick={() => setSavedGameRulesetTableModal(savedGame)}
+            className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+          >
+            Ruleset Table
+          </button>
+        </div>
+      </article>
+    );
+  };
+
+  const renderMatchHistoryCard = (entry) => {
+    const viewerUserId = activeProfile?.userId;
+    const standings = Array.isArray(entry.standings) ? entry.standings : [];
+    const viewerSummary = entry.viewerSummary || null;
+
+    return (
+      <article key={entry.id} className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 shadow-[0_18px_36px_rgba(0,0,0,0.08)]">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-lg font-display font-black text-[var(--text-primary)]">{entry.roomName || 'Rentz Match'}</div>
+            <div className="mt-1 text-xs font-bold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+              Completed {formatForumTimestamp(entry.completedAt)}
+            </div>
+          </div>
+          <div className="status-pill px-3 py-2">{entry.roundsPlayed || 0} rounds</div>
+        </div>
+
+        {viewerSummary ? (
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Your finish</div>
+              <div className="mt-2 text-2xl font-black text-[var(--text-primary)]">#{viewerSummary.finalRank || '--'}</div>
+            </div>
+            <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">ELO change</div>
+              <div className={clsx('mt-2 text-2xl font-black', (viewerSummary.eloDelta || 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                {(viewerSummary.eloDelta || 0) >= 0 ? '+' : ''}{viewerSummary.eloDelta || 0}
+              </div>
+            </div>
+            <div className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Rank shift</div>
+              <div className="mt-2 text-sm font-black leading-6 text-[var(--text-primary)]">
+                {viewerSummary.previousRankName || 'Unknown'} → {viewerSummary.nextRankName || 'Unknown'}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-4 space-y-2">
+          {standings.map((standing) => {
+            const isViewer = Boolean(viewerUserId && standing.userId === viewerUserId);
+            const isWinner = standing.finalRank === 1 || standing.userId === entry.winnerUserId;
+
+            return (
+              <div
+                key={`${entry.id}-${standing.userId}-${standing.finalRank}`}
+                className={clsx(
+                  'flex items-center gap-3 rounded-[1.1rem] border px-4 py-3',
+                  isWinner
+                    ? 'border-amber-200/80 bg-amber-100/80'
+                    : isViewer
+                      ? 'border-sky-200/80 bg-sky-100/70'
+                      : 'border-[var(--glass-border)] bg-[var(--surface-subtle)]'
+                )}
+              >
+                <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-sm font-black text-[var(--text-primary)]">
+                  #{standing.finalRank || '?'}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-black text-[var(--text-primary)]">
+                    {standing.name || 'Player'}
+                    {isViewer ? ' (You)' : ''}
+                    {standing.isBot ? ' • AI' : standing.guest ? ' • guest' : ''}
+                  </div>
+                  <div className="text-xs font-bold text-[var(--text-secondary)]">
+                    {standing.points || 0} points • {(standing.tricksWon || 0)} tricks
+                  </div>
+                </div>
+                {isWinner ? (
+                  <div className="inline-flex rounded-full bg-amber-200/90 px-3 py-1 text-[11px] font-black uppercase tracking-[0.12em] text-amber-950">
+                    Winner
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </article>
+    );
+  };
+
   const renderLibraryContent = () => {
     if (!isAuthenticated) {
       return renderPlaceholderModule(
         'Library',
-        'Log in to see saved custom rulesets, bookmarked Rentz Forum ruleset previews, future match history, and future saved games.'
+        'Log in to see saved custom rulesets, bookmarked Rentz Forum ruleset previews, saved matches, and your match history.'
       );
     }
 
@@ -9308,17 +10652,47 @@ endif`}
 
             <div className="grid gap-5 md:grid-cols-2">
               <section className="glass-panel p-5 sm:p-6">
-                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Match History</h4>
-                <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                  Match history is not implemented yet. This panel is reserved for your completed Rentz sessions.
-                </p>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Match History</h4>
+                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    {libraryState.matchHistory.length} matches
+                  </div>
+                </div>
+                {libraryState.loading && libraryState.matchHistory.length === 0 ? (
+                  <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                    Loading match history...
+                  </div>
+                ) : libraryState.matchHistory.length === 0 ? (
+                  <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                    Completed ranked matches will appear here with your finish, ELO movement, and rank changes.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {libraryState.matchHistory.map((entry) => renderMatchHistoryCard(entry))}
+                  </div>
+                )}
               </section>
 
               <section className="glass-panel p-5 sm:p-6">
-                <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Saved Games</h4>
-                <p className="mt-3 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                  Saved games are not implemented yet. This panel is reserved for suspended games and resumable tables.
-                </p>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Saved Games</h4>
+                  <div className="text-xs font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                    {libraryState.savedGames.length} saved
+                  </div>
+                </div>
+                {libraryState.loading && libraryState.savedGames.length === 0 ? (
+                  <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                    Loading saved games...
+                  </div>
+                ) : libraryState.savedGames.length === 0 ? (
+                  <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                    Use Save & Quit from round stats to store a resumable match here.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {libraryState.savedGames.map((savedGame) => renderSavedGameCard(savedGame))}
+                  </div>
+                )}
               </section>
             </div>
           </div>
@@ -9966,6 +11340,14 @@ endif`}
                       label="Use turn timer"
                     />
                   </div>
+                  <div className="flex items-center justify-between gap-3 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3">
+                    <span className="text-sm font-black text-[var(--text-primary)]">Auto bot replacement</span>
+                    <ToggleCheck
+                      checked={Boolean(draftRoomSettings.autoBotReplacementEnabled)}
+                      onChange={() => setDraftRoomSettings((current) => ({ ...current, autoBotReplacementEnabled: !current.autoBotReplacementEnabled }))}
+                      label="Replace abandoned players with bots automatically"
+                    />
+                  </div>
                   <label className="rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3">
                     <span className="mb-2 flex items-center gap-2 text-sm font-black text-[var(--text-primary)]"><Clock className="h-4 w-4" /> Turn timer</span>
                     <input
@@ -10127,9 +11509,15 @@ endif`}
                       <div className="text-xs font-bold text-[var(--text-secondary)]">{member.role}</div>
                     </div>
                     <div className="flex gap-1.5">
-                      <button type="button" onClick={() => handleTransferHost(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Transfer host"><Crown className="h-4 w-4" /></button>
-                      <button type="button" onClick={() => handleKickMember(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Kick"><X className="h-4 w-4" /></button>
-                      <button type="button" onClick={() => handleBanMember(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Ban"><Ban className="h-4 w-4" /></button>
+                      {member.isBot ? (
+                        <button type="button" onClick={() => void handleRemoveBotFromLobby(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Remove bot"><Trash2 className="h-4 w-4" /></button>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => handleTransferHost(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Transfer host"><Crown className="h-4 w-4" /></button>
+                          <button type="button" onClick={() => handleKickMember(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Kick"><X className="h-4 w-4" /></button>
+                          <button type="button" onClick={() => handleBanMember(member.userId)} className="rounded-full bg-[var(--surface-medium)] p-2" title="Ban"><Ban className="h-4 w-4" /></button>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -10159,6 +11547,10 @@ endif`}
 
       {renderPlayerActionMenu()}
       {renderPlayerProfileModal()}
+      {renderRankLeaderboardModal()}
+      {renderBanNoticeModal()}
+      {renderLeaveMatchConfirmModal()}
+      {renderSavedGameRulesetTableModal()}
 
       {pendingSpectatorJoin && (
         <ModalShell
@@ -10377,8 +11769,13 @@ endif`}
           stats={latestRoundStats}
           players={players}
           canContinue={canContinueRoundFromStats}
+          canEndGame={canManageRoundStats}
+          canSaveQuit={canManageRoundStats && isAuthenticated}
+          actionBusy={roundActionBusy}
           matchComplete={matchCompletePending || gameFinished}
           onContinue={handleContinueMatch}
+          onEndGame={handleEndGame}
+          onSaveQuit={handleSaveAndQuit}
           onClose={() => setIsStatsOpen(false)}
         />
       )}

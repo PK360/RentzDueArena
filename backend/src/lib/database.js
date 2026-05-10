@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { migrateUsersMissingElo } = require('./elo');
 
 const DEFAULT_MONGODB_URI = 'mongodb://127.0.0.1:27017/rentz-arena';
 const READY_STATE_LABELS = {
@@ -48,6 +49,7 @@ async function connectToMongo() {
 
   await activeConnectionPromise;
   await reconcileUserIndexes();
+  await reconcileUserRatings();
   return mongoose.connection;
 }
 
@@ -80,6 +82,14 @@ async function reconcileUserIndexes() {
   });
 
   await userIndexReconciliationPromise;
+}
+
+async function reconcileUserRatings() {
+  const migratedUsers = await migrateUsersMissingElo();
+
+  if (migratedUsers > 0) {
+    console.log(`Initialized default ELO for ${migratedUsers} existing account${migratedUsers === 1 ? '' : 's'}.`);
+  }
 }
 
 async function disconnectFromMongo() {
