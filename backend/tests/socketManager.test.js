@@ -1,21 +1,27 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
+  abandonActiveMatch,
   applyActiveRulesetAtRoundEnd,
+  applyCompletedGameEloUpdates,
   buildPublicRoomSummary,
   bumpGameStateVersion,
+  createTrainingMatchSession,
   findNextChooser,
   getEligibleRuleIdsForPlayer,
   getStartGameValidationError,
   addBotToLobby,
   removeWaitingLobbyMember,
   removeBotFromLobby,
+  persistCompletedMatchHistory,
   setLobbyChatMutedState,
   deleteCustomRulesetFromLobby,
   sanitizeTurnTimerSeconds,
   sanitizeRulesetPermissions,
   setLobbyMemberRole,
-  updateCustomRulesetInLobby
+  setNvChoiceForRound,
+  updateCustomRulesetInLobby,
+  validateTrainingSettings
 } = require('../socketManager');
 const { compileRuleset } = require('../engine/evaluator');
 
@@ -418,4 +424,243 @@ test('skips round-end scoring for per_round rulesets', () => {
 
   assert.deepStrictEqual(result, { applied: false, scoreDeltas: {} });
   assert.strictEqual(game.pointsByPlayer['p-1'], 25);
+});
+
+test('validates default training settings and computes filler bots', async () => {
+  const result = await validateTrainingSettings({
+    trainerElo: 1800,
+    selectedRulesetId: 'whist',
+    preMoveCommentaryEnabled: true,
+    postMoveFeedbackEnabled: false,
+    totalRounds: 3,
+    playerCount: 5
+  }, {
+    userId: 'player-1',
+    elo: 2200,
+    guest: false
+  });
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(result.trainerElo, 1800);
+  assert.strictEqual(result.totalRounds, 3);
+  assert.strictEqual(result.playerCount, 5);
+  assert.strictEqual(result.regularBotCount, 3);
+  assert.strictEqual(result.selectedRulesetId, 'whist');
+  assert.strictEqual(result.selectedRulesetSource, 'default');
+  assert.strictEqual(result.postMoveFeedbackEnabled, false);
+});
+
+test('creates a training session with one Trainer and filler bots', async () => {
+  const emitted = [];
+  const joinedRooms = [];
+  const io = {
+    to(target) {
+      return {
+        emit(event, payload) {
+          emitted.push({ target, event, payload });
+        }
+      };
+    }
+  };
+  const socket = {
+    id: 'socket-training-host',
+    join(roomId) {
+      joinedRooms.push(roomId);
+    }
+  };
+  const user = {
+    userId: 'guest-training',
+    guest: true,
+    name: 'Guest Coach',
+    displayName: 'Guest Coach',
+    avatarUrl: '',
+    elo: null
+  };
+
+  const result = await createTrainingMatchSession(io, socket, user, {
+    trainerElo: 2750,
+    selectedRulesetId: 'whist',
+    preMoveCommentaryEnabled: true,
+    postMoveFeedbackEnabled: true,
+    totalRounds: 2,
+    playerCount: 4
+  });
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(joinedRooms.length, 1);
+  assert.strictEqual(result.lobby.matchMode, 'training');
+  assert.strictEqual(result.game.matchMode, 'training');
+  assert.strictEqual(result.lobby.training.trainerElo, 2750);
+  assert.strictEqual(result.lobby.training.totalRounds, 2);
+  assert.strictEqual(result.lobby.training.playerCount, 4);
+  assert.strictEqual(result.lobby.training.regularBotCount, 2);
+  assert.strictEqual(result.lobby.players.length, 4);
+  assert.strictEqual(result.lobby.players.filter((player) => player.isTrainer).length, 1);
+  assert.strictEqual(result.lobby.players.filter((player) => player.isBot && !player.isTrainer).length, 2);
+  assert.strictEqual(result.lobby.players[1].rankName, 'Practising Rentz Expert');
+  assert.strictEqual(result.game.choiceState?.phase, 'choosing_nv');
+  assert.ok(emitted.some((entry) => entry.event === 'game_started'));
+  assert.ok(emitted.some((entry) => entry.event === 'choice_state_update'));
+});
+
+test('skips elo and match-history persistence for training matches', async () => {
+  const io = {
+    to() {
+      return {
+        emit() {}
+      };
+    }
+  };
+  const trainingGame = {
+    matchMode: 'training',
+    training: {
+      enabled: true,
+      totalRounds: 1
+    },
+    players: [
+      { userId: 'guest-1', guest: true, isBot: false },
+      { userId: 'trainer-1', guest: false, isBot: true, isTrainer: true }
+    ],
+    lastEloResults: [{ userId: 'stale' }],
+    lastEloDeltaByUserId: { stale: 5 }
+  };
+  const standings = [
+    { userId: 'guest-1', points: 10 },
+    { userId: 'trainer-1', points: 0 }
+  ];
+
+  const eloResult = await applyCompletedGameEloUpdates(io, 'TRN999', trainingGame, standings);
+  const historyResult = await persistCompletedMatchHistory(trainingGame, standings);
+
+  assert.deepStrictEqual(eloResult, {
+    applied: false,
+    reason: 'training-match',
+    results: []
+  });
+  assert.deepStrictEqual(trainingGame.lastEloResults, []);
+  assert.deepStrictEqual(trainingGame.lastEloDeltaByUserId, {});
+  assert.strictEqual(historyResult, null);
+});
+
+test('Trainer NV choice starts the locked training ruleset without ruleset selection', () => {
+  const emitted = [];
+  const io = {
+    to(target) {
+      return {
+        emit(event, payload) {
+          emitted.push({ target, event, payload });
+        }
+      };
+    }
+  };
+  const game = {
+    roomId: 'TRNSET',
+    matchMode: 'training',
+    training: {
+      enabled: true,
+      humanUserId: 'human-1',
+      trainerUserId: 'trainer-1',
+      selectedRulesetId: 'whist',
+      selectedRulesetLabel: 'Whist',
+      totalRounds: 3
+    },
+    phase: 'choosing_nv',
+    chooserId: 'human-1',
+    nvAllowed: true,
+    nvSelected: false,
+    turnIndex: 0,
+    roundNumber: 0,
+    useTurnTimer: false,
+    turnTimerSeconds: 45,
+    players: [
+      { userId: 'human-1', name: 'Player', socketId: 'socket-human', isBot: false },
+      { userId: 'trainer-1', name: 'Trainer', socketId: 'trainer:1', isBot: true, isTrainer: true }
+    ],
+    handsReady: {
+      'human-1': [],
+      'trainer-1': []
+    },
+    currentTrick: [],
+    collectedHands: [],
+    collectedByPlayer: {
+      'human-1': [],
+      'trainer-1': []
+    },
+    pointsByPlayer: {
+      'human-1': 0,
+      'trainer-1': 0
+    },
+    stateVersion: 0,
+    customRulesets: [],
+    selectedRulesets: { whist: true },
+    rulesetPermissions: {
+      'human-1': { whist: true },
+      'trainer-1': { whist: true }
+    }
+  };
+
+  const result = setNvChoiceForRound(io, 'TRNSET', game, 'human-1', true);
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(game.phase, 'playing_round');
+  assert.strictEqual(game.activeRulesetId, 'whist');
+  assert.strictEqual(game.roundNumber, 1);
+  assert.strictEqual(game.nvSelected, true);
+  assert.ok(emitted.some((entry) => entry.event === 'small_game_started'));
+  assert.ok(!emitted.some((entry) => entry.event === 'choice_state_update'));
+});
+
+test('leaving a training match ends the live session instead of replacing the player', () => {
+  const emitted = [];
+  const leftRooms = [];
+  const io = {
+    to(target) {
+      return {
+        emit(event, payload) {
+          emitted.push({ target, event, payload });
+        }
+      };
+    },
+    sockets: {
+      sockets: new Map([
+        ['socket-human', {
+          leave(roomId) {
+            leftRooms.push(roomId);
+          }
+        }]
+      ])
+    }
+  };
+  const lobby = {
+    roomId: 'TRNLEAVE',
+    players: [
+      { userId: 'human-1', socketId: 'socket-human', name: 'Player', isBot: false },
+      { userId: 'trainer-1', socketId: 'trainer:1', name: 'Trainer', isBot: true, isTrainer: true }
+    ],
+    spectators: []
+  };
+  const game = {
+    matchMode: 'training',
+    training: {
+      enabled: true,
+      humanUserId: 'human-1',
+      selectedRulesetId: 'whist'
+    },
+    players: [
+      { userId: 'human-1', socketId: 'socket-human', name: 'Player', isBot: false },
+      { userId: 'trainer-1', socketId: 'trainer:1', name: 'Trainer', isBot: true, isTrainer: true }
+    ]
+  };
+  const member = lobby.players[0];
+
+  const result = abandonActiveMatch(io, 'TRNLEAVE', lobby, game, member);
+
+  assert.deepStrictEqual(result, {
+    success: true,
+    message: 'Training session ended.'
+  });
+  assert.deepStrictEqual(leftRooms, ['TRNLEAVE']);
+  assert.ok(emitted.some((entry) => entry.event === 'live_game_session_closed'));
+  assert.ok(!emitted.some((entry) => entry.event === 'game_activity'));
 });

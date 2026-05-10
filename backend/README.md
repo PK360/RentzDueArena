@@ -134,13 +134,19 @@ RENTZ_AUTO_BOT_REPLACEMENT=true
 RENTZ_BOT_ACTION_DELAY_MS=900
 RENTZ_BOT_DECISION_TIMEOUT_MS=6000
 RENTZ_BOT_OLLAMA_BASE_URL=http://127.0.0.1:11434
-RENTZ_BOT_OLLAMA_MODEL=llama3.1:8b
+RENTZ_BOT_OLLAMA_MODEL=qwen2.5:7b
+RENTZ_EDITOR_BOT_TIMEOUT_MS=6500
+RENTZ_EDITOR_BOT_OLLAMA_BASE_URL=http://127.0.0.1:11434
+RENTZ_EDITOR_BOT_OLLAMA_MODEL=qwen2.5:7b
+RENTZ_EDITOR_BOT_FULL_OLLAMA_MODEL=llama3.2:3b
+RENTZ_EDITOR_BOT_LEAN_OLLAMA_MODEL=llama3.2:3b
 ```
 
 Notes:
 - If Ollama is unavailable, bot turns fall back to deterministic legal moves instead of freezing the game.
 - Bot difficulty is derived from the average ELO of non-bot active players, defaulting to `500` when no human ELO is present.
 - Mixed human/bot games only update human ELO, and abandoned players that get replaced by bots are excluded from ELO updates.
+- If `qwen2.5:7b` is too slow for the ruleset editor on your machine, keep it for gameplay bots and set the Editor Bot full/lean model env vars to `llama3.2:3b`.
 
 ## Start Commands
 

@@ -1,4 +1,5 @@
 const Game = require('./models/Game');
+const Ruleset = require('./models/Ruleset');
 const User = require('./models/User');
 const { randomFriendCode } = require('./utils/helpers');
 const { DEFAULT_PROFILE_PICTURE_PATH } = require('./src/lib/accountAssets');
@@ -13,15 +14,23 @@ const {
 const {
   ABANDONMENT_TIMEOUT_MS,
   BOT_ACTION_DELAY_MS,
+  BOT_TYPE_STANDARD,
+  BOT_TYPE_TRAINER,
   DEFAULT_AUTO_BOT_REPLACEMENT_ENABLED,
   buildBotIdentity,
   chooseBotMove,
+  evaluateTrainerPlayerMove,
+  generateTrainerFinalReview,
+  generateTrainerPreMoveComment,
   getAverageHumanElo,
-  isBotPlayer
+  isBotPlayer,
+  isTrainerBot
 } = require('./src/lib/bots');
 const {
+  DEFAULT_ACCOUNT_ELO,
   buildCompetitiveSummaryForUser,
-  calculateMultiplayerEloChanges
+  calculateMultiplayerEloChanges,
+  normalizeEloValue
 } = require('./src/lib/elo');
 const { getAuthenticatedUserFromCookieHeader, serializeAccount } = require('./src/lib/auth');
 const { generateDeck, shuffle, dealCards } = require('./utils/cards');
@@ -57,12 +66,93 @@ const CHAT_HISTORY_LIMIT = 120;
 const RULESET_TYPES = new Set(['per_round', 'end_game']);
 const EMOJI_REACTION_IDS = new Set(['grin', 'wink', 'laugh', 'shock', 'love', 'gg']);
 const CHAT_SCOPES = new Set(['lobby', 'game']);
+const TRAINING_MATCH_MODE = 'training';
+const STANDARD_MATCH_MODE = 'standard';
+const TRAINING_ROUNDS_RANGE = { min: 1, max: 15 };
+const TRAINING_PLAYERS_RANGE = { min: 2, max: 6 };
+const DEFAULT_TRAINER_MESSAGE_SETTINGS = Object.freeze({
+  preMoveCommentaryEnabled: true,
+  postMoveFeedbackEnabled: true
+});
 const SUIT_NAMES = {
   H: 'Hearts',
   D: 'Diamonds',
   C: 'Clubs',
   S: 'Spades'
 };
+
+function getMatchMode(entity) {
+  return entity?.matchMode === TRAINING_MATCH_MODE ? TRAINING_MATCH_MODE : STANDARD_MATCH_MODE;
+}
+
+function isTrainingMatch(entity) {
+  return getMatchMode(entity) === TRAINING_MATCH_MODE;
+}
+
+function serializeTrainingState(training = null) {
+  if (!training?.enabled) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    humanUserId: training.humanUserId || '',
+    trainerUserId: training.trainerUserId || '',
+    trainerElo: Number(training.trainerElo || 0),
+    trainerRankName: training.trainerRankName || null,
+    totalRounds: Number(training.totalRounds || 0),
+    playerCount: Number(training.playerCount || 0),
+    regularBotCount: Number(training.regularBotCount || 0),
+    selectedRulesetId: training.selectedRulesetId || '',
+    selectedRulesetLabel: training.selectedRulesetLabel || '',
+    selectedRulesetSource: training.selectedRulesetSource || 'default',
+    preMoveCommentaryEnabled: training.preMoveCommentaryEnabled !== false,
+    postMoveFeedbackEnabled: training.postMoveFeedbackEnabled !== false
+  };
+}
+
+function serializeTrainingFinalReview(finalReview = null) {
+  if (!finalReview?.review) {
+    return null;
+  }
+
+  return {
+    review: String(finalReview.review || '').trim(),
+    starRating: Math.max(0.5, Math.min(5, Number(finalReview.starRating || 3)))
+  };
+}
+
+function getMaxTrainerEloForUser(user) {
+  const viewerElo = typeof user?.elo === 'number'
+    ? normalizeEloValue(user.elo, DEFAULT_ACCOUNT_ELO)
+    : DEFAULT_ACCOUNT_ELO;
+
+  return Math.max(10000, viewerElo);
+}
+
+function sanitizeTrainingRounds(value) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return TRAINING_ROUNDS_RANGE.min;
+  }
+
+  return Math.min(
+    TRAINING_ROUNDS_RANGE.max,
+    Math.max(TRAINING_ROUNDS_RANGE.min, Math.round(numberValue))
+  );
+}
+
+function sanitizeTrainingPlayerCount(value) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return TRAINING_PLAYERS_RANGE.min;
+  }
+
+  return Math.min(
+    TRAINING_PLAYERS_RANGE.max,
+    Math.max(TRAINING_PLAYERS_RANGE.min, Math.round(numberValue))
+  );
+}
 
 function serializeRoomSettings(lobby) {
   return {
@@ -170,6 +260,8 @@ function serializeLobby(lobby) {
     roomId: lobby.roomId,
     roomName: lobby.roomName,
     visibility: sanitizeRoomVisibility(lobby.visibility),
+    matchMode: getMatchMode(lobby),
+    training: serializeTrainingState(lobby.training),
     hostId: lobby.hostId,
     players: lobby.players,
     spectators: lobby.spectators,
@@ -459,13 +551,132 @@ function deleteCustomRulesetFromLobby(lobby, rulesetId) {
   return { definition };
 }
 
-function createBotLobbyMember(lobby, { replacementFor = null } = {}) {
+async function resolveTrainingRulesetForUser(user, selectedRulesetId) {
+  const normalizedRulesetId = String(selectedRulesetId || '').trim();
+  if (!normalizedRulesetId) {
+    return { error: 'Choose a ruleset for training' };
+  }
+
+  const defaultDefinition = getRulesetDefinitionById(normalizedRulesetId);
+  if (defaultDefinition) {
+    return {
+      selectedRulesetId: defaultDefinition.id,
+      selectedRulesetLabel: defaultDefinition.label,
+      selectedRulesetSource: 'default',
+      customRulesets: []
+    };
+  }
+
+  if (!user || user.guest) {
+    return { error: 'Guests can only train with default rulesets' };
+  }
+
+  if (!/^[a-f\d]{24}$/i.test(normalizedRulesetId)) {
+    return { error: 'Training ruleset not found' };
+  }
+
+  const [savedRulesetOwner, storedRuleset] = await Promise.all([
+    User.findOne({
+      _id: user.userId,
+      savedRulesets: normalizedRulesetId
+    }).select('_id').lean(),
+    Ruleset.findById(normalizedRulesetId)
+      .select('title shortName type code author')
+      .lean()
+  ]);
+
+  if (!savedRulesetOwner || !storedRuleset) {
+    return { error: 'Training ruleset not found in your saved library' };
+  }
+
+  const label = sanitizeRulesetTextField(storedRuleset.title, 'Saved Ruleset', ROOM_RULESET_NAME_MAX_LENGTH);
+  const abbreviation = sanitizeRulesetTextField(
+    storedRuleset.shortName,
+    buildRulesetAbbreviationFallback(label),
+    ROOM_RULESET_ABBREVIATION_MAX_LENGTH
+  );
+  const definition = {
+    id: String(storedRuleset._id),
+    label,
+    abbreviation,
+    type: storedRuleset.type === 'end_game' ? 'end_game' : 'per_round',
+    code: String(storedRuleset.code || ''),
+    source: 'library',
+    enabledByDefault: true,
+    createdBy: String(storedRuleset.author || user.userId),
+    compiled: compileRuleset(String(storedRuleset.code || ''), storedRuleset.type === 'end_game' ? 'end_game' : 'per_round')
+  };
+
+  return {
+    selectedRulesetId: definition.id,
+    selectedRulesetLabel: definition.label,
+    selectedRulesetSource: 'saved',
+    customRulesets: [definition]
+  };
+}
+
+async function validateTrainingSettings(payload = {}, user = null) {
+  const playerElo = typeof user?.elo === 'number'
+    ? normalizeEloValue(user.elo, DEFAULT_ACCOUNT_ELO)
+    : DEFAULT_ACCOUNT_ELO;
+  const maxTrainerElo = getMaxTrainerEloForUser(user);
+  const trainerElo = normalizeEloValue(payload?.trainerElo, playerElo);
+  const totalRounds = sanitizeTrainingRounds(payload?.totalRounds);
+  const playerCount = sanitizeTrainingPlayerCount(payload?.playerCount);
+  const rulesetResolution = await resolveTrainingRulesetForUser(user, payload?.selectedRulesetId);
+
+  if (trainerElo > maxTrainerElo) {
+    return {
+      error: `Trainer ELO must be between 0 and ${maxTrainerElo}`
+    };
+  }
+
+  if (totalRounds !== Number(payload?.totalRounds)) {
+    return {
+      error: `Training rounds must be between ${TRAINING_ROUNDS_RANGE.min} and ${TRAINING_ROUNDS_RANGE.max}`
+    };
+  }
+
+  if (playerCount !== Number(payload?.playerCount)) {
+    return {
+      error: `Training player count must be between ${TRAINING_PLAYERS_RANGE.min} and ${TRAINING_PLAYERS_RANGE.max}`
+    };
+  }
+
+  if (rulesetResolution.error) {
+    return rulesetResolution;
+  }
+
+  return {
+    trainerElo,
+    totalRounds,
+    playerCount,
+    regularBotCount: Math.max(0, playerCount - 2),
+    preMoveCommentaryEnabled: payload?.preMoveCommentaryEnabled !== false,
+    postMoveFeedbackEnabled: payload?.postMoveFeedbackEnabled !== false,
+    ...rulesetResolution
+  };
+}
+
+function createBotLobbyMember(lobby, {
+  replacementFor = null,
+  botType = BOT_TYPE_STANDARD,
+  fixedElo = null,
+  displayName = '',
+  description = '',
+  trainerSettings = null
+} = {}) {
   const seatIndex = lobby.players.length;
   const botIdentity = buildBotIdentity({
     roomId: lobby.roomId,
     seatIndex,
     players: lobby.players,
-    replacementFor
+    replacementFor,
+    botType,
+    fixedElo,
+    displayName,
+    description,
+    trainerSettings
   });
 
   return createLobbyMember(botIdentity, botIdentity.socketId, {
@@ -613,6 +824,49 @@ function createScopedChatMessage(roomId, scope, user, member, content) {
     content,
     createdAt: new Date().toISOString()
   };
+}
+
+function hasTrainerMessageBeenSent(game, dedupeKey) {
+  if (!game || !dedupeKey) {
+    return false;
+  }
+
+  game.trainerMessageKeys = game.trainerMessageKeys || new Set();
+  return game.trainerMessageKeys.has(dedupeKey);
+}
+
+function markTrainerMessageSent(game, dedupeKey) {
+  if (!game || !dedupeKey) {
+    return;
+  }
+
+  game.trainerMessageKeys = game.trainerMessageKeys || new Set();
+  game.trainerMessageKeys.add(dedupeKey);
+}
+
+function emitAutomatedGameChatMessage(io, roomId, game, speaker, content, { dedupeKey = '' } = {}) {
+  const normalizedContent = normalizeChatContent(content);
+  if (!io || !roomId || !game || !speaker || !normalizedContent) {
+    return null;
+  }
+
+  if (dedupeKey && hasTrainerMessageBeenSent(game, dedupeKey)) {
+    return null;
+  }
+
+  const message = appendChatMessage(
+    game,
+    createScopedChatMessage(roomId, 'game', speaker, speaker, normalizedContent)
+  );
+  if (dedupeKey) {
+    markTrainerMessageSent(game, dedupeKey);
+  }
+  io.to(roomId).emit('chat_message', {
+    scope: 'game',
+    message
+  });
+
+  return message;
 }
 
 function normalizeMutedChatUserIds(value = []) {
@@ -1074,7 +1328,19 @@ function getEligibleRuleIdsForPlayer(game, playerId) {
   ));
 }
 
+function isTrainingRoundLimitReached(game) {
+  return Boolean(
+    isTrainingMatch(game)
+    && Number(game?.training?.totalRounds || 0) > 0
+    && Number(game?.roundNumber || 0) >= Number(game.training.totalRounds || 0)
+  );
+}
+
 function hasRemainingChoices(game) {
+  if (isTrainingMatch(game)) {
+    return !isTrainingRoundLimitReached(game);
+  }
+
   return game.chooserOrder.some((playerId) => getEligibleRuleIdsForPlayer(game, playerId).length > 0);
 }
 
@@ -1101,6 +1367,8 @@ function serializeChoiceState(game) {
 
   return {
     phase: game.phase,
+    matchMode: getMatchMode(game),
+    training: serializeTrainingState(game.training),
     chooserId: game.chooserId || null,
     chooserOrder: game.chooserOrder || [],
     chooserCursor: game.chooserCursor || 0,
@@ -1162,6 +1430,9 @@ function buildGameSessionSnapshot(roomId, game, userId, { isSpectator = false } 
 
   return {
     roomId,
+    matchMode: getMatchMode(game),
+    training: serializeTrainingState(game.training),
+    trainingFinalReview: serializeTrainingFinalReview(game.training?.finalReview),
     hand: effectivePlayer ? (game.handsReady[effectivePlayer.userId] || []) : [],
     playerIndex,
     isSpectator,
@@ -1298,6 +1569,125 @@ function buildLegalBotMoves(game, player) {
   return { kind: null, legalMoves: [], ruleset: null };
 }
 
+function getTrainerPlayer(game) {
+  return game?.players?.find((player) => isTrainerBot(player)) || null;
+}
+
+function getTrainingHumanPlayer(game) {
+  const humanUserId = game?.training?.humanUserId || '';
+  if (humanUserId) {
+    return game?.players?.find((player) => player.userId === humanUserId) || null;
+  }
+
+  return game?.players?.find((player) => !isBotPlayer(player)) || null;
+}
+
+async function maybeSendTrainerPreMoveComment(io, roomId, game, trainerPlayer, selectedMove, legalMoves, ruleset) {
+  if (
+    !io
+    || !roomId
+    || !game
+    || !trainerPlayer
+    || !isTrainerBot(trainerPlayer)
+    || game.training?.preMoveCommentaryEnabled === false
+  ) {
+    return null;
+  }
+
+  const dedupeKey = [
+    'trainer-pre',
+    game.roundNumber,
+    trainerPlayer.userId,
+    game.turnIndex,
+    game.currentTrick.length,
+    selectedMove?.id || selectedMove?.card || ''
+  ].join(':');
+  if (hasTrainerMessageBeenSent(game, dedupeKey)) {
+    return null;
+  }
+
+  const comment = await generateTrainerPreMoveComment({
+    gameState: game,
+    trainerPlayer,
+    legalMoves,
+    selectedMove,
+    ruleset
+  });
+
+  return emitAutomatedGameChatMessage(io, roomId, game, trainerPlayer, comment, {
+    dedupeKey
+  });
+}
+
+function maybeSendTrainerMoveFeedback(io, roomId, game, {
+  humanPlayer,
+  playedCard,
+  legalMoves = [],
+  ruleset,
+  currentTrickBeforeMove = []
+} = {}) {
+  const trainerPlayer = getTrainerPlayer(game);
+  if (
+    !io
+    || !roomId
+    || !game
+    || !trainerPlayer
+    || !humanPlayer
+    || isBotPlayer(humanPlayer)
+    || game.training?.postMoveFeedbackEnabled === false
+  ) {
+    return;
+  }
+
+  const dedupeKey = [
+    'trainer-post',
+    game.roundNumber,
+    humanPlayer.userId,
+    playedCard,
+    currentTrickBeforeMove.length
+  ].join(':');
+  if (hasTrainerMessageBeenSent(game, dedupeKey)) {
+    return;
+  }
+
+  Promise.resolve()
+    .then(async () => {
+      const evaluation = await evaluateTrainerPlayerMove({
+        gameState: game,
+        trainerPlayer,
+        humanPlayer,
+        playedCard,
+        legalMoves,
+        ruleset,
+        currentTrickBeforeMove
+      });
+
+      if (Number.isFinite(Number(evaluation?.rating))) {
+        game.training.feedbackEntries = Array.isArray(game.training.feedbackEntries)
+          ? game.training.feedbackEntries
+          : [];
+        game.training.feedbackEntries.push({
+          roundNumber: game.roundNumber,
+          playedCard,
+          rating: Number(evaluation.rating),
+          feedback: evaluation.feedback || '',
+          commented: evaluation.shouldComment !== false
+        });
+      }
+
+      if (!evaluation?.shouldComment || !evaluation.feedback) {
+        return null;
+      }
+
+      return emitAutomatedGameChatMessage(io, roomId, game, trainerPlayer, evaluation.feedback, {
+        dedupeKey
+      });
+    })
+    .catch((error) => {
+      console.warn(`Trainer feedback skipped for room ${roomId}: ${error.message}`);
+    });
+}
+
 function clearPendingBotAction(game) {
   if (!game) {
     return;
@@ -1394,7 +1784,7 @@ function removeActiveSpectatorFromLobby(lobby, targetUserId) {
 }
 
 function removeSocketMemberFromRoom(io, roomId, member, reason = 'You left the room') {
-  if (!io || !roomId || !member?.socketId || String(member.socketId).startsWith('bot:')) {
+  if (!io || !roomId || !member?.socketId || isBotPlayer(member)) {
     return;
   }
 
@@ -1602,6 +1992,18 @@ async function executeBotAction(io, roomId, game, actionKey) {
     return;
   }
 
+  if (kind === 'play_card' && isTrainerBot(currentPlayer)) {
+    await maybeSendTrainerPreMoveComment(
+      io,
+      roomId,
+      game,
+      currentPlayer,
+      selectedMove,
+      legalMoves,
+      ruleset
+    );
+  }
+
   playCardForPlayer(io, roomId, currentPlayer.userId, selectedMove.card || selectedMove.id, { auto: true });
 }
 
@@ -1714,6 +2116,286 @@ function buildInitialPoints(players) {
     acc[player.userId] = 0;
     return acc;
   }, {});
+}
+
+function buildMatchKey(roomId) {
+  return `${roomId}:${Date.now().toString(36)}:${randomFriendCode().toLowerCase()}`;
+}
+
+function buildGamePlayerFromLobbyPlayer(player, allPlayers) {
+  return {
+    userId: player.userId,
+    socketId: player.socketId,
+    seatIndex: player.seatIndex,
+    joinOrder: player.joinOrder,
+    name: player.displayName || player.name,
+    avatarUrl: getAvatarSource(player),
+    guest: Boolean(player.guest),
+    isBot: Boolean(player.isBot),
+    isTrainer: Boolean(player.isTrainer),
+    botType: player.botType || (player.isTrainer ? BOT_TYPE_TRAINER : BOT_TYPE_STANDARD),
+    banner: player.banner || '',
+    description: player.description || '',
+    accountCreatedAt: player.accountCreatedAt || null,
+    elo: typeof player.elo === 'number' ? player.elo : null,
+    rankName: player.rankName || null,
+    rankTierKey: player.rankTierKey || null,
+    isConnected: player.isConnected !== false,
+    connectionStatus: player.connectionStatus || (player.isConnected === false ? 'reconnecting' : 'connected'),
+    averageHumanElo: isBotPlayer(player) ? getAverageHumanElo(allPlayers) : null,
+    replacementForUserId: player.replacementForUserId || null,
+    replacementForName: player.replacementForName || null,
+    trainerSettings: player.trainerSettings ? { ...player.trainerSettings } : null
+  };
+}
+
+function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, training = null } = {}) {
+  const playerIds = lobby.players.map((player) => player.userId);
+  const chooserOrder = shuffle([...playerIds]);
+
+  return {
+    roomId: lobby.roomId,
+    roomName: lobby.roomName,
+    matchMode,
+    training: training?.enabled ? { ...training } : null,
+    hostId: lobby.hostId,
+    rulesetId: lobby.rulesetId,
+    customRulesets: (lobby.customRulesets || []).map((definition) => ({ ...definition })),
+    selectedRulesets: sanitizeRulesetSelections(lobby.selectedRulesets, lobby.customRulesets),
+    rulesetPermissions: sanitizeRulesetPermissions(
+      lobby.rulesetPermissions,
+      lobby.players,
+      lobby.selectedRulesets,
+      lobby.customRulesets
+    ),
+    nvAllowed: Boolean(lobby.nvAllowed),
+    autoBotReplacementEnabled: lobby.autoBotReplacementEnabled !== false,
+    useTurnTimer: lobby.useTurnTimer !== false,
+    turnTimerSeconds: sanitizeTurnTimerSeconds(lobby.turnTimerSeconds),
+    players: lobby.players.map((player) => buildGamePlayerFromLobbyPlayer(player, lobby.players)),
+    status: 'playing',
+    phase: 'initializing',
+    chooserOrder,
+    chooserCursor: 0,
+    chooserId: null,
+    usedChoices: playerIds.reduce((acc, playerId) => {
+      acc[playerId] = {};
+      return acc;
+    }, {}),
+    activeRulesetId: null,
+    nvSelected: false,
+    roundNumber: 0,
+    handsReady: playerIds.reduce((acc, playerId) => {
+      acc[playerId] = [];
+      return acc;
+    }, {}),
+    stateVersion: 0,
+    turnIndex: 0,
+    trickPending: false,
+    currentTrick: [],
+    trickSuit: null,
+    collectedHands: [],
+    pointsByPlayer: buildInitialPoints(lobby.players),
+    collectedByPlayer: playerIds.reduce((acc, playerId) => {
+      acc[playerId] = [];
+      return acc;
+    }, {}),
+    chatMessages: [],
+    roundStats: null,
+    lastRoundStats: null,
+    lastEloResults: [],
+    lastEloDeltaByUserId: {},
+    eloUpdateStatus: 'idle',
+    eloUpdatePromise: null,
+    matchHistoryStatus: 'idle',
+    matchHistoryPromise: null,
+    lastMatchHistory: null,
+    saveGameStatus: 'idle',
+    saveGamePromise: null,
+    matchKey: buildMatchKey(lobby.roomId),
+    gameFinishedEventSent: false,
+    botActionTimeoutId: null,
+    pendingBotActionKey: null,
+    roundContinueTimeoutId: null,
+    abandonedPlayers: {},
+    timerId: null,
+    timerDeadline: null,
+    trainerMessageKeys: new Set()
+  };
+}
+
+function emitGameStartedToMembers(io, roomId, lobby, gameState) {
+  const gameStartedVersion = bumpGameStateVersion(gameState);
+  const spectatorVisibleHandState = buildSpectatorVisibleHandState(gameState);
+
+  lobby.players.forEach((player, index) => {
+    io.to(player.socketId).emit('game_started', {
+      message: 'The game has begun!',
+      hand: gameState.handsReady[player.userId] || [],
+      startingHandSize: gameState.startingHandSize || 0,
+      playerIndex: index,
+      isSpectator: false,
+      turnIndex: 0,
+      trickSuit: null,
+      stateVersion: gameStartedVersion,
+      cardCounts: buildCardCounts(gameState),
+      playerPoints: buildPointTotals(gameState),
+      collectedHandsByPlayer: buildCollectedHands(gameState),
+      choiceState: serializeChoiceState(gameState),
+      availableRulesets: getAvailableRulesets(gameState.customRulesets),
+      chatMessages: serializeChatMessages(gameState.chatMessages),
+      spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
+      spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
+      spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
+    });
+  });
+
+  lobby.spectators.forEach((spectator) => {
+    io.to(spectator.socketId).emit('game_started', {
+      message: 'The game has begun!',
+      hand: [],
+      startingHandSize: gameState.startingHandSize || spectatorVisibleHandState.visibleHand.length || 0,
+      playerIndex: -1,
+      isSpectator: true,
+      turnIndex: 0,
+      trickSuit: null,
+      stateVersion: gameStartedVersion,
+      cardCounts: buildCardCounts(gameState),
+      playerPoints: buildPointTotals(gameState),
+      collectedHandsByPlayer: buildCollectedHands(gameState),
+      choiceState: serializeChoiceState(gameState),
+      availableRulesets: getAvailableRulesets(gameState.customRulesets),
+      chatMessages: serializeChatMessages(gameState.chatMessages),
+      spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
+      spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
+      spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
+    });
+  });
+}
+
+function createEmptyHandsByPlayer(game) {
+  return (game?.players || []).reduce((acc, player) => {
+    acc[player.userId] = [];
+    return acc;
+  }, {});
+}
+
+function createEmptyCollectedByPlayer(game) {
+  return (game?.players || []).reduce((acc, player) => {
+    acc[player.userId] = [];
+    return acc;
+  }, {});
+}
+
+function buildTrainingRoundSummary(game, roundStats) {
+  if (!isTrainingMatch(game) || !roundStats || !game?.training?.humanUserId) {
+    return null;
+  }
+
+  const humanPlayer = getTrainingHumanPlayer(game);
+  const trainerPlayer = getTrainerPlayer(game);
+  const humanUserId = humanPlayer?.userId || game.training.humanUserId;
+  const trainerUserId = trainerPlayer?.userId || game.training.trainerUserId || '';
+
+  return {
+    roundNumber: roundStats.roundNumber,
+    rulesetId: roundStats.rulesetId,
+    rulesetLabel: roundStats.rulesetLabel,
+    humanScoreDelta: Number(roundStats.scoreDeltas?.[humanUserId] || 0),
+    humanTricksWon: (roundStats.tricks || []).filter((trick) => trick.takenBy === humanUserId).length,
+    trainerTricksWon: trainerUserId
+      ? (roundStats.tricks || []).filter((trick) => trick.takenBy === trainerUserId).length
+      : 0
+  };
+}
+
+function startTrainingRoundGameplay(io, roomId, game, {
+  announce = true,
+  nvSelected = false
+} = {}) {
+  if (!game || !isTrainingMatch(game) || !game.training?.selectedRulesetId) {
+    return { error: 'Training round cannot start right now' };
+  }
+
+  clearGameTimer(game);
+  clearPendingBotAction(game);
+  clearRoundAutoContinue(game);
+
+  dealNewRoundCards(io, roomId, game);
+  game.phase = 'playing_round';
+  game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
+  game.activeRulesetId = game.training.selectedRulesetId;
+  game.nvSelected = Boolean(nvSelected);
+  game.turnIndex = Math.max(0, Number(game.turnIndex || 0) % Math.max(game.players.length, 1));
+  game.roundNumber += 1;
+  createRoundStats(game);
+
+  scheduleGameTimer(io, roomId, game, () => {
+    const currentPlayer = game.players[game.turnIndex];
+    const fallbackCard = getLegalCardsForPlayer(game, currentPlayer?.userId)[0];
+    if (currentPlayer && fallbackCard) {
+      playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
+    }
+  });
+
+  const message = announce
+    ? `Training round ${game.roundNumber} of ${game.training.totalRounds}: ${game.training.selectedRulesetLabel}${game.nvSelected ? ' (NV)' : ''}`
+    : '';
+  const stateVersion = bumpGameStateVersion(game);
+  const spectatorVisibleHandState = buildSpectatorVisibleHandState(game);
+
+  io.to(roomId).emit('small_game_started', {
+    message,
+    choiceState: serializeChoiceState(game),
+    currentTrick: game.currentTrick,
+    turnIndex: game.turnIndex,
+    trickSuit: game.trickSuit,
+    stateVersion,
+    cardCounts: buildCardCounts(game),
+    playerPoints: buildPointTotals(game),
+    collectedHandsByPlayer: buildCollectedHands(game),
+    spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
+    spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
+    spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
+  });
+
+  void scheduleBotActionIfNeeded(io, roomId, game);
+  return { success: true };
+}
+
+function startTrainingRound(io, roomId, game, { announce = true } = {}) {
+  if (!game || !isTrainingMatch(game) || !game.training?.selectedRulesetId) {
+    return { error: 'Training round cannot start right now' };
+  }
+
+  clearGameTimer(game);
+  clearPendingBotAction(game);
+  clearRoundAutoContinue(game);
+
+  game.phase = 'choosing_nv';
+  game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
+  game.activeRulesetId = game.training.selectedRulesetId;
+  game.nvSelected = false;
+  game.currentTrick = [];
+  game.trickSuit = null;
+  game.trickPending = false;
+  game.handsReady = createEmptyHandsByPlayer(game);
+  game.startingHandSize = 0;
+  game.collectedHands = [];
+  game.collectedByPlayer = createEmptyCollectedByPlayer(game);
+
+  if (!game.nvAllowed) {
+    return startTrainingRoundGameplay(io, roomId, game, {
+      announce,
+      nvSelected: false
+    });
+  }
+
+  emitChoiceState(io, roomId, game, {
+    cardCounts: buildCardCounts(game),
+    playerPoints: buildPointTotals(game)
+  });
+  return { success: true };
 }
 
 function buildRankMap(standings) {
@@ -1849,6 +2531,16 @@ async function applyCompletedGameEloUpdates(io, roomId, game, standings) {
     return {
       applied: false,
       reason: 'missing-game',
+      results: []
+    };
+  }
+
+  if (isTrainingMatch(game)) {
+    game.lastEloResults = [];
+    game.lastEloDeltaByUserId = {};
+    return {
+      applied: false,
+      reason: 'training-match',
       results: []
     };
   }
@@ -2005,6 +2697,10 @@ async function persistCompletedMatchHistory(game, standings) {
     return null;
   }
 
+  if (isTrainingMatch(game)) {
+    return null;
+  }
+
   if (game.matchHistoryStatus === 'applied') {
     return game.lastMatchHistory || null;
   }
@@ -2088,7 +2784,7 @@ function closeLiveGameSession(io, roomId, lobby, {
   });
 
   getAllLobbyMembers(currentLobby).forEach((member) => {
-    if (!String(member.socketId || '').startsWith('bot:')) {
+    if (!isBotPlayer(member)) {
       io.sockets.sockets.get(member.socketId)?.leave(roomId);
     }
   });
@@ -2111,6 +2807,16 @@ async function finishBigGame(io, roomId, game) {
     });
     game.status = 'finished';
     game.phase = 'finished';
+
+    if (isTrainingMatch(game)) {
+      game.training.finalReview = await generateTrainerFinalReview({
+        training: game.training,
+        feedbackEntries: game.training.feedbackEntries || [],
+        roundSummaries: game.training.roundSummaries || [],
+        humanPlayer: getTrainingHumanPlayer(game),
+        trainerPlayer: getTrainerPlayer(game)
+      });
+    }
 
     await applyCompletedGameEloUpdates(io, roomId, game, buildStandings(game));
 
@@ -2136,6 +2842,7 @@ async function finishBigGame(io, roomId, game) {
       collectedHandsByPlayer: buildCollectedHands(game),
       cardCounts: buildCardCounts(game),
       choiceState: serializeChoiceState(game),
+      trainingFinalReview: serializeTrainingFinalReview(game.training?.finalReview),
       spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -2212,6 +2919,14 @@ function setNvChoiceForRound(io, roomId, game, playerId, nvSelected) {
   clearGameTimer(game);
   clearPendingBotAction(game);
   game.nvSelected = Boolean(nvSelected);
+
+  if (isTrainingMatch(game)) {
+    return startTrainingRoundGameplay(io, roomId, game, {
+      announce: true,
+      nvSelected: game.nvSelected
+    });
+  }
+
   startRulesetSelection(io, roomId, game, { dealFirst: !game.nvSelected });
   return { success: true };
 }
@@ -2283,6 +2998,15 @@ function finishSmallGameRound(io, roomId, game) {
   game.phase = 'round_stats';
   const roundStats = finalizeRoundStats(game);
   game.lastRoundStats = roundStats;
+  if (isTrainingMatch(game)) {
+    const roundSummary = buildTrainingRoundSummary(game, roundStats);
+    if (roundSummary) {
+      game.training.roundSummaries = Array.isArray(game.training.roundSummaries)
+        ? game.training.roundSummaries
+        : [];
+      game.training.roundSummaries.push(roundSummary);
+    }
+  }
   const spectatorVisibleHandState = buildSpectatorVisibleHandState(game);
 
   const matchComplete = !hasRemainingChoices(game);
@@ -2317,6 +3041,16 @@ function continueAfterRound(io, roomId, game) {
 
   clearPendingBotAction(game);
   clearRoundAutoContinue(game);
+
+  if (isTrainingMatch(game)) {
+    if (isTrainingRoundLimitReached(game)) {
+      void finishBigGame(io, roomId, game);
+      return { success: true };
+    }
+
+    return startTrainingRound(io, roomId, game);
+  }
+
   game.chooserCursor = (game.chooserCursor + 1) % Math.max(game.chooserOrder.length, 1);
   return beginChooserTurn(io, roomId, game)
     ? { success: true }
@@ -2340,6 +3074,10 @@ async function saveAndQuitGame(io, roomId, game, ownerUserId) {
   const lobby = lobbies.get(roomId);
   if (!game || !lobby || game.phase !== 'round_stats') {
     return { error: 'Save & Quit is only available from round stats' };
+  }
+
+  if (isTrainingMatch(game)) {
+    return { error: 'Save & Quit is disabled for training matches' };
   }
 
   if (game.saveGameStatus === 'pending' && game.saveGamePromise) {
@@ -2664,6 +3402,134 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
   };
 }
 
+async function createTrainingMatchSession(io, socket, user, trainingSettings) {
+  if (!io || !socket || !user?.userId) {
+    return { error: 'Not authenticated' };
+  }
+
+  const currentRoom = findCurrentRoomForUser(user);
+  if (currentRoom) {
+    return { error: 'Leave your current room before starting training' };
+  }
+
+  const validatedSettings = await validateTrainingSettings(trainingSettings, user);
+  if (validatedSettings.error) {
+    return validatedSettings;
+  }
+
+  let roomId = `TRN${randomFriendCode().slice(0, 3)}`;
+  while (lobbies.has(roomId)) {
+    roomId = `TRN${randomFriendCode().slice(0, 3)}`;
+  }
+
+  const selectedRulesets = Object.keys(sanitizeRulesetSelections({}, validatedSettings.customRulesets)).reduce((acc, ruleId) => {
+    acc[ruleId] = ruleId === validatedSettings.selectedRulesetId;
+    return acc;
+  }, {});
+  const hostMember = createLobbyMember(user, socket.id, {
+    isReady: true,
+    role: 'player'
+  });
+  const training = {
+    enabled: true,
+    humanUserId: user.userId,
+    trainerUserId: '',
+    trainerElo: validatedSettings.trainerElo,
+    trainerRankName: buildBotIdentity({
+      roomId,
+      seatIndex: 1,
+      players: [hostMember],
+      botType: BOT_TYPE_TRAINER,
+      fixedElo: validatedSettings.trainerElo
+    }).rankName,
+    totalRounds: validatedSettings.totalRounds,
+    playerCount: validatedSettings.playerCount,
+    regularBotCount: validatedSettings.regularBotCount,
+    selectedRulesetId: validatedSettings.selectedRulesetId,
+    selectedRulesetLabel: validatedSettings.selectedRulesetLabel,
+    selectedRulesetSource: validatedSettings.selectedRulesetSource,
+    preMoveCommentaryEnabled: validatedSettings.preMoveCommentaryEnabled,
+    postMoveFeedbackEnabled: validatedSettings.postMoveFeedbackEnabled,
+    feedbackEntries: [],
+    roundSummaries: [],
+    finalReview: null
+  };
+  const lobby = {
+    roomId,
+    roomName: `${getUserDisplayName(user)} Training`,
+    visibility: 'private',
+    matchMode: TRAINING_MATCH_MODE,
+    training,
+    hostId: user.userId,
+    players: [hostMember],
+    spectators: [],
+    rulesetId: null,
+    customRulesets: validatedSettings.customRulesets.map((definition) => ({ ...definition })),
+    selectedRulesets,
+    rulesetPermissions: {
+      [user.userId]: createDefaultPermissionsForPlayer(validatedSettings.customRulesets)
+    },
+    nvAllowed: true,
+    autoBotReplacementEnabled: true,
+    useTurnTimer: true,
+    turnTimerSeconds: DEFAULT_TURN_TIMER_SECONDS,
+    bannedUserIds: [],
+    mutedChatUserIds: [],
+    chatMessages: [],
+    status: 'playing'
+  };
+
+  const trainerMember = createBotLobbyMember(lobby, {
+    botType: BOT_TYPE_TRAINER,
+    fixedElo: validatedSettings.trainerElo,
+    displayName: 'Trainer',
+    description: 'Training-focused Rentz AI bot.',
+    trainerSettings: {
+      preMoveCommentaryEnabled: validatedSettings.preMoveCommentaryEnabled,
+      postMoveFeedbackEnabled: validatedSettings.postMoveFeedbackEnabled
+    }
+  });
+  lobby.players.push(trainerMember);
+  for (let index = 0; index < validatedSettings.regularBotCount; index += 1) {
+    lobby.players.push(createBotLobbyMember(lobby));
+  }
+  syncLobbySeatIndexes(lobby);
+  ensureRulesetPermissionsForPlayers(lobby);
+
+  training.trainerUserId = trainerMember.userId;
+  training.trainerRankName = trainerMember.rankName;
+  lobby.training = training;
+  lobby.rulesetPermissions = lobby.players.reduce((acc, player) => {
+    acc[player.userId] = Object.keys(selectedRulesets).reduce((ruleAcc, ruleId) => {
+      ruleAcc[ruleId] = selectedRulesets[ruleId] === true;
+      return ruleAcc;
+    }, {});
+    return acc;
+  }, {});
+
+  const game = buildGameStateFromLobby(lobby, {
+    matchMode: TRAINING_MATCH_MODE,
+    training
+  });
+  game.chooserOrder = [user.userId];
+  game.training = training;
+
+  socket.join(roomId);
+  lobbies.set(roomId, lobby);
+  activeGames.set(roomId, game);
+
+  emitGameStartedToMembers(io, roomId, lobby, game);
+  startTrainingRound(io, roomId, game);
+
+  return {
+    success: true,
+    roomId,
+    assignedRole: 'player',
+    lobby: serializeLobby(lobby),
+    game: buildGameSessionSnapshot(roomId, game, user.userId)
+  };
+}
+
 function removeMemberFromLobby(io, roomId, lobby, targetUserId, reason = 'Removed from room') {
   const outcome = removeWaitingLobbyMember(lobby, targetUserId);
   if (!outcome) {
@@ -2695,10 +3561,33 @@ function leaveSpectatingDuringActiveGame(io, roomId, lobby, user) {
   };
 }
 
+function endTrainingMatchFromDeparture(io, roomId, lobby, game, member, {
+  reason = 'The training session ended.',
+  message = 'The training session ended.'
+} = {}) {
+  if (!lobby || !game || !member || !isTrainingMatch(game)) {
+    return { error: 'Training session not found' };
+  }
+
+  clearPendingGameAbandonment(roomId, member.userId);
+  closeLiveGameSession(io, roomId, lobby, { reason });
+  return {
+    success: true,
+    message
+  };
+}
+
 function abandonActiveMatch(io, roomId, lobby, game, member) {
   const gamePlayer = game?.players.find((player) => player.userId === member?.userId);
   if (!lobby || !game || !member || !gamePlayer || isBotPlayer(gamePlayer)) {
     return { error: 'You are not an active player in this match' };
+  }
+
+  if (isTrainingMatch(game)) {
+    return endTrainingMatchFromDeparture(io, roomId, lobby, game, member, {
+      reason: `${getUserDisplayName(member)} ended the training session.`,
+      message: 'Training session ended.'
+    });
   }
 
   emitGameActivity(io, roomId, `${getUserDisplayName(member)} abandoned the match.`, {
@@ -2775,6 +3664,13 @@ function abandonUserSession(io, socket, user) {
     const game = activeGames.get(roomId);
     const gamePlayer = game?.players.find((player) => player.userId === user.userId);
     if (game && gamePlayer) {
+      if (isTrainingMatch(game) && !isBotPlayer(gamePlayer)) {
+        return endTrainingMatchFromDeparture(io, roomId, lobby, game, member, {
+          reason: `${getUserDisplayName(member)} left the training session.`,
+          message: 'Training session ended.'
+        });
+      }
+
       scheduleGameAbandonment(io, roomId, lobby, member, gamePlayer);
     } else {
       setSeatConnectionState(member, 'reconnecting');
@@ -2903,6 +3799,22 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     return { error: 'That card is not in your hand' };
   }
 
+  const currentRuleset = getRulesetDefinitionById(game.activeRulesetId, game.customRulesets);
+  const currentTrickBeforeMove = [...(game.currentTrick || [])];
+  const trainerFeedbackContext = isTrainingMatch(game) && !isBotPlayer(game.players[pIndex])
+    ? {
+      humanPlayer: game.players[pIndex],
+      playedCard: card,
+      legalMoves: getLegalCardsForPlayer(game, playerId).map((legalCard) => ({
+        id: legalCard,
+        card: legalCard,
+        label: formatCardMoveLabel(legalCard)
+      })),
+      ruleset: currentRuleset,
+      currentTrickBeforeMove
+    }
+    : null;
+
   if (game.currentTrick.length === 0) {
     const [, suit] = card.split('-');
     game.trickSuit = suit;
@@ -2957,6 +3869,10 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
   });
 
   io.to(player.socketId).emit('hand_update', game.handsReady[playerId]);
+
+  if (trainerFeedbackContext) {
+    maybeSendTrainerMoveFeedback(io, roomId, game, trainerFeedbackContext);
+  }
 
   if (!trickComplete) {
     void scheduleBotActionIfNeeded(io, roomId, game);
@@ -3744,7 +4660,7 @@ function attachSocketManager(io) {
     });
 
     // 4. Start Game
-    socket.on('start_game', async ({ roomId }, callback) => {
+    socket.on('start_game', async ({ roomId }, callback = () => {}) => {
       const lobby = lobbies.get(roomId);
       const user = socketToUser.get(socket.id);
       const validationError = getStartGameValidationError(lobby, user);
@@ -3756,84 +4672,9 @@ function attachSocketManager(io) {
       syncLobbySeatIndexes(lobby);
       ensureRulesetPermissionsForPlayers(lobby);
 
-      const playerIds = lobby.players.map((player) => player.userId);
-      const chooserOrder = shuffle([...playerIds]);
-
-      const gameState = {
-        roomId,
-        roomName: lobby.roomName,
-        hostId: lobby.hostId,
-        rulesetId: lobby.rulesetId,
-        customRulesets: (lobby.customRulesets || []).map((definition) => ({ ...definition })),
-        selectedRulesets: sanitizeRulesetSelections(lobby.selectedRulesets, lobby.customRulesets),
-        rulesetPermissions: sanitizeRulesetPermissions(lobby.rulesetPermissions, lobby.players, lobby.selectedRulesets, lobby.customRulesets),
-        nvAllowed: Boolean(lobby.nvAllowed),
-        autoBotReplacementEnabled: lobby.autoBotReplacementEnabled !== false,
-        useTurnTimer: lobby.useTurnTimer !== false,
-        turnTimerSeconds: sanitizeTurnTimerSeconds(lobby.turnTimerSeconds),
-        players: lobby.players.map((player) => ({
-          userId: player.userId,
-          socketId: player.socketId,
-          seatIndex: player.seatIndex,
-          joinOrder: player.joinOrder,
-          name: player.displayName || player.name,
-          avatarUrl: getAvatarSource(player),
-          guest: Boolean(player.guest),
-          isBot: Boolean(player.isBot),
-          banner: player.banner || '',
-          description: player.description || '',
-          accountCreatedAt: player.accountCreatedAt || null,
-          elo: typeof player.elo === 'number' ? player.elo : null,
-          rankName: player.rankName || null,
-          rankTierKey: player.rankTierKey || null,
-          isConnected: player.isConnected !== false,
-          connectionStatus: player.connectionStatus || (player.isConnected === false ? 'reconnecting' : 'connected'),
-          averageHumanElo: isBotPlayer(player) ? getAverageHumanElo(lobby.players) : null,
-          replacementForUserId: player.replacementForUserId || null,
-          replacementForName: player.replacementForName || null
-        })),
-        status: 'playing',
-        phase: 'initializing',
-        chooserOrder,
-        chooserCursor: 0,
-        chooserId: null,
-        usedChoices: playerIds.reduce((acc, playerId) => {
-          acc[playerId] = {};
-          return acc;
-        }, {}),
-        activeRulesetId: null,
-        nvSelected: false,
-        roundNumber: 0,
-        handsReady: playerIds.reduce((acc, playerId) => {
-          acc[playerId] = [];
-          return acc;
-        }, {}),
-        stateVersion: 0,
-        turnIndex: 0,
-        trickPending: false,
-        currentTrick: [], // cards played this round
-        trickSuit: null,
-        collectedHands: [], // History of hands collected
-        pointsByPlayer: buildInitialPoints(lobby.players),
-        collectedByPlayer: playerIds.reduce((acc, playerId) => {
-          acc[playerId] = [];
-          return acc;
-        }, {}),
-        chatMessages: [],
-        roundStats: null,
-        lastRoundStats: null,
-        lastEloResults: [],
-        lastEloDeltaByUserId: {},
-        eloUpdateStatus: 'idle',
-        eloUpdatePromise: null,
-        matchKey: `${roomId}:${Date.now().toString(36)}:${randomFriendCode().toLowerCase()}`,
-        gameFinishedEventSent: false,
-        botActionTimeoutId: null,
-        pendingBotActionKey: null,
-        abandonedPlayers: {},
-        timerId: null,
-        timerDeadline: null
-      };
+      const gameState = buildGameStateFromLobby(lobby, {
+        matchMode: STANDARD_MATCH_MODE
+      });
 
       activeGames.set(roomId, gameState);
 
@@ -3857,61 +4698,29 @@ function attachSocketManager(io) {
           }
         });
         */
-        
-        const gameStartedVersion = bumpGameStateVersion(gameState);
-        const spectatorVisibleHandState = buildSpectatorVisibleHandState(gameState);
 
-        // Notify players individually with their own cards (hide others)
-        lobby.players.forEach((p, index) => {
-          io.to(p.socketId).emit('game_started', {
-            message: 'The game has begun!',
-            hand: gameState.handsReady[p.userId] || [],
-            startingHandSize: gameState.startingHandSize || 0,
-            playerIndex: index,
-            isSpectator: false,
-            turnIndex: 0,
-            trickSuit: null,
-            stateVersion: gameStartedVersion,
-            cardCounts: buildCardCounts(gameState),
-            playerPoints: buildPointTotals(gameState),
-            collectedHandsByPlayer: buildCollectedHands(gameState),
-            choiceState: serializeChoiceState(gameState),
-            availableRulesets: getAvailableRulesets(gameState.customRulesets),
-            chatMessages: serializeChatMessages(gameState.chatMessages),
-            spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
-            spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
-            spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
-          });
-        });
-
-        lobby.spectators.forEach((spectator) => {
-          io.to(spectator.socketId).emit('game_started', {
-            message: 'The game has begun!',
-            hand: [],
-            startingHandSize: gameState.startingHandSize || spectatorVisibleHandState.visibleHand.length || 0,
-            playerIndex: -1,
-            isSpectator: true,
-            turnIndex: 0,
-            trickSuit: null,
-            stateVersion: gameStartedVersion,
-            cardCounts: buildCardCounts(gameState),
-            playerPoints: buildPointTotals(gameState),
-            collectedHandsByPlayer: buildCollectedHands(gameState),
-            choiceState: serializeChoiceState(gameState),
-            availableRulesets: getAvailableRulesets(gameState.customRulesets),
-            chatMessages: serializeChatMessages(gameState.chatMessages),
-            spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
-            spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
-            spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
-          });
-        });
+        emitGameStartedToMembers(io, roomId, lobby, gameState);
 
         beginChooserTurn(io, roomId, gameState);
-        
+
         callback({ success: true });
       } catch (err) {
         console.error('Failed to create game in DB:', err);
         callback({ error: 'Failed to start game due to DB error' });
+      }
+    });
+
+    socket.on('start_training_match', async (payload = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) {
+        return callback({ error: 'Not authenticated' });
+      }
+
+      try {
+        callback(await createTrainingMatchSession(io, socket, user, payload));
+      } catch (error) {
+        console.error('Failed to start training match:', error);
+        callback({ error: 'Failed to start the training match right now' });
       }
     });
 
@@ -4067,7 +4876,14 @@ function attachSocketManager(io) {
               emitLobbyUpdate(io, roomId, lobby);
             }
           } else if (game && gamePlayer) {
-            scheduleGameAbandonment(io, roomId, lobby, member, gamePlayer);
+            if (isTrainingMatch(game) && !isBotPlayer(gamePlayer)) {
+              endTrainingMatchFromDeparture(io, roomId, lobby, game, member, {
+                reason: `${getUserDisplayName(member)} disconnected, so the training session ended.`,
+                message: 'Training session ended.'
+              });
+            } else {
+              scheduleGameAbandonment(io, roomId, lobby, member, gamePlayer);
+            }
           } else {
             setSeatConnectionState(member, 'reconnecting');
             emitLobbyUpdate(io, roomId, lobby);
@@ -4096,3 +4912,9 @@ module.exports.updateCustomRulesetInLobby = updateCustomRulesetInLobby;
 module.exports.deleteCustomRulesetFromLobby = deleteCustomRulesetFromLobby;
 module.exports.addBotToLobby = addBotToLobby;
 module.exports.removeBotFromLobby = removeBotFromLobby;
+module.exports.applyCompletedGameEloUpdates = applyCompletedGameEloUpdates;
+module.exports.abandonActiveMatch = abandonActiveMatch;
+module.exports.createTrainingMatchSession = createTrainingMatchSession;
+module.exports.persistCompletedMatchHistory = persistCompletedMatchHistory;
+module.exports.setNvChoiceForRound = setNvChoiceForRound;
+module.exports.validateTrainingSettings = validateTrainingSettings;

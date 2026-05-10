@@ -156,8 +156,26 @@ const DEFAULT_ROOM_RULESET_SELECTIONS = Object.freeze(
 );
 const DEFAULT_ROOM_VISIBILITY = 'public';
 const TURN_TIMER_RANGE = { min: 15, max: 300, defaultValue: 45 };
+const DEFAULT_ACCOUNT_ELO = 500;
+const TRAINER_ELO_SOFT_MAX = 10000;
+const TRAINING_ROUNDS_RANGE = { min: 1, max: 15, defaultValue: 1 };
+const TRAINING_PLAYERS_RANGE = { min: 2, max: 6, defaultValue: 2 };
+const MATCH_MODE_STANDARD = 'standard';
+const MATCH_MODE_TRAINING = 'training';
 const RULESET_TYPE_OPTIONS = new Set(['per_round', 'end_game']);
 const RENTZ_METADATA_KEYS = new Set(['long_name', 'short_name', 'title', 'name', 'abbreviation', 'abbr', 'type']);
+const EDITOR_BOT_CATEGORY_DEFINITIONS = Object.freeze([
+  { key: 'fairness', label: 'Fairness' },
+  { key: 'strategicDepth', label: 'Strategic depth' },
+  { key: 'riskRewardBalance', label: 'Risk/reward balance' },
+  { key: 'comebackPotential', label: 'Comeback potential' },
+  { key: 'claritySimplicity', label: 'Clarity / simplicity' },
+  { key: 'scoringBalance', label: 'Scoring balance' },
+  { key: 'playerAgency', label: 'Player agency' },
+  { key: 'interactionQuality', label: 'Interaction quality' },
+  { key: 'robustness', label: 'Robustness' },
+  { key: 'exploitResistance', label: 'Exploit resistance' }
+]);
 
 const VALUE_ORDER = ['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2'];
 const SUIT_ORDER = ['H', 'S', 'D', 'C'];
@@ -190,12 +208,76 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+function clampScoreToTenth(value, fallback = 0) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return clampScoreToTenth(fallback, 0);
+  }
+
+  return Math.max(0, Math.min(10, Math.round(numericValue * 10) / 10));
+}
+
 function buildRulesetShortNameFallback(longName) {
   return Array.from(String(longName || 'Ruleset').replace(/\s+/g, '')).slice(0, 4).join('') || 'R';
 }
 
 function normalizeRulesetType(type) {
   return RULESET_TYPE_OPTIONS.has(type) ? type : 'per_round';
+}
+
+function sanitizeEditorJudgeText(value, fallback = '', maxLength = 500) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return fallback;
+  }
+
+  return text.slice(0, maxLength);
+}
+
+function sanitizeEditorJudgeList(values = [], fallback = []) {
+  const list = Array.isArray(values) ? values : [];
+  const sanitized = list
+    .map((value) => sanitizeEditorJudgeText(value, '', 220))
+    .filter(Boolean);
+
+  return sanitized.length > 0 ? sanitized.slice(0, 6) : fallback;
+}
+
+function normalizeEditorJudgeReview(review = null) {
+  if (!review || typeof review !== 'object') {
+    return null;
+  }
+
+  const categoryRatings = EDITOR_BOT_CATEGORY_DEFINITIONS.reduce((acc, category) => {
+    const entry = review.categoryRatings?.[category.key] || {};
+    acc[category.key] = {
+      score: clampScoreToTenth(entry.score, 0),
+      explanation: sanitizeEditorJudgeText(entry.explanation, 'No extra detail was provided for this category yet.', 220)
+    };
+    return acc;
+  }, {});
+  const categoryAverage = EDITOR_BOT_CATEGORY_DEFINITIONS
+    .reduce((sum, category) => sum + categoryRatings[category.key].score, 0) / EDITOR_BOT_CATEGORY_DEFINITIONS.length;
+
+  return {
+    overallScore: clampScoreToTenth(review.overallScore, categoryAverage),
+    categoryRatings,
+    rulesetSummary: sanitizeEditorJudgeText(review.rulesetSummary, 'The ruleset review summary is unavailable right now.', 500),
+    constructiveReview: sanitizeEditorJudgeText(review.constructiveReview, 'The Editor Bot did not provide a longer review this time.', 500),
+    recommendations: sanitizeEditorJudgeList(review.recommendations, []),
+    warnings: sanitizeEditorJudgeList(review.warnings, []),
+    reviewSource: review.reviewSource === 'fallback' ? 'fallback' : review.reviewSource === 'heuristic' ? 'heuristic' : 'ai',
+    diagnostics: Array.isArray(review.diagnostics)
+      ? review.diagnostics.map((entry) => ({
+        attempt: sanitizeEditorJudgeText(entry?.attempt, 'unknown', 80),
+        elapsedMs: Math.max(0, Math.round(Number(entry?.elapsedMs) || 0)),
+        success: entry?.success === true,
+        stage: sanitizeEditorJudgeText(entry?.stage, 'unknown', 80),
+        error: sanitizeEditorJudgeText(entry?.error, '', 220),
+        rawPreview: sanitizeEditorJudgeText(entry?.rawPreview, '', 280)
+      }))
+      : []
+  };
 }
 
 function normalizeRentzMetadataKey(key) {
@@ -393,6 +475,103 @@ function normalizeRoomSettings(roomSettings) {
     ),
     visibility: roomSettings?.visibility || DEFAULT_ROOM_VISIBILITY,
     roomName: roomSettings?.roomName || ''
+  };
+}
+
+function getMatchModeValue(value) {
+  return value === MATCH_MODE_TRAINING ? MATCH_MODE_TRAINING : MATCH_MODE_STANDARD;
+}
+
+function normalizeTrainingState(training = null) {
+  if (!training?.enabled) {
+    return null;
+  }
+
+  return {
+    enabled: true,
+    humanUserId: training.humanUserId || '',
+    trainerUserId: training.trainerUserId || '',
+    trainerElo: Math.max(0, Math.round(Number(training.trainerElo || 0))),
+    trainerRankName: training.trainerRankName || 'Starting-out Rentz Rookie',
+    totalRounds: clampNumber(
+      Math.round(Number(training.totalRounds || TRAINING_ROUNDS_RANGE.defaultValue)),
+      TRAINING_ROUNDS_RANGE.min,
+      TRAINING_ROUNDS_RANGE.max
+    ),
+    playerCount: clampNumber(
+      Math.round(Number(training.playerCount || TRAINING_PLAYERS_RANGE.defaultValue)),
+      TRAINING_PLAYERS_RANGE.min,
+      TRAINING_PLAYERS_RANGE.max
+    ),
+    regularBotCount: Math.max(0, Math.round(Number(training.regularBotCount || 0))),
+    selectedRulesetId: training.selectedRulesetId || '',
+    selectedRulesetLabel: training.selectedRulesetLabel || '',
+    selectedRulesetSource: training.selectedRulesetSource || 'default',
+    preMoveCommentaryEnabled: training.preMoveCommentaryEnabled !== false,
+    postMoveFeedbackEnabled: training.postMoveFeedbackEnabled !== false
+  };
+}
+
+function normalizeTrainingFinalReview(review = null) {
+  if (!review?.review) {
+    return null;
+  }
+
+  return {
+    review: String(review.review || '').trim(),
+    starRating: clampNumber(Number(review.starRating || 3), 0.5, 5)
+  };
+}
+
+function normalizeTrainerEloValue(value, fallback = DEFAULT_ACCOUNT_ELO) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return Math.max(0, Math.round(fallback));
+  }
+
+  return Math.max(0, Math.round(numericValue));
+}
+
+function getTrainerDefaultElo(profile = null) {
+  return normalizeTrainerEloValue(getPlayerRating(profile), DEFAULT_ACCOUNT_ELO);
+}
+
+function getTrainerMaxElo(profile = null) {
+  return Math.max(TRAINER_ELO_SOFT_MAX, getTrainerDefaultElo(profile));
+}
+
+function getTrainerRankName(elo) {
+  const normalizedElo = normalizeTrainerEloValue(elo);
+  if (normalizedElo >= 10000) {
+    return 'Ancestral Rentz God';
+  }
+  if (normalizedElo >= 8000) {
+    return 'Ennead of Rentz Member';
+  }
+  if (normalizedElo >= 6000) {
+    return 'Divine Rentz Envoy';
+  }
+  if (normalizedElo >= 4000) {
+    return 'Grand Rentz Master';
+  }
+  if (normalizedElo >= 2000) {
+    return 'Practising Rentz Expert';
+  }
+  if (normalizedElo >= 1000) {
+    return 'Devoted Rentz Player';
+  }
+
+  return 'Starting-out Rentz Rookie';
+}
+
+function createTrainingSetup(profile = null) {
+  return {
+    trainerElo: getTrainerDefaultElo(profile),
+    selectedRulesetId: '',
+    preMoveCommentaryEnabled: true,
+    postMoveFeedbackEnabled: true,
+    totalRounds: TRAINING_ROUNDS_RANGE.defaultValue,
+    playerCount: TRAINING_PLAYERS_RANGE.defaultValue
   };
 }
 
@@ -947,6 +1126,7 @@ function buildBotProfileSummary(player) {
     displayName: getPlayerName(player),
     guest: false,
     isBot: true,
+    isTrainer: Boolean(player?.isTrainer),
     profilePicture: getPlayerAvatarSource(player),
     avatarUrl: getPlayerAvatarSource(player),
     banner: '',
@@ -988,6 +1168,10 @@ function getPlayerConnectionLabel(player) {
 
 function PlayerNameLabel({ player, isLocal = false, className = '', nameClassName = '', suffixClassName = '' }) {
   const connectionLabel = getPlayerConnectionLabel(player);
+  const botBadgeLabel = player?.isTrainer ? 'Trainer' : 'AI';
+  const botBadgeClassName = player?.isTrainer
+    ? 'border-emerald-200/80 bg-emerald-100/85 text-emerald-950'
+    : 'border-sky-200/80 bg-sky-100/85 text-sky-900';
 
   return (
     <span className={clsx('rentz-player-name-label', className)}>
@@ -998,8 +1182,8 @@ function PlayerNameLabel({ player, isLocal = false, className = '', nameClassNam
         <span className={clsx('rentz-player-name-self', suffixClassName)}>(You)</span>
       ) : null}
       {isBotPlayer(player) ? (
-        <span className="inline-flex items-center rounded-full border border-sky-200/80 bg-sky-100/85 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.16em] text-sky-900">
-          AI
+        <span className={clsx('inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.16em]', botBadgeClassName)}>
+          {botBadgeLabel}
         </span>
       ) : null}
       {connectionLabel ? (
@@ -1018,6 +1202,10 @@ function getPlayerRating(player) {
 function getPlayerCompetitiveLabel(player) {
   if (isBotPlayer(player)) {
     const rating = getPlayerRating(player);
+    if (player?.isTrainer) {
+      return rating == null ? 'Trainer ELO 500' : `Trainer ELO ${rating}`;
+    }
+
     return rating == null ? 'AI ELO 500' : `AI ELO ${rating}`;
   }
 
@@ -2215,6 +2403,14 @@ function App() {
   const [isPublicBrowserOpen, setIsPublicBrowserOpen] = useState(false);
   const [publicRooms, setPublicRooms] = useState([]);
   const [publicRoomsLoading, setPublicRoomsLoading] = useState(false);
+  const [matchMode, setMatchMode] = useState(MATCH_MODE_STANDARD);
+  const [trainingState, setTrainingState] = useState(null);
+  const [trainingFinalReview, setTrainingFinalReview] = useState(null);
+  const [isTrainingSetupOpen, setIsTrainingSetupOpen] = useState(false);
+  const [trainingSetup, setTrainingSetup] = useState(() => createTrainingSetup());
+  const [trainingStartBusy, setTrainingStartBusy] = useState(false);
+  const [trainingValidationMessage, setTrainingValidationMessage] = useState('');
+  const [trainingReturnBusy, setTrainingReturnBusy] = useState(false);
   const [guestNameInput, setGuestNameInput] = useState('');
   const [guestProfile, setGuestProfile] = useState(null);
   const [recoverableGuestSession, setRecoverableGuestSession] = useState(() => readRecoverableGuestSessionForCurrentNavigation());
@@ -2349,6 +2545,10 @@ function App() {
   const [editorRoomRulesetId, setEditorRoomRulesetId] = useState(null);
   const [editorStatus, setEditorStatus] = useState('');
   const [editorAst, setEditorAst] = useState(null);
+  const [editorJudgeBusy, setEditorJudgeBusy] = useState(false);
+  const [editorJudgeError, setEditorJudgeError] = useState('');
+  const [editorJudgeReview, setEditorJudgeReview] = useState(null);
+  const [editorJudgeSignature, setEditorJudgeSignature] = useState('');
   const [ruleDrafts, setRuleDrafts] = useState(() => {
     try {
       return JSON.parse(window.localStorage.getItem('rentz-rule-drafts') || '[]');
@@ -2823,6 +3023,22 @@ function App() {
     setSpectatorVisiblePlayerName(payload?.spectatorVisiblePlayerName || '');
   }
 
+  function applyMatchMetadata(source = null, fallback = null) {
+    const hasMatchMetadata = Boolean(
+      source?.matchMode
+      || source?.training
+      || fallback?.matchMode
+      || fallback?.training
+    );
+    if (!hasMatchMetadata) {
+      return;
+    }
+
+    const nextTraining = normalizeTrainingState(source?.training || fallback?.training || null);
+    setMatchMode(getMatchModeValue(source?.matchMode || fallback?.matchMode || (nextTraining ? MATCH_MODE_TRAINING : MATCH_MODE_STANDARD)));
+    setTrainingState(nextTraining);
+  }
+
   function applyRestoredSession(response) {
     if (!response?.success || !response.roomId || !response.lobby) {
       return;
@@ -2830,6 +3046,9 @@ function App() {
 
     const restoredGame = response.game || null;
     const restoredHand = restoredGame?.hand || [];
+    applyMatchMetadata(restoredGame || response.lobby, response.lobby);
+    setTrainingFinalReview(normalizeTrainingFinalReview(restoredGame?.trainingFinalReview));
+    setTrainingReturnBusy(false);
 
     updateStoredGuestRoom(response.roomId);
     setRoomId(response.roomId);
@@ -2853,6 +3072,7 @@ function App() {
     setRoundActionBusy('');
 
     if (!restoredGame) {
+      setTrainingFinalReview(null);
       setGameStarted(false);
       setIsSpectatingGame(false);
       setGameFinished(false);
@@ -2909,6 +3129,9 @@ function App() {
     updateStoredGuestRoom(null);
     latestGameStateVersionRef.current = 0;
     startingHandSizeRef.current = 0;
+    setMatchMode(MATCH_MODE_STANDARD);
+    setTrainingState(null);
+    setTrainingFinalReview(null);
     setInLobby(false);
     setGameStarted(false);
     setIsSpectatingGame(false);
@@ -2983,6 +3206,11 @@ function App() {
     setMatchCompletePending(false);
     setRoundActionBusy('');
     setIsRoomSettingsOpen(false);
+    setIsTrainingSetupOpen(false);
+    setTrainingValidationMessage('');
+    setTrainingStartBusy(false);
+    setTrainingReturnBusy(false);
+    setTrainingSetup(createTrainingSetup(activeProfileRef.current));
     setEditorRoomRulesetId(null);
     setSavedGameRulesetTableModal(null);
   }
@@ -3054,6 +3282,7 @@ function App() {
     }
 
     socket.on('lobby_update', (lobby) => {
+      applyMatchMetadata(lobby);
       const { players: lobbyPlayers, spectators: lobbySpectators, hostId: nextHostId } = lobby || {};
       setPlayers(lobbyPlayers || []);
       setSpectators(lobbySpectators || []);
@@ -3070,6 +3299,9 @@ function App() {
     socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
+      applyMatchMetadata(nextChoiceState);
+      setTrainingFinalReview(null);
+      setTrainingReturnBusy(false);
       const resolvedHand = nextHand || [];
       const resolvedStartingHandSize = nextStartingHandSize || resolvedHand.length || (nextSpectatorVisibleHand || []).length;
       startingHandSizeRef.current = resolvedStartingHandSize;
@@ -3106,6 +3338,7 @@ function App() {
 
     socket.on('choice_state_update', ({ choiceState: nextChoiceState, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
+      applyMatchMetadata(nextChoiceState);
       setChoiceState(nextChoiceState || null);
       applySpectatorVisibleHandState({
         spectatorVisibleHand: nextSpectatorVisibleHand,
@@ -3124,6 +3357,7 @@ function App() {
 
     socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
+      applyMatchMetadata(nextChoiceState);
       setChoiceState(nextChoiceState || null);
       applySpectatorVisibleHandState({
         spectatorVisibleHand: nextSpectatorVisibleHand,
@@ -3153,6 +3387,7 @@ function App() {
 
     socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
+      applyMatchMetadata(nextChoiceState);
       setCurrentTrick(nextTrick);
       setTurnIndex(nextTurnIndex);
       setTrickSuit(nextTrickSuit || null);
@@ -3183,6 +3418,7 @@ function App() {
 
     socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
+      applyMatchMetadata(nextChoiceState);
       setAnimatingWinner(winnerName);
       setTrickWinnerId(winnerId);
       setTrickPending(true);
@@ -3207,6 +3443,7 @@ function App() {
     });
 
     socket.on('trick_end', ({ nextTurnIndex, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+      applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
         setTurnIndex(nextTurnIndex);
         setCurrentTrick([]);
@@ -3235,11 +3472,16 @@ function App() {
     });
 
     socket.on('round_finished', ({ roundStats, matchComplete, standings, choiceState: nextChoiceState, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+      applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        const shouldShowTrainerFinalReview = Boolean(
+          matchComplete
+          && nextChoiceState?.matchMode === MATCH_MODE_TRAINING
+        );
         setRoundActionBusy('');
         setLatestRoundStats(roundStats || null);
-        setIsStatsOpen(Boolean(roundStats));
-        setMatchCompletePending(Boolean(matchComplete));
+        setIsStatsOpen(shouldShowTrainerFinalReview ? false : Boolean(roundStats));
+        setMatchCompletePending(shouldShowTrainerFinalReview ? false : Boolean(matchComplete));
         setChoiceState(nextChoiceState || null);
         setTrickPending(false);
         setCurrentTrick([]);
@@ -3261,8 +3503,10 @@ function App() {
       });
     });
 
-    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, trainingFinalReview: nextTrainingFinalReview, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+      applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        const normalizedTrainingReview = normalizeTrainingFinalReview(nextTrainingFinalReview);
         setRoundActionBusy('');
         setGameFinished(true);
         setTrickPending(false);
@@ -3270,8 +3514,10 @@ function App() {
         setAnimatingWinner(null);
         setFinalStandings(standings || []);
         setChoiceState(nextChoiceState || null);
-        setMatchCompletePending(true);
-        setIsStatsOpen(true);
+        setMatchCompletePending(Boolean(!normalizedTrainingReview));
+        setIsStatsOpen(Boolean(!normalizedTrainingReview));
+        setTrainingFinalReview(normalizedTrainingReview);
+        setTrainingReturnBusy(false);
         if (nextCollectedHands) {
           setCollectedHandsByPlayer(nextCollectedHands);
         }
@@ -3551,6 +3797,7 @@ function App() {
   };
 
   const applyLobbyState = (lobby) => {
+    applyMatchMetadata(lobby);
     setPlayers(lobby?.players || []);
     setSpectators(lobby?.spectators || []);
     setLobbyHostId(lobby?.hostId || '');
@@ -4936,6 +5183,65 @@ function App() {
     joinLobbyRequest(joinInput);
   };
 
+  const handleOpenTrainingSetup = () => {
+    if (inLobby || gameStarted) {
+      showTopPrompt('Leave the current room before starting a training match.', 'error');
+      return;
+    }
+
+    if (!activeProfile) {
+      showErrorMessage('Choose a guest name or sign in before starting training.');
+      setActiveTab('play');
+      return;
+    }
+
+    if (isAuthenticated && !libraryState.loading && savedCustomRulesets.length === 0) {
+      void loadLibraryData({ suppressErrors: true });
+    }
+
+    setTrainingSetup(createTrainingSetup(activeProfile));
+    setTrainingValidationMessage('');
+    setIsTrainingSetupOpen(true);
+  };
+
+  const handleStartTrainingMatch = () => {
+    if (!activeProfile) {
+      showErrorMessage('Choose a guest name or sign in before starting training.');
+      setActiveTab('play');
+      return;
+    }
+
+    if (!trainingSetup.selectedRulesetId) {
+      setTrainingValidationMessage('Choose a ruleset for training before starting.');
+      return;
+    }
+
+    setTrainingStartBusy(true);
+    setTrainingValidationMessage('');
+
+    socket.emit('authenticate', activeProfile);
+    socket.emit('start_training_match', {
+      trainerElo: trainingSetup.trainerElo,
+      selectedRulesetId: trainingSetup.selectedRulesetId,
+      preMoveCommentaryEnabled: trainingSetup.preMoveCommentaryEnabled,
+      postMoveFeedbackEnabled: trainingSetup.postMoveFeedbackEnabled,
+      totalRounds: trainingSetup.totalRounds,
+      playerCount: trainingSetup.playerCount
+    }, (response) => {
+      setTrainingStartBusy(false);
+
+      if (response?.success) {
+        setIsTrainingSetupOpen(false);
+        setTrainingValidationMessage('');
+        applyRestoredSession(response);
+        showTopPrompt('Training table ready.', 'success');
+        return;
+      }
+
+      setTrainingValidationMessage(response?.error || 'Unable to start the training match right now.');
+    });
+  };
+
   const getEditorRulesetPayload = () => {
     const longName = editorTitle.trim() || 'Untitled Ruleset';
 
@@ -4946,6 +5252,13 @@ function App() {
       code: editorCode
     };
   };
+
+  const buildEditorRulesetSignature = (rulesetPayload = getEditorRulesetPayload()) => JSON.stringify({
+    longName: String(rulesetPayload.longName || '').trim(),
+    shortName: String(rulesetPayload.shortName || '').trim(),
+    type: normalizeRulesetType(rulesetPayload.type),
+    code: String(rulesetPayload.code || '')
+  });
 
   const handleCompileRules = async () => {
     try {
@@ -4971,6 +5284,66 @@ function App() {
     } catch (error) {
       setEditorStatus(error.message);
       setEditorAst(null);
+    }
+  };
+
+  const handleJudgeRulesetWithAi = async () => {
+    const rulesetPayload = getEditorRulesetPayload();
+    const signature = buildEditorRulesetSignature(rulesetPayload);
+
+    if (!rulesetPayload.code.trim()) {
+      const message = 'Write a ruleset before asking the Editor Bot to judge it.';
+      setEditorJudgeError(message);
+      setEditorStatus(message);
+      setEditorJudgeReview(null);
+      return;
+    }
+
+    try {
+      setEditorJudgeBusy(true);
+      setEditorJudgeError('');
+      setEditorStatus('Judging ruleset with Editor Bot...');
+
+      const response = await fetch('/api/rulesets/judge', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(rulesetPayload)
+      });
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        if (data?.compiler?.ast) {
+          setEditorAst(data.compiler.ast);
+        } else if (data?.compiler?.status === 'error') {
+          setEditorAst(null);
+        }
+
+        throw new Error(data?.error || 'Unable to judge this ruleset right now.');
+      }
+
+      const normalizedReview = normalizeEditorJudgeReview(data?.review);
+      if (!normalizedReview) {
+        throw new Error('Editor Bot returned an unreadable review.');
+      }
+
+      if (data?.compiler?.ast) {
+        setEditorAst(data.compiler.ast);
+      }
+
+      setEditorJudgeReview(normalizedReview);
+      setEditorJudgeSignature(signature);
+      setEditorStatus(
+        normalizedReview.reviewSource === 'ai'
+          ? 'Ruleset compiled and judged by the Editor Bot.'
+          : 'Ruleset compiled. The Editor Bot review is using the local fallback right now.'
+      );
+    } catch (error) {
+      setEditorJudgeError(error.message || 'Unable to judge this ruleset right now.');
+      setEditorStatus(error.message || 'Unable to judge this ruleset right now.');
+    } finally {
+      setEditorJudgeBusy(false);
     }
   };
 
@@ -5338,8 +5711,11 @@ function App() {
       }
 
       setLeaveMatchConfirmModal({
-        title: 'Abandon Match',
-        message: 'Leaving now will immediately abandon your seat and let the server replace you with a bot if needed. Continue?'
+        title: isTrainingMatch ? 'End Training' : 'Abandon Match',
+        message: isTrainingMatch
+          ? 'Leaving now will end this training session immediately. Continue?'
+          : 'Leaving now will immediately abandon your seat and let the server replace you with a bot if needed. Continue?',
+        confirmLabel: isTrainingMatch ? 'End Training' : 'Abandon Match'
       });
       return;
     }
@@ -5356,15 +5732,36 @@ function App() {
   };
 
   const handleConfirmLeaveMatch = () => {
+    setTrainingReturnBusy(true);
     socket.emit('abandon_match', { roomId }, (response) => {
+      setTrainingReturnBusy(false);
       if (response?.error) {
         showErrorMessage(response.error);
         return;
       }
 
       setLeaveMatchConfirmModal(null);
+      if (isTrainingMatch) {
+        setActiveTab('play');
+        return;
+      }
+
       resetActiveRoomState();
       showTopPrompt(response?.message || 'You abandoned the match.', 'info');
+    });
+  };
+
+  const handleReturnToPlayFromTrainingReview = () => {
+    setTrainingReturnBusy(true);
+    socket.emit('abandon_match', { roomId }, (response) => {
+      setTrainingReturnBusy(false);
+      if (response?.error) {
+        showErrorMessage(response.error);
+        return;
+      }
+
+      setTrainingFinalReview(null);
+      setActiveTab('play');
     });
   };
 
@@ -5541,6 +5938,24 @@ function App() {
   const activeProfile = isAuthenticated ? userProfile : guestProfile;
   activeProfileRef.current = activeProfile;
   isPublicBrowserOpenRef.current = isPublicBrowserOpen;
+  const trainerSliderMax = getTrainerMaxElo(activeProfile);
+  const trainerRankName = getTrainerRankName(trainingSetup.trainerElo);
+  const trainingDefaultRulesets = ROOM_RULESET_OPTIONS.map((option) => ({
+    id: option.id,
+    label: option.label,
+    abbreviation: option.abbreviation,
+    source: 'default'
+  }));
+  const trainingSavedRulesets = isAuthenticated
+    ? savedCustomRulesets.map((ruleset) => ({
+      id: ruleset.id,
+      label: ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset',
+      abbreviation: ruleset.shortName || ruleset.abbreviation || buildRulesetShortNameFallback(ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset'),
+      source: 'saved'
+    }))
+    : [];
+  const trainingSelectedRegularBots = Math.max(0, trainingSetup.playerCount - 2);
+  const trainingStartDisabled = trainingStartBusy || !trainingSetup.selectedRulesetId;
   const activeLobbyPlayer = players.find(
     (player) => player.socketId === socket.id || player.userId === activeProfile?.userId
   );
@@ -5551,6 +5966,7 @@ function App() {
   const myPlayer = players[myIndex] || activeLobbyPlayer || null;
   const amIHost = inLobby && lobbyHostId === activeProfile?.userId;
   const canAddGuestRoomRulesets = Boolean(activeProfile?.guest && amIHost && !gameStarted);
+  const isTrainingMatch = matchMode === MATCH_MODE_TRAINING;
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
   const activeChatScope = gameStarted && !gameFinished ? 'game' : (inLobby ? 'lobby' : '');
@@ -5582,9 +5998,12 @@ function App() {
   const currentGameShortLabel = activeRulesetDefinition?.abbreviation
     || latestRoundStats?.rulesetAbbreviation
     || currentGameLabel;
+  const trainerPlayer = players.find((player) => player?.isTrainer) || null;
   const hasActiveModal = Boolean(
     (isRecoveryPromptOpen && recoverableGuestProfile) ||
     isRoomSettingsOpen ||
+    isTrainingSetupOpen ||
+    trainingFinalReview ||
     playerProfileModal ||
     rankLeaderboardModal ||
     banNoticeModal ||
@@ -7222,6 +7641,12 @@ function App() {
           <h3 className="text-2xl font-display font-extrabold text-[var(--text-primary)] sm:text-3xl">
             {roomName || 'Room'}
           </h3>
+          {isTrainingMatch ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200/80 bg-emerald-100/85 px-3 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-950">
+              <Sparkles className="h-3.5 w-3.5" />
+              Training
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 shadow-sm">
             <span className="text-base font-black tracking-[0.22em] text-[var(--text-secondary)] sm:text-lg sm:tracking-[0.26em]">
               {roomId}
@@ -7237,6 +7662,11 @@ function App() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          {isTrainingMatch ? (
+            <div className="status-pill bg-emerald-100/85 px-4 py-2 text-emerald-950">
+              Training
+            </div>
+          ) : null}
           <div className="status-pill px-4 py-2">
             {roomVisibility === 'public' ? 'Public' : 'Private'}
           </div>
@@ -7599,6 +8029,42 @@ function App() {
           </button>
         </div>
       </div>
+
+      <div className="glass-panel overflow-hidden p-5 sm:p-8">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200/80 bg-emerald-100/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-950">
+              <Sparkles className="h-3.5 w-3.5" />
+              Training
+            </div>
+            <h3 className="mt-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Play with Trainer</h3>
+            <p className="mt-3 max-w-2xl text-base font-semibold leading-7 text-[var(--text-secondary)] sm:text-sm">
+              Launch an unranked coaching match with one Trainer bot, adjustable Trainer ELO, optional move commentary, your chosen ruleset, and extra filler bots when you want a fuller table.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">Unranked</span>
+              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">Default + saved rulesets</span>
+              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">2 to 6 players</span>
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-3 lg:w-auto lg:min-w-[16rem]">
+            <button
+              type="button"
+              onClick={handleOpenTrainingSetup}
+              className="inline-flex items-center justify-center gap-3 rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(245,255,240,0.98)_0%,rgba(181,245,138,0.96)_48%,rgba(46,124,69,0.98)_100%)] px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.92),0_18px_36px_rgba(52,148,73,0.28)] transition hover:-translate-y-0.5 hover:brightness-[1.03] sm:text-base"
+            >
+              <Bot className="h-5 w-5" />
+              Open Training Setup
+            </button>
+            <div className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+              {isAuthenticated
+                ? 'Your saved library rulesets appear alongside the default training rules.'
+                : 'Guest training uses the default rulesets and starts Trainer ELO at 500.'}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 
@@ -7951,6 +8417,16 @@ function App() {
                   {formatMarkingSuit(trickSuit)}
                 </span>
               </div>
+              {isTrainingMatch ? (
+                <div className="rentz-marking-box">
+                  <span className="rentz-marking-label">Mode:</span>
+                  <span className="rentz-marking-value is-neutral">
+                    {trainerPlayer
+                      ? `Training vs ${getPlayerName(trainerPlayer)}${trainingState?.trainerRankName ? ` • ${trainingState.trainerRankName}` : ''}`
+                      : 'Training'}
+                  </span>
+                </div>
+              ) : null}
 
               <div
                 ref={spectatorPopoverRef}
@@ -8622,6 +9098,11 @@ function App() {
             ? 'You are choosing whether this round starts as NV.'
             : `${getPlayerName(currentChooser)} is choosing whether this round starts as NV.`}
         </p>
+        {isTrainingMatch ? (
+          <p className="mt-2">
+            The selected training ruleset is already locked in, so your choice here will go straight into the round.
+          </p>
+        ) : null}
       </div>
       <div className={clsx('rentz-nv-choice-grid', !amIChooser && 'is-waiting')}>
         <button
@@ -8638,7 +9119,11 @@ function App() {
             <Sparkles className="h-5 w-5" />
           </span>
           <span className="rentz-nv-choice-title">Play NV</span>
-          <span className="rentz-nv-choice-copy">Choose the game first. Scores from the round are doubled.</span>
+          <span className="rentz-nv-choice-copy">
+            {isTrainingMatch
+              ? 'Start the training round in NV. Scores from the round are doubled.'
+              : 'Choose the game first. Scores from the round are doubled.'}
+          </span>
         </button>
         <button
           type="button"
@@ -8654,7 +9139,11 @@ function App() {
             <Swords className="h-5 w-5" />
           </span>
           <span className="rentz-nv-choice-title">No NV</span>
-          <span className="rentz-nv-choice-copy">Deal first. Every player sees their own hand during game choice.</span>
+          <span className="rentz-nv-choice-copy">
+            {isTrainingMatch
+              ? 'Start the training round normally with the locked training ruleset.'
+              : 'Deal first. Every player sees their own hand during game choice.'}
+          </span>
         </button>
       </div>
     </ModalShell>
@@ -8796,6 +9285,12 @@ function App() {
       </section>
 
       <section className="space-y-5">
+        {(() => {
+          const currentEditorJudgeSignature = buildEditorRulesetSignature();
+          const isJudgeReviewStale = Boolean(editorJudgeReview) && editorJudgeSignature !== currentEditorJudgeSignature;
+
+          return (
+            <>
         <div>
           <div
             className="flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
@@ -8820,7 +9315,163 @@ function App() {
         </div>
 
         <div className="glass-panel p-5 sm:p-6">
-          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">My Drafts</h4>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">Editor Bot</h4>
+              <p className="mt-2 text-sm font-semibold text-[var(--text-secondary)]">
+                Ask for a gameplay-focused review of fairness, pacing, balance, clarity, and strategic depth.
+              </p>
+            </div>
+            {editorJudgeReview && (
+              <div className="status-pill px-4 py-2">
+                {editorJudgeReview.reviewSource === 'ai' ? 'AI review ready' : 'fallback review'}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleJudgeRulesetWithAi}
+            disabled={editorJudgeBusy}
+            className="rentz-editor-action is-guide mt-4 w-full disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            <span className="rentz-editor-action-icon">
+              {editorJudgeBusy ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Bot className="h-5 w-5" />}
+            </span>
+            <span className="rentz-editor-action-copy">
+              <span className="rentz-editor-action-title">{editorJudgeBusy ? 'Judging Ruleset...' : 'Judge Ruleset with AI...'}</span>
+              <span className="rentz-editor-action-meta">Run a design review without replacing the compiler preview.</span>
+            </span>
+          </button>
+
+          <div className="mt-4 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+            {editorJudgeError
+              ? editorJudgeError
+              : editorJudgeBusy
+                ? 'Editor Bot is reviewing gameplay quality now. This can fall back cleanly if Ollama is unavailable.'
+                : 'Compile status still matters. If the ruleset does not compile, the judge will stop and ask you to fix those errors first.'}
+          </div>
+        </div>
+
+        {editorJudgeReview && (
+          <div className="glass-panel p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Editor Bot review</div>
+                <h4 className="mt-2 text-2xl font-display font-black text-[var(--text-primary)]">Ruleset Judgment</h4>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <div className="status-pill px-4 py-2">
+                  {editorJudgeReview.reviewSource === 'ai' ? 'Ollama review' : 'Local fallback'}
+                </div>
+                {isJudgeReviewStale && <div className="status-pill px-4 py-2">review is for an earlier draft</div>}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+              <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Overall score</div>
+                    <div className="mt-3 flex items-end gap-3">
+                      <span className="text-4xl font-display font-black text-[var(--text-primary)] sm:text-5xl">{editorJudgeReview.overallScore.toFixed(1)}</span>
+                      <span className="pb-1 text-sm font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">/ 10</span>
+                    </div>
+                  </div>
+                  <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-[var(--text-primary)]">
+                    <Star className="h-6 w-6" />
+                  </div>
+                </div>
+                <p className="mt-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.rulesetSummary}</p>
+              </div>
+
+              <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
+                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Constructive review</div>
+                <p className="mt-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.constructiveReview}</p>
+                {editorJudgeReview.recommendations.length > 0 && (
+                  <div className="mt-4">
+                    <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Recommendations</div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {editorJudgeReview.recommendations.map((recommendation, index) => (
+                        <div
+                          key={`editor-judge-recommendation-${index}`}
+                          className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-2 text-xs font-bold text-[var(--text-primary)]"
+                        >
+                          {recommendation}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {EDITOR_BOT_CATEGORY_DEFINITIONS.map((category) => {
+                const categoryEntry = editorJudgeReview.categoryRatings[category.key];
+
+                return (
+                  <div
+                    key={category.key}
+                    className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.06)]"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-black text-[var(--text-primary)]">{category.label}</div>
+                      <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-1 text-sm font-black text-[var(--text-primary)]">
+                        {categoryEntry.score.toFixed(1)}
+                      </div>
+                    </div>
+                    <p className="mt-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{categoryEntry.explanation}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            {editorJudgeReview.warnings.length > 0 && (
+              <div className="mt-4 rounded-[1.35rem] border border-amber-200/60 bg-amber-50/80 p-4 text-sm font-semibold text-amber-950">
+                <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-amber-900">
+                  <Ban className="h-4 w-4" />
+                  Warnings and concerns
+                </div>
+                <div className="mt-3 space-y-2">
+                  {editorJudgeReview.warnings.map((warning, index) => (
+                    <p key={`editor-judge-warning-${index}`}>{warning}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {editorJudgeReview.diagnostics.length > 0 && (
+              <div className="mt-4 rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Editor Bot diagnostics</div>
+                <div className="mt-3 space-y-3">
+                  {editorJudgeReview.diagnostics.map((entry, index) => (
+                    <div
+                      key={`editor-judge-diagnostic-${index}`}
+                      className="rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-3"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)]">
+                        <span>{entry.attempt}</span>
+                        <span>{entry.success ? 'success' : 'failed'}</span>
+                        <span>{entry.stage}</span>
+                        <span>{entry.elapsedMs}ms</span>
+                      </div>
+                      {entry.error && <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{entry.error}</p>}
+                      {entry.rawPreview && (
+                        <p className="mt-2 rounded-[0.9rem] bg-slate-950/85 px-3 py-2 font-mono text-xs text-lime-100">
+                          {entry.rawPreview}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="glass-panel p-5 sm:p-6">
+          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Saved Drafts</h4>
           <div className="space-y-3">
             {ruleDrafts.length === 0 ? (
               <p className="text-sm font-semibold text-[var(--text-secondary)]">
@@ -8852,6 +9503,9 @@ function App() {
             )}
           </div>
         </div>
+            </>
+          );
+        })()}
       </section>
     </div>
   );
@@ -10462,9 +11116,12 @@ endif`}
             <button
               type="button"
               onClick={handleConfirmLeaveMatch}
-              className="rounded-[1.3rem] border border-red-200/80 bg-red-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-950 transition hover:bg-red-200/80"
+              disabled={trainingReturnBusy}
+              className="rounded-[1.3rem] border border-red-200/80 bg-red-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-950 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
             >
-              Abandon Match
+              {trainingReturnBusy
+                ? 'Working...'
+                : (leaveMatchConfirmModal.confirmLabel || 'Abandon Match')}
             </button>
           </div>
         )}
@@ -10473,6 +11130,68 @@ endif`}
           {leaveMatchConfirmModal.message}
         </p>
       </ModalShell>
+    );
+  };
+
+  const renderTrainingFinalReviewModal = () => {
+    if (!isTrainingMatch || !trainingFinalReview || !trainerPlayer) {
+      return null;
+    }
+
+    return (
+      <div className="fixed inset-0 z-[85] flex items-center justify-center px-4 py-6">
+        <div className="w-full max-w-3xl">
+          <div className="flex flex-col items-center gap-6">
+            <div className="flex w-full items-end justify-center gap-4">
+              <AvatarFace
+                player={trainerPlayer}
+                alt={`${getPlayerName(trainerPlayer)} avatar`}
+                wrapperClassName="seat-avatar h-16 w-16 shrink-0 border-4 border-white/80 text-lg shadow-[0_14px_30px_rgba(15,23,42,0.18)] sm:h-20 sm:w-20"
+                imageClassName="h-full w-full rounded-full object-cover"
+                fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+              />
+              <div className="relative w-full max-w-2xl rounded-[1.8rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(236,248,255,0.94)_100%)] px-5 py-4 text-left shadow-[0_26px_54px_rgba(15,23,42,0.16)] sm:px-6 sm:py-5">
+                <span className="absolute -left-2.5 bottom-5 h-5 w-5 rotate-45 rounded-[0.3rem] border-l border-b border-white/85 bg-inherit" aria-hidden="true" />
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  {getPlayerName(trainerPlayer)}
+                </div>
+                <div className="mt-2 text-base font-semibold leading-7 text-[var(--text-primary)] sm:text-lg">
+                  {trainingFinalReview.review}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-2" aria-label="Trainer final star rating">
+              {Array.from({ length: 5 }).map((_, index) => {
+                const starValue = index + 1;
+                const fillPercent = trainingFinalReview.starRating >= starValue
+                  ? 100
+                  : trainingFinalReview.starRating >= starValue - 0.5
+                    ? 50
+                    : 0;
+
+                return (
+                  <div key={`training-review-star-${starValue}`} className="relative h-10 w-10 sm:h-12 sm:w-12">
+                    <Star className="h-full w-full text-white/35" />
+                    <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fillPercent}%` }}>
+                      <Star fill="currentColor" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              disabled={trainingReturnBusy}
+              onClick={handleReturnToPlayFromTrainingReview}
+              className="rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(245,255,240,0.98)_0%,rgba(181,245,138,0.96)_48%,rgba(46,124,69,0.98)_100%)] px-6 py-3.5 text-sm font-black uppercase tracking-[0.16em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.92),0_18px_36px_rgba(52,148,73,0.28)] transition hover:-translate-y-0.5 hover:brightness-[1.03] disabled:cursor-not-allowed disabled:opacity-70 sm:text-base"
+            >
+              {trainingReturnBusy ? 'Returning...' : 'Return to Play'}
+            </button>
+          </div>
+        </div>
+      </div>
     );
   };
 
@@ -11389,6 +12108,256 @@ endif`}
         </ModalShell>
       )}
 
+      {isTrainingSetupOpen && (
+        <ModalShell
+          title="Trainer Setup"
+          eyebrow="Unranked training match"
+          onClose={trainingStartBusy ? undefined : () => setIsTrainingSetupOpen(false)}
+          wide
+          footer={(
+            <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={trainingStartBusy}
+                onClick={() => setIsTrainingSetupOpen(false)}
+                className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={trainingStartDisabled}
+                onClick={handleStartTrainingMatch}
+                className={clsx(
+                  'px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70',
+                  trainingStartDisabled ? 'rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)]' : 'frutiger-button'
+                )}
+              >
+                {trainingStartBusy ? 'Starting...' : 'Start Training'}
+              </button>
+            </div>
+          )}
+        >
+          <div className="space-y-5">
+            <section className="grid gap-5 lg:grid-cols-2">
+              <label className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                <span className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Trainer ELO</span>
+                <div className="mt-2 text-2xl font-black text-[var(--text-primary)]">{trainingSetup.trainerElo}</div>
+                <div className="mt-1 text-sm font-semibold text-[var(--text-secondary)]">{trainerRankName}</div>
+                <input
+                  type="range"
+                  min="0"
+                  max={trainerSliderMax}
+                  step="1"
+                  value={trainingSetup.trainerElo}
+                  onChange={(event) => setTrainingSetup((current) => ({
+                    ...current,
+                    trainerElo: normalizeTrainerEloValue(event.target.value, getTrainerDefaultElo(activeProfile))
+                  }))}
+                  className="mt-4 w-full accent-emerald-500"
+                />
+                <div className="mt-2 flex items-center justify-between text-xs font-bold text-[var(--text-secondary)]">
+                  <span>0</span>
+                  <span>Max {trainerSliderMax}</span>
+                </div>
+              </label>
+
+              <div className="grid gap-3">
+                <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-black text-[var(--text-primary)]">Send message before Trainer move</div>
+                      <div className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                        Trainer explains its idea before placing a card.
+                      </div>
+                    </div>
+                    <ToggleCheck
+                      checked={Boolean(trainingSetup.preMoveCommentaryEnabled)}
+                      onChange={() => setTrainingSetup((current) => ({
+                        ...current,
+                        preMoveCommentaryEnabled: !current.preMoveCommentaryEnabled
+                      }))}
+                      label="Send message before Trainer move"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-black text-[var(--text-primary)]">Review my move after I play</div>
+                      <div className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                        Trainer comments only on meaningful decisions and includes a rating out of 10.
+                      </div>
+                    </div>
+                    <ToggleCheck
+                      checked={Boolean(trainingSetup.postMoveFeedbackEnabled)}
+                      onChange={() => setTrainingSetup((current) => ({
+                        ...current,
+                        postMoveFeedbackEnabled: !current.postMoveFeedbackEnabled
+                      }))}
+                      label="Review my move after I play"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="grid gap-5 lg:grid-cols-2">
+              <label className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-black text-[var(--text-primary)]">Rounds to play</span>
+                  <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-xs font-black text-[var(--text-primary)]">
+                    {trainingSetup.totalRounds}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={TRAINING_ROUNDS_RANGE.min}
+                  max={TRAINING_ROUNDS_RANGE.max}
+                  step="1"
+                  value={trainingSetup.totalRounds}
+                  onChange={(event) => setTrainingSetup((current) => ({
+                    ...current,
+                    totalRounds: clampNumber(Number(event.target.value), TRAINING_ROUNDS_RANGE.min, TRAINING_ROUNDS_RANGE.max)
+                  }))}
+                  className="mt-4 w-full accent-emerald-500"
+                />
+                <div className="mt-2 text-xs font-bold text-[var(--text-secondary)]">
+                  Choose between {TRAINING_ROUNDS_RANGE.min} and {TRAINING_ROUNDS_RANGE.max} rounds.
+                </div>
+              </label>
+
+              <label className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-black text-[var(--text-primary)]">Players at the table</span>
+                  <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-xs font-black text-[var(--text-primary)]">
+                    {trainingSetup.playerCount}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={TRAINING_PLAYERS_RANGE.min}
+                  max={TRAINING_PLAYERS_RANGE.max}
+                  step="1"
+                  value={trainingSetup.playerCount}
+                  onChange={(event) => setTrainingSetup((current) => ({
+                    ...current,
+                    playerCount: clampNumber(Number(event.target.value), TRAINING_PLAYERS_RANGE.min, TRAINING_PLAYERS_RANGE.max)
+                  }))}
+                  className="mt-4 w-full accent-emerald-500"
+                />
+                <div className="mt-2 text-xs font-bold text-[var(--text-secondary)]">
+                  This creates you + Trainer + {trainingSelectedRegularBots} regular bot{trainingSelectedRegularBots === 1 ? '' : 's'}.
+                </div>
+              </label>
+            </section>
+
+            <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Choose ruleset for training</div>
+                  <div className="mt-1 text-lg font-black text-[var(--text-primary)]">No default is preselected</div>
+                  <div className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                    Default rules are always available. Saved library rulesets appear when you are logged in.
+                  </div>
+                </div>
+                <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                  {trainingSetup.selectedRulesetId ? 'Ruleset selected' : 'Selection required'}
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="space-y-3">
+                  <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Default rulesets</div>
+                  {trainingDefaultRulesets.map((option) => {
+                    const isSelected = trainingSetup.selectedRulesetId === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          setTrainingValidationMessage('');
+                          setTrainingSetup((current) => ({ ...current, selectedRulesetId: option.id }));
+                        }}
+                        className={clsx(
+                          'flex w-full items-center justify-between gap-3 rounded-[1.2rem] border px-4 py-3 text-left transition',
+                          isSelected
+                            ? 'border-emerald-200/90 bg-emerald-100/85 text-emerald-950 shadow-[0_12px_24px_rgba(52,148,73,0.14)]'
+                            : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                        )}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-black">{option.label}</div>
+                          <div className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">Default training ruleset</div>
+                        </div>
+                        <div className="rounded-full border border-current/20 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em]">
+                          {option.abbreviation}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                    {isAuthenticated ? 'Saved library rulesets' : 'Saved library rulesets'}
+                  </div>
+                  {isAuthenticated ? (
+                    trainingSavedRulesets.length > 0 ? (
+                      trainingSavedRulesets.map((option) => {
+                        const isSelected = trainingSetup.selectedRulesetId === option.id;
+                        return (
+                          <button
+                            key={option.id}
+                            type="button"
+                            onClick={() => {
+                              setTrainingValidationMessage('');
+                              setTrainingSetup((current) => ({ ...current, selectedRulesetId: option.id }));
+                            }}
+                            className={clsx(
+                              'flex w-full items-center justify-between gap-3 rounded-[1.2rem] border px-4 py-3 text-left transition',
+                              isSelected
+                                ? 'border-sky-200/90 bg-sky-100/85 text-sky-950 shadow-[0_12px_24px_rgba(56,112,156,0.14)]'
+                                : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                            )}
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-black">{option.label}</div>
+                              <div className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">Saved to your account library</div>
+                            </div>
+                            <div className="rounded-full border border-current/20 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em]">
+                              {option.abbreviation}
+                            </div>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-[1.2rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                        No saved custom rulesets are available on this account yet.
+                      </div>
+                    )
+                  ) : (
+                    <div className="rounded-[1.2rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                      Sign in if you want to train on rulesets saved in your Library. Guests can still train with the default rulesets.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {trainingValidationMessage ? (
+              <div className="rounded-[1.25rem] border border-rose-200/85 bg-rose-100/85 px-4 py-3 text-sm font-bold text-rose-950">
+                {trainingValidationMessage}
+              </div>
+            ) : (
+              <div className="rounded-[1.25rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                Training matches use the normal game engine, but they stay unranked: no account ELO changes and no normal ranked match-history entry.
+              </div>
+            )}
+          </div>
+        </ModalShell>
+      )}
+
       {isRoomSettingsOpen && (
         <ModalShell
           title="Room Settings"
@@ -11898,14 +12867,14 @@ endif`}
       )}
 
       {isChoosingNv && renderNvChoice()}
-      {isChoosingRuleset && renderChoiceMatrix()}
+      {!isTrainingMatch && isChoosingRuleset && renderChoiceMatrix()}
       {isStatsOpen && latestRoundStats && (
         <StatsOverlay
           stats={latestRoundStats}
           players={players}
           canContinue={canContinueRoundFromStats}
           canEndGame={canManageRoundStats}
-          canSaveQuit={canManageRoundStats && isAuthenticated}
+          canSaveQuit={canManageRoundStats && isAuthenticated && !isTrainingMatch}
           actionBusy={roundActionBusy}
           matchComplete={matchCompletePending || gameFinished}
           onContinue={handleContinueMatch}
@@ -11914,6 +12883,7 @@ endif`}
           onClose={() => setIsStatsOpen(false)}
         />
       )}
+      {renderTrainingFinalReviewModal()}
 
       <nav ref={mobileNavRef} className="mobile-tab-bar fixed bottom-3 left-2 right-2 z-50 sm:bottom-4 sm:left-3 sm:right-3 md:hidden">
         {isMobileMoreOpen && mobileMoreNavItems.length > 0 && (

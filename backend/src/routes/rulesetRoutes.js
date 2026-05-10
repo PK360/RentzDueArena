@@ -11,6 +11,10 @@ const {
   evaluateIsolatedHands,
   buildRuleSnapshot
 } = require('../../engine/evaluator');
+const {
+  buildSafeRulesetPayload,
+  reviewRulesetWithEditorBot
+} = require('../lib/editorBot');
 
 const router = express.Router();
 
@@ -191,6 +195,53 @@ router.post('/evaluate-preview', (req, res, next) => {
 
     res.json({ ok: true, snapshot, result: result.results[0] });
   } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/judge', async (req, res, next) => {
+  try {
+    const ruleset = buildSafeRulesetPayload(req.body);
+    let ast = null;
+
+    try {
+      ast = compileRuleset(ruleset.code, ruleset.type);
+    } catch (error) {
+      return res.status(400).json({
+        error: `Fix compiler errors before asking the Editor Bot to judge this ruleset: ${error.message}`,
+        compiler: {
+          status: 'error',
+          message: error.message,
+          errors: [error.message],
+          warnings: [],
+          ast: null
+        }
+      });
+    }
+
+    const compiler = {
+      status: 'compiled',
+      message: 'Ruleset compiled successfully.',
+      errors: [],
+      warnings: [],
+      ast
+    };
+    const review = await reviewRulesetWithEditorBot({
+      ruleset,
+      ast,
+      compiler
+    });
+
+    res.json({
+      ok: true,
+      compiler,
+      review
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+
     next(error);
   }
 });

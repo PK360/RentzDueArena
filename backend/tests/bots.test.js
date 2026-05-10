@@ -2,9 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
+  BOT_TYPE_TRAINER,
   buildBotIdentity,
   chooseFallbackMove,
   getAverageHumanElo,
+  getBotDifficultyElo,
   getNextBotOrdinal
 } = require('../src/lib/bots');
 
@@ -73,4 +75,50 @@ test('chooses a deterministic legal fallback move', () => {
   ]);
 
   assert.strictEqual(move.id, '2-C');
+});
+
+test('builds Trainer identities with fixed elo and trainer metadata', () => {
+  const trainer = buildBotIdentity({
+    roomId: 'TRN001',
+    seatIndex: 1,
+    players: [{ userId: 'human-1', elo: 1200 }],
+    botType: BOT_TYPE_TRAINER,
+    fixedElo: 6400
+  });
+
+  assert.strictEqual(trainer.isBot, true);
+  assert.strictEqual(trainer.isTrainer, true);
+  assert.strictEqual(trainer.botType, BOT_TYPE_TRAINER);
+  assert.strictEqual(trainer.displayName, 'Trainer');
+  assert.strictEqual(trainer.elo, 6400);
+  assert.strictEqual(trainer.rankName, 'Divine Rentz Envoy');
+  assert.match(trainer.socketId, /^trainer:/);
+});
+
+test('uses Trainer elo directly for difficulty while normal bots still use room average', () => {
+  const standardBot = buildBotIdentity({
+    roomId: 'ROOM42',
+    seatIndex: 1,
+    players: [
+      { userId: 'human-1', elo: 1000 },
+      { userId: 'human-2', elo: 2000 }
+    ]
+  });
+  const trainer = buildBotIdentity({
+    roomId: 'TRN900',
+    seatIndex: 1,
+    players: [{ userId: 'human-1', elo: 1000 }],
+    botType: BOT_TYPE_TRAINER,
+    fixedElo: 9100
+  });
+
+  assert.strictEqual(getBotDifficultyElo(standardBot, [
+    { userId: 'human-1', elo: 1000 },
+    { userId: 'human-2', elo: 2000 },
+    standardBot
+  ]), 1500);
+  assert.strictEqual(getBotDifficultyElo(trainer, [
+    { userId: 'human-1', elo: 1000 },
+    trainer
+  ]), 9100);
 });
