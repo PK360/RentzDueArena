@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_ENV_EXAMPLE="$REPO_ROOT/backend/.env.example"
 BACKEND_ENV_FILE="$REPO_ROOT/backend/.env"
-DEFAULT_OLLAMA_MODEL="llama3.1:8b"
+DEFAULT_OLLAMA_MODEL="qwen2.5:7b"
 
 echo "Installing Node.js 20 with nvm..."
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash

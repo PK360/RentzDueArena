@@ -111,12 +111,6 @@ Start the Ollama server:
 ollama serve
 ```
 
-Pull the model used by the backend default config:
-
-```bash
-ollama pull llama3.1:8b
-```
-
 If you change `RENTZ_BOT_OLLAMA_MODEL` in `backend/.env`, pull that exact model instead:
 
 ```bash
