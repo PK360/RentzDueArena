@@ -2158,35 +2158,48 @@ function ModalShell({
   afterPanel = null,
   overlayClassName = '',
   panelClassName = '',
-  bodyClassName = ''
+  bodyClassName = '',
+  headerless = false
 }) {
   return (
     <div className={clsx('rentz-modal-overlay fixed inset-0 z-[80] flex items-center justify-center px-4 py-6', overlayClassName)}>
-      <div className={clsx('rentz-modal-panel glass-panel flex max-h-[82vh] w-full flex-col rounded-[2rem] p-5 sm:p-6', wide ? 'max-w-6xl' : 'max-w-3xl', panelClassName)}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1 pr-2">
-            {eyebrow && (
-              <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
-                {eyebrow}
-              </div>
+      <div className={clsx('rentz-modal-panel glass-panel relative flex max-h-[82vh] w-full flex-col rounded-[2rem] p-5 sm:p-6', wide ? 'max-w-6xl' : 'max-w-3xl', panelClassName)}>
+        {!headerless && (
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1 pr-2">
+              {eyebrow && (
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                  {eyebrow}
+                </div>
+              )}
+              <h3 className="mt-2 break-words pr-1 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
+                {title}
+              </h3>
+            </div>
+            {headerAside}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="shrink-0 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
             )}
-            <h3 className="mt-2 break-words pr-1 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
-              {title}
-            </h3>
           </div>
-          {headerAside}
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="shrink-0 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
-              title="Close"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-        <div className={clsx('mt-5 min-h-0 flex-1 overflow-y-auto pr-1', bodyClassName)} data-rentz-modal-scroll="y">
+        )}
+        {headerless && onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute right-4 top-4 z-10 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
+            title="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+        <div className={clsx(headerless ? 'min-h-0 flex-1 overflow-y-auto pr-1' : 'mt-5 min-h-0 flex-1 overflow-y-auto pr-1', bodyClassName)} data-rentz-modal-scroll="y">
           {children}
         </div>
         {footer && <div className="mt-5 shrink-0">{footer}</div>}
@@ -12055,7 +12068,9 @@ endif`}
           eyebrow="Rentz Forum"
           onClose={() => setIsForumComposerOpen(false)}
           wide
-          panelClassName="max-w-4xl"
+          headerless
+          panelClassName="max-w-4xl !border-0 !bg-transparent !p-0 !shadow-none sm:!p-0"
+          bodyClassName="!pr-0"
         >
           {renderForumComposer({
             draft: forumComposerDraft,

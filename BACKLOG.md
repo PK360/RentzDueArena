@@ -11,7 +11,7 @@ Use this section as the board-input layer for Trello. Each `TR-*` item below is 
 
 Suggested Trello labels:
 - Priority: `High Priority`, `Medium Priority`, `Low Priority`
-- Area: `UI`, `API`, `Realtime`, `Auth`, `Rulesets`, `Social`, `Security`, `QA`, `Ops`
+- Area: `UI`, `API`, `Realtime`, `Auth`, `Rulesets`, `Social`, `Security`, `QA`, `Ops`, `AI`
 - Status: `Ready`, `Doing`, `Blocked`, `Review`, `Done`
 
 Suggested Trello lists:
@@ -40,11 +40,12 @@ Cards: `TR-08`, `TR-09`, `TR-10`, `TR-11`, `TR-12`, `TR-13`, `TR-39`, `TR-45`
 
 ### Sprint 3 - Ruleset Authoring and Personal Library
 Goal: Let creators preview, save, organize, and navigate their own rulesets cleanly.
-Cards: `TR-28`, `TR-29`, `TR-30`, `TR-31`, `TR-36`, `TR-37`, `TR-38`, `TR-52`
+Cards: `TR-28`, `TR-29`, `TR-30`, `TR-31`, `TR-36`, `TR-37`, `TR-38`, `TR-52`, `TR-56`, `TR-57`
 
 ### Sprint 4 - Lobby Durability and Match Persistence
 Goal: Make live matches resilient through better lobby controls, persistence, reconnect, and backend coverage.
-Cards: `TR-16`, `TR-17`, `TR-18`, `TR-19`, `TR-20`, `TR-27`, `TR-46`, `TR-50`, `TR-51`
+Cards: `TR-16`, `TR-17`, `TR-18`, `TR-19`, `TR-20`, `TR-27`, `TR-46`, `TR-50`, `TR-51`,
+`TR-54`, `TR-55`
 
 ### Sprint 5 - Ruleset-Driven Gameplay and Rentz Forum
 Goal: Connect selected rulesets to real matches and open up public sharing, discussion, and discovery through Rentz Forum.
@@ -381,6 +382,29 @@ Trello checklist:
 - Verify card dealing and trick resolution across supported player counts.
 - Confirm gameplay still behaves correctly after reconnects and lag spikes.
 
+#### TR-54 - Ship AI Bot Players and Bot Replacement
+Priority: `High Priority`
+Area: `API`, `UI`, `Realtime`, `AI`
+Maps to: `RA-27`
+
+Trello checklist:
+- Add AI-controlled players that can fill seats and replace abandoned humans when needed.
+- Keep bot seats and abandonment replacement compatible with existing room and gameplay systems.
+- Preserve room-state clarity when bots are added, removed, or substituted.
+- Validate bot actions against the live multiplayer flow.
+
+#### TR-55 - Ship Trainer AI Mode
+Priority: `High Priority`
+Area: `API`, `UI`, `Realtime`, `AI`
+Maps to: `RA-28`
+
+Trello checklist:
+- Support Trainer mode with adjustable difficulty.
+- Add trainer-specific feedback messages around play.
+- Keep trainer flows compatible with normal room and gameplay state.
+- Make trainer configuration understandable from the UI.
+
+
 ### Epic E - Ruleset Editor, Library, and Rentz Forum
 
 #### TR-28 - Expand the Ruleset Preview Simulator UI
@@ -492,6 +516,28 @@ Trello checklist:
 - Let users create or paste new rulesets using the same labeled format already used by the app.
 - Support compiling or validating imported rulesets before they can be attached to a game.
 - Allow guests to import or select a ruleset and add it to the current game flow without requiring an account.
+
+#### TR-56 - Add Editor AI Ruleset Judge
+Priority: `High Priority`
+Area: `API`, `UI`, `Rulesets`, `AI`
+Maps to: `RA-29`
+
+Trello checklist:
+- Expose editor-side AI judging for scoring and reviewing custom rulesets.
+- Return structured review output that fits the existing editor workflow.
+- Keep judge runs isolated from normal gameplay and room flows.
+- Make failure, timeout, and retry behavior clear in the editor UI.
+
+#### TR-57 - Save Matches and Resume Them Later
+Priority: `High Priority`
+Area: `API`, `UI`, `Realtime`
+Maps to: `RA-30`
+
+Trello checklist:
+- Add Save & Quit support for active matches.
+- Show saved game previews inside the Library.
+- Resume matches from saved state, including guest-to-bot conversion when needed.
+- Let players end saved games cleanly from the Library.
 
 ### Epic F - Frontend Structure, UX, and Product Polish
 
@@ -617,50 +663,6 @@ Trello checklist:
 - Support attached custom rulesets, ratings, and save-to-library actions from forum content.
 - Show profile previews and search results for posts, users, and friends.
 - Keep friend-priority sorting and discovery behavior aligned with the live social graph.
-
-#### TR-54 - Ship AI Bot Players and Bot Replacement
-Priority: `Medium Priority`
-Area: `API`, `UI`, `Realtime`
-Maps to: `RA-27`
-
-Trello checklist:
-- Add AI-controlled players that can fill seats and replace abandoned humans when needed.
-- Keep bot seats and abandonment replacement compatible with existing room and gameplay systems.
-- Preserve room-state clarity when bots are added, removed, or substituted.
-- Validate bot actions against the live multiplayer flow.
-
-#### TR-55 - Ship Trainer AI Mode
-Priority: `Medium Priority`
-Area: `API`, `UI`, `Realtime`
-Maps to: `RA-28`
-
-Trello checklist:
-- Support Trainer mode with adjustable difficulty.
-- Add trainer-specific feedback messages around play.
-- Keep trainer flows compatible with normal room and gameplay state.
-- Make trainer configuration understandable from the UI.
-
-#### TR-56 - Add Editor AI Ruleset Judge
-Priority: `Medium Priority`
-Area: `API`, `UI`, `Rulesets`
-Maps to: `RA-29`
-
-Trello checklist:
-- Expose editor-side AI judging for scoring and reviewing custom rulesets.
-- Return structured review output that fits the existing editor workflow.
-- Keep judge runs isolated from normal gameplay and room flows.
-- Make failure, timeout, and retry behavior clear in the editor UI.
-
-#### TR-57 - Save Matches and Resume Them Later
-Priority: `High Priority`
-Area: `API`, `UI`, `Realtime`
-Maps to: `RA-30`
-
-Trello checklist:
-- Add Save & Quit support for active matches.
-- Show saved game previews inside the Library.
-- Resume matches from saved state, including guest-to-bot conversion when needed.
-- Let players end saved games cleanly from the Library.
 
 #### TR-47 - Add Frontend or End-to-End Coverage for Core Journeys
 Priority: `High Priority`
