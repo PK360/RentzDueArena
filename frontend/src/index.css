@@ -1431,11 +1431,36 @@
     max-width: min(40%, calc(100% - 2rem));
   }
 
+  .rentz-table-indicator-stack {
+    position: absolute;
+    left: 1rem;
+    top: 4.1rem;
+    z-index: 20;
+    display: flex;
+    width: auto;
+    max-width: min(20rem, calc(100% - 2rem));
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.42rem;
+  }
+
+  .rentz-table-indicator-stack.is-training {
+    top: 3.55rem;
+    gap: 0.32rem;
+  }
+
   .rentz-marking-box {
     left: 1rem;
     top: 4.1rem;
     justify-content: flex-start;
     color: #ff6457;
+  }
+
+  .rentz-table-indicator-stack .rentz-marking-box {
+    position: static;
+    left: auto;
+    top: auto;
+    max-width: 100%;
   }
 
   .rentz-spectator-box {
@@ -1455,6 +1480,39 @@
     flex: 0 1 auto;
     max-width: 100%;
     white-space: nowrap;
+  }
+
+  .rentz-training-mode-box {
+    max-width: min(13rem, calc(100% - 2rem));
+    flex-direction: column;
+    align-items: flex-start;
+    padding-block: 0.42rem;
+    row-gap: 0.08rem;
+  }
+
+  .rentz-table-indicator-stack .rentz-training-mode-box {
+    max-width: min(13rem, 100%);
+  }
+
+  .rentz-training-mode-label,
+  .rentz-training-mode-rank {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rentz-training-mode-label {
+    color: #ffd27d;
+    font-size: 0.76em;
+  }
+
+  .rentz-training-mode-rank {
+    color: #d3f8ff;
+    font-size: 0.68em;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .rentz-current-game-value {
@@ -2121,16 +2179,23 @@
 
   .rentz-chat-table-bubble {
     min-width: 4.6rem;
-    max-width: min(11.5rem, calc(100vw - 2.5rem));
+    width: max-content;
+    z-index: 16;
+    max-width: min(24rem, calc(100vw - 6rem));
+    max-height: min(12rem, 38vh);
     align-items: flex-start;
     justify-content: flex-start;
-    padding: 0.52rem 0.72rem;
+    overflow: hidden;
+    padding: 0.58rem 0.82rem;
   }
 
   .rentz-chat-table-bubble-copy {
     position: relative;
     z-index: 1;
-    display: -webkit-box;
+    display: block;
+    width: max-content;
+    max-width: min(22rem, calc(100vw - 7.7rem));
+    max-height: 10.2rem;
     overflow: hidden;
     color: #163446;
     font-size: 0.76rem;
@@ -2138,9 +2203,8 @@
     letter-spacing: 0.01em;
     line-height: 1.2;
     text-align: left;
-    text-wrap: balance;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
     word-break: break-word;
   }
 
@@ -3470,8 +3534,13 @@
     }
 
     .rentz-current-game-box,
+    .rentz-table-indicator-stack,
     .rentz-marking-box {
       left: 1.05rem;
+    }
+
+    .rentz-current-game-box,
+    .rentz-marking-box {
       gap: calc(0.35rem * var(--rentz-desktop-top-box-scale));
       padding: calc(0.55rem * var(--rentz-desktop-top-box-scale)) calc(0.8rem * var(--rentz-desktop-top-box-scale));
       font-size: calc(0.86rem * var(--rentz-desktop-top-box-scale));
@@ -3485,6 +3554,26 @@
     .rentz-marking-box {
       top: calc(0.92rem + (3.2rem * var(--rentz-desktop-top-box-scale)));
       max-width: min(calc(18rem * var(--rentz-desktop-top-box-scale)), 48%);
+    }
+
+    .rentz-table-indicator-stack {
+      top: calc(0.92rem + (3.2rem * var(--rentz-desktop-top-box-scale)));
+      max-width: min(calc(18rem * var(--rentz-desktop-top-box-scale)), 48%);
+      gap: calc(0.42rem * var(--rentz-desktop-top-box-scale));
+    }
+
+    .rentz-table-indicator-stack.is-training {
+      top: calc(0.92rem + (2.62rem * var(--rentz-desktop-top-box-scale)));
+      gap: calc(0.3rem * var(--rentz-desktop-top-box-scale));
+    }
+
+    .rentz-table-indicator-stack .rentz-marking-box {
+      max-width: 100%;
+    }
+
+    .rentz-training-mode-box {
+      max-width: min(calc(13rem * var(--rentz-desktop-top-box-scale)), 100%);
+      padding-block: calc(0.42rem * var(--rentz-desktop-top-box-scale));
     }
 
     .rentz-spectator-box {
@@ -3747,8 +3836,13 @@
       max-width: min(40%, calc(100% - 2.1rem));
     }
 
+    .rentz-table-indicator-stack,
     .rentz-marking-box {
       max-width: min(16rem, 31%);
+    }
+
+    .rentz-table-indicator-stack .rentz-marking-box {
+      max-width: 100%;
     }
 
     .rentz-spectator-box {
@@ -3839,11 +3933,14 @@
     }
 
     .rentz-table-stage {
+      --rentz-mobile-table-pad: 0.9rem;
+      --rentz-mobile-info-badge-height: 2.15rem;
+      --rentz-mobile-info-stack-gap: 0.1rem;
       flex: none;
       max-height: none;
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(6.8rem, 31%);
-      grid-template-rows: auto auto 1fr auto auto;
+      grid-template-rows: auto auto 1fr auto auto auto;
       align-items: start;
       column-gap: 0.75rem;
       row-gap: 0.85rem;
@@ -3879,6 +3976,12 @@
       min-width: 0;
       max-width: min(9.5rem, calc(100% - 6rem));
       z-index: 11;
+    }
+
+    .rentz-mobile-hero:has(.rentz-chat-table-bubble),
+    .rentz-mobile-local-bubble:has(.rentz-chat-table-bubble),
+    .rentz-seat-cluster:has(.rentz-chat-table-bubble) {
+      z-index: 18;
     }
 
     .rentz-board-area {
@@ -3931,11 +4034,11 @@
     .rentz-table-brand {
       position: relative;
       grid-column: 1;
-      grid-row: 5;
+      grid-row: 6;
       left: auto;
       bottom: auto;
       justify-self: start;
-      margin-top: 0.2rem;
+      margin-top: 0.05rem;
       font-size: clamp(1.95rem, 7vw, 2.75rem);
     }
 
@@ -3951,18 +4054,52 @@
       transform: translateX(-10%);
     }
 
+    .rentz-table-indicator-stack,
+    .rentz-table-indicator-stack.is-training {
+      display: contents;
+      position: static;
+      left: auto;
+      top: auto;
+      max-width: none;
+    }
+
     .rentz-marking-box {
       position: relative;
       left: auto;
       top: auto;
       align-items: flex-start;
-      grid-column: 1 / -1;
+      grid-column: 1;
       grid-row: 1;
       justify-self: start;
+      align-self: start;
       max-width: min(16rem, 100%);
       font-size: 0.72rem;
       margin: 0;
       padding: 0.45rem 0.6rem;
+    }
+
+    .rentz-table-indicator-stack .rentz-marking-box {
+      position: relative;
+      left: auto;
+      top: auto;
+      grid-column: 1;
+      grid-row: 1;
+      justify-self: start;
+      align-self: start;
+      max-width: min(16rem, 100%);
+    }
+
+    .rentz-table-indicator-stack .rentz-training-mode-box {
+      position: relative;
+      left: auto;
+      top: auto;
+      grid-column: 1;
+      grid-row: 5;
+      justify-self: start;
+      align-self: start;
+      z-index: 20;
+      margin-top: -0.45rem;
+      max-width: min(100%, 9.5rem);
     }
 
     .rentz-spectator-box {
@@ -4058,7 +4195,32 @@
     }
 
     .rentz-mobile-reaction-spotlight .rentz-chat-table-bubble {
-      max-width: min(8.9rem, calc(100vw - 8rem));
+      max-width: min(17rem, calc(100vw - 4rem));
+      max-height: min(10rem, 34vh);
+    }
+
+    .rentz-mobile-reaction-spotlight .rentz-chat-table-bubble-copy {
+      max-width: min(15.4rem, calc(100vw - 5.7rem));
+      max-height: 8.6rem;
+    }
+
+    .rentz-mobile-hero .rentz-chat-table-bubble {
+      max-width: min(12.5rem, calc(100vw - 10rem));
+    }
+
+    .rentz-mobile-hero .rentz-chat-table-bubble-copy {
+      max-width: min(10.9rem, calc(100vw - 11.7rem));
+    }
+
+    .rentz-mobile-local-bubble .rentz-chat-table-bubble {
+      left: auto;
+      right: calc(100% + 0.42rem);
+      max-width: min(13.5rem, calc(100vw - 9rem));
+      transform-origin: right center;
+    }
+
+    .rentz-mobile-local-bubble .rentz-chat-table-bubble-copy {
+      max-width: min(11.9rem, calc(100vw - 10.7rem));
     }
   }
 
@@ -4068,7 +4230,11 @@
     }
 
     .rentz-table-stage {
+      --rentz-mobile-table-pad: 0.8rem;
+      --rentz-mobile-info-badge-height: 1.9rem;
+      --rentz-mobile-info-stack-gap: 0.08rem;
       grid-template-columns: minmax(0, 1fr) minmax(5.8rem, 34%);
+      grid-template-rows: auto auto 1fr auto auto auto;
       min-height: 23.75rem;
       row-gap: 0.72rem;
       padding: 0.8rem 0.8rem 0.9rem;
@@ -4126,7 +4292,7 @@
 
     .rentz-table-brand {
       font-size: clamp(1.7rem, 7vw, 2.35rem);
-      margin-top: 0.3rem;
+      margin-top: 0.05rem;
     }
 
     .rentz-mobile-reaction-spotlight {
@@ -4159,6 +4325,25 @@
 
     .rentz-marking-box {
       max-width: min(14rem, 100%);
+    }
+
+    .rentz-table-indicator-stack .rentz-marking-box {
+      max-width: min(14rem, 100%);
+    }
+
+    .rentz-table-indicator-stack .rentz-training-mode-box {
+      position: relative;
+      left: auto;
+      top: auto;
+      grid-column: 1;
+      grid-row: 5;
+      justify-self: start;
+      align-self: start;
+      margin-top: -0.38rem;
+      max-width: min(100%, 8.8rem);
+    }
+
+    .rentz-marking-box {
       font-size: 0.64rem;
       letter-spacing: 0.04em;
     }

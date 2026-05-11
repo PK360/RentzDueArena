@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 
 const createApp = require('./src/app');
 const { connectToMongo, disconnectFromMongo, getMongoUri } = require('./src/lib/database');
+const { warmEditorBotOnStartup } = require('./src/lib/editorBot');
 const registerSocketHandlers = require('./socketManager');
 
 const PORT = Number(process.env.PORT || 4000);
@@ -56,6 +57,17 @@ function start() {
 
   server.listen(PORT, () => {
     console.log(`Rentz Arena backend listening on port ${PORT}`);
+    void warmEditorBotOnStartup()
+      .then((results) => {
+        for (const result of results) {
+          const label = result.success ? 'ready' : 'unavailable';
+          const preview = result.rawPreview ? ` (${result.rawPreview})` : '';
+          console.log(`Editor Bot startup warmup ${label} in ${result.elapsedMs}ms${preview}`);
+        }
+      })
+      .catch((error) => {
+        console.warn('Editor Bot startup warmup failed:', error.message);
+      });
   });
 
   mongoose.connection.on('error', (error) => {

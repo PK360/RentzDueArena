@@ -58,7 +58,7 @@ test('scores base default rules from the extracted registry', () => {
   }).delta, 10);
 });
 
-test('scores Levate and Total composite rulesets deterministically', () => {
+test('scores Levate and Total compiled rulesets deterministically', () => {
   const common = {
     playerCount: 4,
     initialPoints: 0,
@@ -77,6 +77,8 @@ test('scores Levate and Total composite rulesets deterministically', () => {
   });
   assert.strictEqual(totalPlus.delta, 270);
   assert.strictEqual(totalPlus.gameEnded, false);
+  assert.ok(RULESETS.totalPlus.compiled);
+  assert.strictEqual(getAvailableRulesets().find((ruleset) => ruleset.id === 'totalPlus').code.includes('add(100, HEART_KING)'), true);
 
   const totalMinus = evaluateRulesetForTrick({
     ...common,
@@ -84,6 +86,8 @@ test('scores Levate and Total composite rulesets deterministically', () => {
   });
   assert.strictEqual(totalMinus.delta, -270);
   assert.strictEqual(totalMinus.gameEnded, false);
+  assert.ok(RULESETS.totalMinus.compiled);
+  assert.strictEqual(getAvailableRulesets().find((ruleset) => ruleset.id === 'totalMinus').code.includes('add(-100, HEART_KING)'), true);
 });
 
 test('includes room-scoped custom rulesets in availability and scoring', () => {

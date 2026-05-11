@@ -165,16 +165,12 @@ const MATCH_MODE_TRAINING = 'training';
 const RULESET_TYPE_OPTIONS = new Set(['per_round', 'end_game']);
 const RENTZ_METADATA_KEYS = new Set(['long_name', 'short_name', 'title', 'name', 'abbreviation', 'abbr', 'type']);
 const EDITOR_BOT_CATEGORY_DEFINITIONS = Object.freeze([
-  { key: 'fairness', label: 'Fairness' },
-  { key: 'strategicDepth', label: 'Strategic depth' },
   { key: 'riskRewardBalance', label: 'Risk/reward balance' },
   { key: 'comebackPotential', label: 'Comeback potential' },
   { key: 'claritySimplicity', label: 'Clarity / simplicity' },
   { key: 'scoringBalance', label: 'Scoring balance' },
   { key: 'playerAgency', label: 'Player agency' },
-  { key: 'interactionQuality', label: 'Interaction quality' },
-  { key: 'robustness', label: 'Robustness' },
-  { key: 'exploitResistance', label: 'Exploit resistance' }
+  { key: 'interactionQuality', label: 'Interaction quality' }
 ]);
 
 const VALUE_ORDER = ['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2'];
@@ -491,7 +487,7 @@ function normalizeTrainingState(training = null) {
     enabled: true,
     humanUserId: training.humanUserId || '',
     trainerUserId: training.trainerUserId || '',
-    trainerElo: Math.max(0, Math.round(Number(training.trainerElo || 0))),
+    trainerElo: normalizeTrainerEloValue(training.trainerElo, DEFAULT_ACCOUNT_ELO),
     trainerRankName: training.trainerRankName || 'Starting-out Rentz Rookie',
     totalRounds: clampNumber(
       Math.round(Number(training.totalRounds || TRAINING_ROUNDS_RANGE.defaultValue)),
@@ -1166,19 +1162,22 @@ function getPlayerConnectionLabel(player) {
   return '';
 }
 
-function PlayerNameLabel({ player, isLocal = false, className = '', nameClassName = '', suffixClassName = '' }) {
+function PlayerNameLabel({ player, isLocal = false, className = '', nameClassName = '', suffixClassName = '', trainerTagOnly = false }) {
   const connectionLabel = getPlayerConnectionLabel(player);
   const botBadgeLabel = player?.isTrainer ? 'Trainer' : 'AI';
   const botBadgeClassName = player?.isTrainer
     ? 'border-emerald-200/80 bg-emerald-100/85 text-emerald-950'
     : 'border-sky-200/80 bg-sky-100/85 text-sky-900';
+  const shouldShowTrainerTagOnly = trainerTagOnly && player?.isTrainer;
 
   return (
     <span className={clsx('rentz-player-name-label', className)}>
-      <span className={clsx('rentz-player-name-value', nameClassName)}>
-        {getPlayerName(player)}
-      </span>
-      {isLocal ? (
+      {!shouldShowTrainerTagOnly ? (
+        <span className={clsx('rentz-player-name-value', nameClassName)}>
+          {getPlayerName(player)}
+        </span>
+      ) : null}
+      {isLocal && !shouldShowTrainerTagOnly ? (
         <span className={clsx('rentz-player-name-self', suffixClassName)}>(You)</span>
       ) : null}
       {isBotPlayer(player) ? (
@@ -1786,6 +1785,7 @@ function RentzSeatCluster({
             player={player}
             isLocal={isLocal}
             className="rentz-seat-name"
+            trainerTagOnly
           />
         </button>
       ) : (
@@ -1793,6 +1793,7 @@ function RentzSeatCluster({
           player={player}
           isLocal={isLocal}
           className="rentz-seat-name"
+          trainerTagOnly
         />
       )}
 
@@ -8406,27 +8407,27 @@ function App() {
                   )}
                 </span>
               </div>
-              <div className="rentz-marking-box">
-                <span className="rentz-marking-label">Marking suit:</span>
-                <span
-                  className={clsx(
-                    'rentz-marking-value',
-                    trickSuit && (trickSuit === 'H' || trickSuit === 'D') ? 'is-red' : 'is-neutral'
-                  )}
-                >
-                  {formatMarkingSuit(trickSuit)}
-                </span>
-              </div>
-              {isTrainingMatch ? (
+              <div className={clsx('rentz-table-indicator-stack', isTrainingMatch && 'is-training')}>
                 <div className="rentz-marking-box">
-                  <span className="rentz-marking-label">Mode:</span>
-                  <span className="rentz-marking-value is-neutral">
-                    {trainerPlayer
-                      ? `Training vs ${getPlayerName(trainerPlayer)}${trainingState?.trainerRankName ? ` • ${trainingState.trainerRankName}` : ''}`
-                      : 'Training'}
+                  <span className="rentz-marking-label">Marking suit:</span>
+                  <span
+                    className={clsx(
+                      'rentz-marking-value',
+                      trickSuit && (trickSuit === 'H' || trickSuit === 'D') ? 'is-red' : 'is-neutral'
+                    )}
+                  >
+                    {formatMarkingSuit(trickSuit)}
                   </span>
                 </div>
-              ) : null}
+                {isTrainingMatch ? (
+                  <div className="rentz-marking-box rentz-training-mode-box">
+                    <span className="rentz-training-mode-label">TRAINING</span>
+                    <span className="rentz-training-mode-rank">
+                      {trainingState?.trainerRankName || 'Starting-out Rentz Rookie'}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
 
               <div
                 ref={spectatorPopoverRef}
@@ -8973,7 +8974,7 @@ function App() {
   };
 
   const renderChoiceMatrix = () => {
-    const rulesets = choiceState?.availableRulesets?.length
+    const allRulesets = choiceState?.availableRulesets?.length
       ? choiceState.availableRulesets
       : roomSettings.availableRulesets;
     const selectedRulesets = choiceState?.selectedRulesets || roomSettings.selectedRulesets;
@@ -8981,6 +8982,12 @@ function App() {
     const usedChoices = choiceState?.usedChoices || {};
     const chooserName = getPlayerName(currentChooser);
     const showChoiceHand = !choiceState?.nvSelected && !isSpectatingGame;
+    const chooserId = choiceState?.chooserId || currentChooser?.userId || '';
+    const rulesets = allRulesets.filter((rule) => (
+      selectedRulesets[rule.id] !== false
+      && (!chooserId || permissions?.[chooserId]?.[rule.id] !== false)
+      && (!chooserId || !usedChoices?.[chooserId]?.[rule.id])
+    ));
 
     return (
       <ModalShell
@@ -9069,6 +9076,16 @@ function App() {
                   })}
                 </tr>
               ))}
+              {rulesets.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={players.length + 1}
+                    className="rentz-ruleset-row-header text-center"
+                  >
+                    No active rulesets are available for this chooser.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
           </div>
@@ -9150,8 +9167,8 @@ function App() {
   );
 
   const renderEditorContent = () => (
-    <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
-      <section className="glass-panel p-5 sm:p-6">
+    <div className="grid items-start gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+      <section className="glass-panel self-start p-5 sm:p-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Editor</h3>
@@ -9284,7 +9301,7 @@ function App() {
 
       </section>
 
-      <section className="space-y-5">
+      <section className="space-y-5 self-start">
         {(() => {
           const currentEditorJudgeSignature = buildEditorRulesetSignature();
           const isJudgeReviewStale = Boolean(editorJudgeReview) && editorJudgeSignature !== currentEditorJudgeSignature;
@@ -9354,7 +9371,7 @@ function App() {
         </div>
 
         {editorJudgeReview && (
-          <div className="glass-panel p-5 sm:p-6">
+          <div className="glass-panel max-h-[calc(100vh-8rem)] overflow-y-auto p-5 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Editor Bot review</div>
@@ -11139,8 +11156,8 @@ endif`}
     }
 
     return (
-      <div className="fixed inset-0 z-[85] flex items-center justify-center px-4 py-6">
-        <div className="w-full max-w-3xl">
+      <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/75 px-4 py-6 backdrop-blur-[2px]">
+        <div className="relative z-10 w-full max-w-3xl">
           <div className="flex flex-col items-center gap-6">
             <div className="flex w-full items-end justify-center gap-4">
               <AvatarFace
@@ -11161,24 +11178,26 @@ endif`}
               </div>
             </div>
 
-            <div className="flex items-center justify-center gap-2" aria-label="Trainer final star rating">
-              {Array.from({ length: 5 }).map((_, index) => {
-                const starValue = index + 1;
-                const fillPercent = trainingFinalReview.starRating >= starValue
-                  ? 100
-                  : trainingFinalReview.starRating >= starValue - 0.5
-                    ? 50
-                    : 0;
+            <div className="flex w-full justify-center" aria-label="Trainer final star rating">
+              <div className="inline-flex items-center justify-center gap-2.5 rounded-full bg-slate-950/35 px-4 py-2.5 shadow-[0_18px_42px_rgba(0,0,0,0.28)] sm:gap-3 sm:px-5">
+                {Array.from({ length: 5 }).map((_, index) => {
+                  const starValue = index + 1;
+                  const fillPercent = trainingFinalReview.starRating >= starValue
+                    ? 100
+                    : trainingFinalReview.starRating >= starValue - 0.5
+                      ? 50
+                      : 0;
 
-                return (
-                  <div key={`training-review-star-${starValue}`} className="relative h-10 w-10 sm:h-12 sm:w-12">
-                    <Star className="h-full w-full text-white/35" />
-                    <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fillPercent}%` }}>
-                      <Star fill="currentColor" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" />
+                  return (
+                    <div key={`training-review-star-${starValue}`} className="relative h-9 w-9 shrink-0 sm:h-11 sm:w-11">
+                      <Star className="h-full w-full text-white/35" />
+                      <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fillPercent}%` }}>
+                        <Star fill="currentColor" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" />
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
 
             <button

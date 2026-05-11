@@ -52,7 +52,8 @@ test('sanitizeEditorBotReview clamps invalid AI output and fills missing categor
   const sanitized = sanitizeEditorBotReview({
     overallScore: 11.4,
     categoryRatings: {
-      fairness: { score: -3, explanation: '' }
+      fairness: { score: 9.5, explanation: 'Legacy category that should be ignored.' },
+      riskRewardBalance: { score: -3, explanation: '' }
     },
     rulesetSummary: '',
     constructiveReview: '  Great base idea but it needs a bit more tuning.  ',
@@ -61,8 +62,9 @@ test('sanitizeEditorBotReview clamps invalid AI output and fills missing categor
   }, fallback);
 
   assert.equal(sanitized.overallScore, 10);
-  assert.equal(sanitized.categoryRatings.fairness.score, 0);
-  assert.equal(sanitized.categoryRatings.fairness.explanation, fallback.categoryRatings.fairness.explanation);
+  assert.equal(sanitized.categoryRatings.fairness, undefined);
+  assert.equal(sanitized.categoryRatings.riskRewardBalance.score, 0);
+  assert.equal(sanitized.categoryRatings.riskRewardBalance.explanation, fallback.categoryRatings.riskRewardBalance.explanation);
   assert.equal(sanitized.categoryRatings.scoringBalance.score, fallback.categoryRatings.scoringBalance.score);
   assert.equal(sanitized.rulesetSummary, fallback.rulesetSummary);
   assert.equal(sanitized.constructiveReview, 'Great base idea but it needs a bit more tuning.');

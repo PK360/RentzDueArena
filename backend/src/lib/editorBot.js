@@ -30,32 +30,24 @@ const EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS = Math.max(3000, Number(process.env.REN
 const EDITOR_BOT_MODEL_WARM_CACHE_MS = Math.max(60000, Number(process.env.RENTZ_EDITOR_BOT_MODEL_WARM_CACHE_MS || 480000));
 
 const CATEGORY_DEFINITIONS = Object.freeze([
-  { key: 'fairness', label: 'Fairness' },
-  { key: 'strategicDepth', label: 'Strategic depth' },
   { key: 'riskRewardBalance', label: 'Risk/reward balance' },
   { key: 'comebackPotential', label: 'Comeback potential' },
   { key: 'claritySimplicity', label: 'Clarity / simplicity' },
   { key: 'scoringBalance', label: 'Scoring balance' },
   { key: 'playerAgency', label: 'Player agency' },
-  { key: 'interactionQuality', label: 'Interaction quality' },
-  { key: 'robustness', label: 'Robustness' },
-  { key: 'exploitResistance', label: 'Exploit resistance' }
+  { key: 'interactionQuality', label: 'Interaction quality' }
 ]);
 const CATEGORY_KEY_TO_SHORT_KEY = Object.freeze({
-  fairness: 'f',
-  strategicDepth: 'sd',
   riskRewardBalance: 'rr',
   comebackPotential: 'cp',
   claritySimplicity: 'cs',
   scoringBalance: 'sb',
   playerAgency: 'pa',
-  interactionQuality: 'iq',
-  robustness: 'ro',
-  exploitResistance: 'er'
+  interactionQuality: 'iq'
 });
 const CATEGORY_BATCHES = Object.freeze([
-  ['fairness', 'strategicDepth', 'riskRewardBalance', 'comebackPotential', 'claritySimplicity'],
-  ['scoringBalance', 'playerAgency', 'interactionQuality', 'robustness', 'exploitResistance']
+  ['riskRewardBalance', 'comebackPotential', 'claritySimplicity'],
+  ['scoringBalance', 'playerAgency', 'interactionQuality']
 ]);
 let cachedEditorBotRuntime = null;
 const warmedEditorBotModels = new Map();
@@ -1349,6 +1341,39 @@ async function warmEditorBotModel({
   }
 }
 
+async function warmEditorBotOnStartup({
+  baseUrl = DEFAULT_EDITOR_BOT_OLLAMA_BASE_URL,
+  timeoutMs = EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS
+} = {}) {
+  const requestedModels = [
+    sanitizeText(DEFAULT_EDITOR_BOT_FULL_OLLAMA_MODEL, '', 120),
+    sanitizeText(DEFAULT_EDITOR_BOT_LEAN_OLLAMA_MODEL, '', 120),
+    sanitizeText(DEFAULT_EDITOR_BOT_OLLAMA_MODEL, '', 120)
+  ].filter(Boolean);
+  const uniqueModels = Array.from(new Set(requestedModels));
+  const results = [];
+
+  for (const modelName of uniqueModels) {
+    try {
+      const result = await warmEditorBotModel({
+        modelName,
+        baseUrl,
+        timeoutMs
+      });
+      results.push(result);
+    } catch (error) {
+      if (error.editorBotDiagnostic) {
+        results.push(error.editorBotDiagnostic);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  return results;
+}
+
 async function requestEditorBotReviewVariant({
   schema,
   systemPrompt,
@@ -1874,5 +1899,6 @@ module.exports = {
   buildSafeRulesetPayload,
   clampEditorBotScore,
   reviewRulesetWithEditorBot,
-  sanitizeEditorBotReview
+  sanitizeEditorBotReview,
+  warmEditorBotOnStartup
 };

@@ -90,22 +90,6 @@ function buildRulesetPreviewCode(definition) {
     return definition.code;
   }
 
-  if (definition.composite === 'totalPlus') {
-    return [
-      '# Composite ruleset preview',
-      '# Total Plus adds the absolute values of the five classic Rentz base rulesets.',
-      '# This built-in preview is informational and does not round-trip through the compiler.'
-    ].join('\n');
-  }
-
-  if (definition.composite === 'totalMinus') {
-    return [
-      '# Composite ruleset preview',
-      '# Total Minus subtracts the absolute values of the five classic Rentz base rulesets.',
-      '# This built-in preview is informational and does not round-trip through the compiler.'
-    ].join('\n');
-  }
-
   return '';
 }
 
@@ -179,53 +163,10 @@ function evaluateCompiledRuleDelta({ definition, playerCount, initialPoints, han
   };
 }
 
-function evaluateCompositeDelta({ definition, playerCount, handCards, nonDiscardedCards }) {
-  if (!['totalPlus', 'totalMinus'].includes(definition.composite)) {
-    throw new Error(`Unknown composite ruleset '${definition.composite}'`);
-  }
-
-  const sign = definition.composite === 'totalPlus' ? 1 : -1;
-  const componentDeltas = TOTAL_BASE_RULE_IDS.map((ruleId) => {
-    const baseDefinition = RULESETS[ruleId];
-    const result = evaluateCompiledRuleDelta({
-      definition: baseDefinition,
-      playerCount,
-      initialPoints: 0,
-      handCards,
-      nonDiscardedCards
-    });
-
-    return {
-      ruleId,
-      delta: sign * Math.abs(result.delta)
-    };
-  });
-
-  return {
-    delta: componentDeltas.reduce((total, entry) => total + entry.delta, 0),
-    gameEnded: false,
-    componentDeltas
-  };
-}
-
 function evaluateRulesetForTrick({ rulesetId, playerCount, initialPoints, handCards, nonDiscardedCards, customRulesets = [] }) {
   const definition = getRulesetDefinitionById(rulesetId, customRulesets);
   if (!definition) {
     throw new Error(`Unknown ruleset '${rulesetId}'`);
-  }
-
-  if (definition.composite) {
-    const compositeResult = evaluateCompositeDelta({
-      definition,
-      playerCount,
-      handCards,
-      nonDiscardedCards
-    });
-
-    return {
-      ...compositeResult,
-      ruleset: definition
-    };
   }
 
   const result = evaluateCompiledRuleDelta({

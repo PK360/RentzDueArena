@@ -98,7 +98,7 @@ function serializeTrainingState(training = null) {
     enabled: true,
     humanUserId: training.humanUserId || '',
     trainerUserId: training.trainerUserId || '',
-    trainerElo: Number(training.trainerElo || 0),
+    trainerElo: normalizeEloValue(training.trainerElo, DEFAULT_ACCOUNT_ELO),
     trainerRankName: training.trainerRankName || null,
     totalRounds: Number(training.totalRounds || 0),
     playerCount: Number(training.playerCount || 0),
