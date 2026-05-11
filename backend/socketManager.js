@@ -3,7 +3,7 @@ const Ruleset = require('./models/Ruleset');
 const User = require('./models/User');
 const { randomFriendCode } = require('./utils/helpers');
 const { DEFAULT_PROFILE_PICTURE_PATH } = require('./src/lib/accountAssets');
-const { buildFriendStatePayload } = require('./src/lib/friends');
+const { buildFriendStatePayload, normalizeRelationshipIds } = require('./src/lib/friends');
 const {
   MatchHistory,
   SavedGame,
@@ -49,6 +49,9 @@ const activeGames = new Map(); // roomId -> game state
 const socketToUser = new Map(); // socketId -> { userId, name }
 const pendingLobbyDisconnects = new Map(); // roomId:userId -> timeout
 const pendingGameAbandonments = new Map(); // roomId:userId -> timeout
+const pendingRoomInvites = new Map(); // inviteId -> invite
+const pendingRoomInviteKeys = new Map(); // roomId:senderUserId:targetUserId -> inviteId
+const pendingRoomInviteTimeouts = new Map(); // inviteId -> timeout
 let nextJoinOrder = 1;
 const MIN_PLAYERS_TO_START = 2;
 const MAX_ACTIVE_PLAYERS = 6;
@@ -70,6 +73,7 @@ const TRAINING_MATCH_MODE = 'training';
 const STANDARD_MATCH_MODE = 'standard';
 const TRAINING_ROUNDS_RANGE = { min: 1, max: 15 };
 const TRAINING_PLAYERS_RANGE = { min: 2, max: 6 };
+const ROOM_INVITE_TTL_MS = Math.max(30 * 1000, Number(process.env.ROOM_INVITE_TTL_MS || 3 * 60 * 1000));
 const DEFAULT_TRAINER_MESSAGE_SETTINGS = Object.freeze({
   preMoveCommentaryEnabled: true,
   postMoveFeedbackEnabled: true
@@ -282,6 +286,10 @@ function emitLobbyUpdate(io, roomId, lobby, message) {
 
 function closeWaitingLobby(io, roomId, lobby, { reason = 'The room was deleted', deletedBy = null } = {}) {
   clearLobbyDisconnects(roomId, lobby);
+  clearRoomInvitesForRoom(io, roomId, {
+    status: 'unavailable',
+    reason
+  });
   io.to(roomId).emit('lobby_deleted', {
     roomId,
     reason,
@@ -1163,6 +1171,225 @@ async function emitFriendStateUpdate(io, userOrId) {
   }
 }
 
+function createRoomInviteId() {
+  return `invite_${randomFriendCode().toLowerCase()}_${Date.now().toString(36)}`;
+}
+
+function getRoomInviteKey(roomId, senderUserId, targetUserId) {
+  return `${String(roomId || '').trim().toUpperCase()}:${String(senderUserId || '').trim()}:${String(targetUserId || '').trim()}`;
+}
+
+function buildRoomInvitePayload(invite) {
+  if (!invite) {
+    return null;
+  }
+
+  return {
+    inviteId: invite.inviteId,
+    roomId: invite.roomId,
+    roomName: invite.roomName || '',
+    createdAt: invite.createdAt,
+    expiresAt: invite.expiresAt,
+    sender: {
+      userId: invite.senderUserId,
+      username: invite.senderUsername,
+      displayName: invite.senderUsername,
+      avatarUrl: invite.senderAvatarUrl || DEFAULT_PROFILE_PICTURE_PATH,
+      profilePicture: invite.senderAvatarUrl || DEFAULT_PROFILE_PICTURE_PATH
+    },
+    targetUserId: invite.targetUserId
+  };
+}
+
+function listActiveSocketIdsForUserId(userId) {
+  if (!userId) {
+    return [];
+  }
+
+  return [...socketToUser.entries()]
+    .filter(([, socketUser]) => !socketUser?.guest && socketUser?.userId === userId)
+    .map(([socketId]) => socketId);
+}
+
+function isAuthenticatedUserOnline(userId) {
+  return listActiveSocketIdsForUserId(userId).length > 0;
+}
+
+function emitRoomInviteStateChange(io, invite, status, {
+  reason = '',
+  notifyTarget = true
+} = {}) {
+  if (!io || !invite?.inviteId || !status) {
+    return;
+  }
+
+  const payload = {
+    ...buildRoomInvitePayload(invite),
+    status,
+    reason: String(reason || '').trim()
+  };
+  const socketIds = new Set(listActiveSocketIdsForUserId(invite.senderUserId));
+
+  if (notifyTarget) {
+    listActiveSocketIdsForUserId(invite.targetUserId).forEach((socketId) => {
+      socketIds.add(socketId);
+    });
+  }
+
+  socketIds.forEach((socketId) => {
+    io.to(socketId).emit('room_invite_state_changed', payload);
+  });
+}
+
+function clearPendingRoomInviteTimeout(inviteId) {
+  const timeoutId = pendingRoomInviteTimeouts.get(inviteId);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    pendingRoomInviteTimeouts.delete(inviteId);
+  }
+}
+
+function removeRoomInvite(io, inviteId, {
+  status = 'expired',
+  reason = ''
+} = {}) {
+  const invite = pendingRoomInvites.get(inviteId);
+  if (!invite) {
+    return null;
+  }
+
+  pendingRoomInvites.delete(inviteId);
+  pendingRoomInviteKeys.delete(getRoomInviteKey(invite.roomId, invite.senderUserId, invite.targetUserId));
+  clearPendingRoomInviteTimeout(inviteId);
+  emitRoomInviteStateChange(io, invite, status, { reason });
+  return invite;
+}
+
+function scheduleRoomInviteExpiration(io, invite) {
+  if (!invite?.inviteId) {
+    return;
+  }
+
+  clearPendingRoomInviteTimeout(invite.inviteId);
+  const delayMs = Math.max(0, Number(invite.expiresAt || 0) - Date.now());
+  const timeoutId = setTimeout(() => {
+    removeRoomInvite(io, invite.inviteId, {
+      status: 'expired',
+      reason: 'This room invite expired.'
+    });
+  }, delayMs);
+  pendingRoomInviteTimeouts.set(invite.inviteId, timeoutId);
+}
+
+function getPendingRoomInvite(roomId, senderUserId, targetUserId) {
+  const inviteId = pendingRoomInviteKeys.get(getRoomInviteKey(roomId, senderUserId, targetUserId));
+  if (!inviteId) {
+    return null;
+  }
+
+  const invite = pendingRoomInvites.get(inviteId);
+  if (!invite || invite.expiresAt <= Date.now()) {
+    return null;
+  }
+
+  return invite;
+}
+
+function clearRoomInvitesForRoom(io, roomId, {
+  status = 'unavailable',
+  reason = 'This room is no longer accepting invites.'
+} = {}) {
+  const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+  if (!normalizedRoomId) {
+    return;
+  }
+
+  [...pendingRoomInvites.values()]
+    .filter((invite) => invite.roomId === normalizedRoomId)
+    .forEach((invite) => {
+      removeRoomInvite(io, invite.inviteId, { status, reason });
+    });
+}
+
+function clearRoomInvitesForTarget(io, roomId, targetUserId, {
+  status = 'joined',
+  reason = ''
+} = {}) {
+  const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+  const normalizedTargetUserId = String(targetUserId || '').trim();
+  if (!normalizedRoomId || !normalizedTargetUserId) {
+    return;
+  }
+
+  [...pendingRoomInvites.values()]
+    .filter((invite) => invite.roomId === normalizedRoomId && invite.targetUserId === normalizedTargetUserId)
+    .forEach((invite) => {
+      removeRoomInvite(io, invite.inviteId, { status, reason });
+    });
+}
+
+async function buildRoomInviteFriendEntries(user, lobby) {
+  if (!user?.userId || user.guest) {
+    return [];
+  }
+
+  const account = await User.findById(user.userId);
+  if (!account) {
+    return [];
+  }
+
+  const friendState = await buildFriendStatePayload(account);
+  const roomMemberIds = new Set(getAllLobbyMembers(lobby).map((member) => member.userId));
+  const roomHasOpenSeat = lobby.players.length < MAX_ACTIVE_PLAYERS;
+  const roomIsWaiting = lobby.status === 'waiting';
+
+  return (friendState.friends || []).map((friend) => {
+    const targetUserId = String(friend.userId || '');
+    const isOnline = isAuthenticatedUserOnline(targetUserId);
+    const pendingInvite = getPendingRoomInvite(lobby.roomId, user.userId, targetUserId);
+    let inviteState = 'ready';
+    let inviteLabel = 'Invite';
+    let canInvite = true;
+
+    if (!roomIsWaiting) {
+      inviteState = 'unavailable';
+      inviteLabel = 'Game started';
+      canInvite = false;
+    } else if (roomMemberIds.has(targetUserId)) {
+      inviteState = 'already-here';
+      inviteLabel = 'Already here';
+      canInvite = false;
+    } else if (lobby.bannedUserIds?.includes(targetUserId)) {
+      inviteState = 'banned';
+      inviteLabel = 'Banned';
+      canInvite = false;
+    } else if (!roomHasOpenSeat) {
+      inviteState = 'room-full';
+      inviteLabel = 'Room full';
+      canInvite = false;
+    } else if (pendingInvite) {
+      inviteState = 'pending';
+      inviteLabel = 'Invited';
+      canInvite = false;
+    } else if (!isOnline) {
+      inviteState = 'offline';
+      inviteLabel = 'Offline';
+      canInvite = false;
+    }
+
+    return {
+      ...friend,
+      isOnline,
+      onlineStatus: isOnline ? 'online' : 'offline',
+      inviteState,
+      inviteLabel,
+      canInvite,
+      pendingInviteId: pendingInvite?.inviteId || null,
+      pendingInviteExpiresAt: pendingInvite?.expiresAt || null
+    };
+  });
+}
+
 function addMemberToLobby(lobby, user, socketId, { isReady = false } = {}) {
   const shouldSpectate = lobby.players.length >= MAX_ACTIVE_PLAYERS;
   const role = shouldSpectate ? 'spectator' : 'player';
@@ -1504,6 +1731,105 @@ function restoreUserSession(io, socket, user) {
     game: game
       ? buildGameSessionSnapshot(roomId, game, user.userId, { isSpectator: role === 'spectator' })
       : null
+  };
+}
+
+function joinLobbySession(io, socket, user, {
+  roomId,
+  asSpectator = false,
+  allowAutoSpectator = true,
+  allowGameSpectating = true,
+  clearInvitesOnJoin = true
+} = {}) {
+  const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+  if (!normalizedRoomId) {
+    return { error: 'Room code is required' };
+  }
+
+  const currentRoom = findCurrentRoomForUser(user);
+  if (currentRoom && currentRoom.roomId !== normalizedRoomId) {
+    return { error: 'Leave your current room before joining another one' };
+  }
+
+  const lobby = lobbies.get(normalizedRoomId);
+  if (!lobby) {
+    return { error: 'Lobby not found' };
+  }
+
+  if (lobby.bannedUserIds?.includes(user.userId)) {
+    return { error: 'You are banned from this room' };
+  }
+
+  const existingPlayer = lobby.players.find((player) => player.socketId === socket.id || player.userId === user.userId);
+  const existingSpectator = lobby.spectators.find((spectator) => spectator.socketId === socket.id || spectator.userId === user.userId);
+  const game = activeGames.get(normalizedRoomId);
+
+  if (!existingPlayer && !existingSpectator && lobby.status === 'playing' && !asSpectator) {
+    if (!allowGameSpectating) {
+      return { error: 'This invite is no longer valid because the match already started' };
+    }
+
+    return {
+      error: 'Game already in progress',
+      canSpectate: true,
+      roomId: normalizedRoomId,
+      roomName: lobby.roomName
+    };
+  }
+
+  if (!['waiting', 'playing'].includes(lobby.status)) {
+    return { error: 'This room is not available right now' };
+  }
+
+  let assignment = {
+    assignedRole: existingPlayer ? 'player' : 'spectator',
+    autoSpectator: false
+  };
+
+  if (existingPlayer || existingSpectator) {
+    clearPendingLobbyDisconnect(normalizedRoomId, user.userId);
+    clearPendingGameAbandonment(normalizedRoomId, user.userId);
+    updateLobbyMemberSocket(lobby, user, socket.id);
+    const currentGamePlayer = game?.players.find((player) => player.userId === user.userId);
+    if (currentGamePlayer) {
+      currentGamePlayer.socketId = socket.id;
+      setSeatConnectionState(currentGamePlayer, 'connected');
+    }
+    socket.join(normalizedRoomId);
+    emitLobbyUpdate(io, normalizedRoomId, lobby);
+  } else if (lobby.status === 'playing') {
+    socket.join(normalizedRoomId);
+    lobby.spectators.push(createLobbyMember(user, socket.id, {
+      isReady: false,
+      role: 'spectator'
+    }));
+    assignment = {
+      assignedRole: 'spectator',
+      autoSpectator: true
+    };
+    emitLobbyUpdate(io, normalizedRoomId, lobby);
+  } else {
+    if (!allowAutoSpectator && lobby.players.length >= MAX_ACTIVE_PLAYERS) {
+      return { error: 'This room is full right now' };
+    }
+
+    socket.join(normalizedRoomId);
+    assignment = addMemberToLobby(lobby, user, socket.id);
+    emitLobbyUpdate(io, normalizedRoomId, lobby);
+  }
+
+  if (clearInvitesOnJoin) {
+    clearRoomInvitesForTarget(io, normalizedRoomId, user.userId, { status: 'joined' });
+  }
+
+  return {
+    success: true,
+    roomId: normalizedRoomId,
+    lobby: serializeLobby(lobby),
+    game: game
+      ? buildGameSessionSnapshot(normalizedRoomId, game, user.userId, { isSpectator: assignment.assignedRole === 'spectator' })
+      : null,
+    ...assignment
   };
 }
 
@@ -3620,6 +3946,11 @@ function banMemberFromActiveGame(io, roomId, lobby, game, targetUserId) {
     lobby.bannedUserIds.push(targetUserId);
   }
 
+  clearRoomInvitesForTarget(io, roomId, targetUserId, {
+    status: 'unavailable',
+    reason: 'You can no longer join this room.'
+  });
+
   if (targetSpectator) {
     removeActiveSpectatorFromLobby(lobby, targetUserId);
     removeSocketMemberFromRoom(io, roomId, targetSpectator, 'You were banned from the current game.');
@@ -4099,80 +4430,198 @@ function attachSocketManager(io) {
       });
     });
 
-    // 2. Join a Lobby
-    socket.on('join_lobby', ({ roomId, asSpectator = false } = {}, callback = () => {}) => {
+    socket.on('get_room_invite_friends', async ({ roomId } = {}, callback = () => {}) => {
       const user = socketToUser.get(socket.id);
       if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Log in to invite friends' });
 
       const normalizedRoomId = String(roomId || '').trim().toUpperCase();
       const currentRoom = findCurrentRoomForUser(user);
-      if (currentRoom && currentRoom.roomId !== normalizedRoomId) {
-        return callback({ error: 'Leave your current room before joining another one' });
+      if (!currentRoom || currentRoom.roomId !== normalizedRoomId) {
+        return callback({ error: 'You must be in this room to invite friends' });
       }
 
       const lobby = lobbies.get(normalizedRoomId);
       if (!lobby) return callback({ error: 'Lobby not found' });
-      if (lobby.bannedUserIds?.includes(user.userId)) return callback({ error: 'You are banned from this room' });
 
-      const existingPlayer = lobby.players.find((player) => player.socketId === socket.id || player.userId === user.userId);
-      const existingSpectator = lobby.spectators.find((spectator) => spectator.socketId === socket.id || spectator.userId === user.userId);
-      const game = activeGames.get(normalizedRoomId);
-
-      if (!existingPlayer && !existingSpectator && lobby.status === 'playing' && !asSpectator) {
-        return callback({
-          error: 'Game already in progress',
-          canSpectate: true,
+      try {
+        const friends = await buildRoomInviteFriendEntries(user, lobby);
+        callback({
+          success: true,
           roomId: normalizedRoomId,
-          roomName: lobby.roomName
+          friends
+        });
+      } catch (error) {
+        callback({ error: 'Unable to load your friends right now' });
+      }
+    });
+
+    socket.on('send_room_invite', async ({ roomId, targetUserId } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Log in to invite friends' });
+
+      const normalizedRoomId = String(roomId || '').trim().toUpperCase();
+      const normalizedTargetUserId = String(targetUserId || '').trim();
+      if (!normalizedRoomId) return callback({ error: 'Room code is required' });
+      if (!normalizedTargetUserId) return callback({ error: 'Choose a friend to invite' });
+
+      const currentRoom = findCurrentRoomForUser(user);
+      if (!currentRoom || currentRoom.roomId !== normalizedRoomId) {
+        return callback({ error: 'You must be in this room to invite friends' });
+      }
+
+      const lobby = lobbies.get(normalizedRoomId);
+      if (!lobby) return callback({ error: 'Lobby not found' });
+      if (lobby.status !== 'waiting') return callback({ error: 'Invites are only available before the match starts' });
+      if (lobby.players.length >= MAX_ACTIVE_PLAYERS) return callback({ error: 'The room is full right now' });
+      if (lobby.bannedUserIds?.includes(normalizedTargetUserId)) return callback({ error: 'That friend cannot join this room' });
+      if (getAllLobbyMembers(lobby).some((member) => member.userId === normalizedTargetUserId)) {
+        return callback({ error: 'That friend is already in this room' });
+      }
+
+      const account = await User.findById(user.userId);
+      if (!account) return callback({ error: 'Account not found' });
+
+      const friendIds = new Set(normalizeRelationshipIds(account.friends, String(account._id)));
+      if (!friendIds.has(normalizedTargetUserId)) {
+        return callback({ error: 'You can only invite your friends' });
+      }
+
+      if (!isAuthenticatedUserOnline(normalizedTargetUserId)) {
+        return callback({ error: 'That friend is offline right now' });
+      }
+
+      const pendingInvite = getPendingRoomInvite(normalizedRoomId, user.userId, normalizedTargetUserId);
+      if (pendingInvite) {
+        return callback({
+          error: 'An invite is already pending for that friend',
+          invite: buildRoomInvitePayload(pendingInvite)
         });
       }
 
-      if (!['waiting', 'playing'].includes(lobby.status)) {
-        return callback({ error: 'This room is not available right now' });
-      }
-
-      let assignment = {
-        assignedRole: existingPlayer ? 'player' : 'spectator',
-        autoSpectator: false
+      const invite = {
+        inviteId: createRoomInviteId(),
+        roomId: normalizedRoomId,
+        roomName: lobby.roomName || normalizedRoomId,
+        senderUserId: user.userId,
+        senderUsername: user.username || user.displayName || user.name || 'Player',
+        senderAvatarUrl: getAvatarSource(user),
+        targetUserId: normalizedTargetUserId,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + ROOM_INVITE_TTL_MS
       };
 
-      if (existingPlayer || existingSpectator) {
-        clearPendingLobbyDisconnect(normalizedRoomId, user.userId);
-        clearPendingGameAbandonment(normalizedRoomId, user.userId);
-        updateLobbyMemberSocket(lobby, user, socket.id);
-        const currentGamePlayer = game?.players.find((player) => player.userId === user.userId);
-        if (currentGamePlayer) {
-          currentGamePlayer.socketId = socket.id;
-          setSeatConnectionState(currentGamePlayer, 'connected');
-        }
-        socket.join(normalizedRoomId);
-        emitLobbyUpdate(io, normalizedRoomId, lobby);
-      } else if (lobby.status === 'playing') {
-        socket.join(normalizedRoomId);
-        lobby.spectators.push(createLobbyMember(user, socket.id, {
-          isReady: false,
-          role: 'spectator'
-        }));
-        assignment = {
-          assignedRole: 'spectator',
-          autoSpectator: true
-        };
-        emitLobbyUpdate(io, normalizedRoomId, lobby);
-      } else {
-        socket.join(normalizedRoomId);
-        assignment = addMemberToLobby(lobby, user, socket.id);
-        emitLobbyUpdate(io, normalizedRoomId, lobby);
-      }
+      pendingRoomInvites.set(invite.inviteId, invite);
+      pendingRoomInviteKeys.set(
+        getRoomInviteKey(normalizedRoomId, user.userId, normalizedTargetUserId),
+        invite.inviteId
+      );
+      scheduleRoomInviteExpiration(io, invite);
+
+      listActiveSocketIdsForUserId(normalizedTargetUserId).forEach((targetSocketId) => {
+        io.to(targetSocketId).emit('room_invite_received', buildRoomInvitePayload(invite));
+      });
+      emitRoomInviteStateChange(io, invite, 'pending', { notifyTarget: false });
 
       callback({
         success: true,
-        roomId: normalizedRoomId,
-        lobby: serializeLobby(lobby),
-        game: game
-          ? buildGameSessionSnapshot(normalizedRoomId, game, user.userId, { isSpectator: assignment.assignedRole === 'spectator' })
-          : null,
-        ...assignment
+        invite: buildRoomInvitePayload(invite),
+        message: 'Invite sent.'
       });
+    });
+
+    // 2. Join a Lobby
+    socket.on('join_lobby', ({ roomId, asSpectator = false } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      callback(joinLobbySession(io, socket, user, { roomId, asSpectator }));
+    });
+
+    socket.on('accept_room_invite', ({ inviteId } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Log in to accept room invites' });
+
+      const normalizedInviteId = String(inviteId || '').trim();
+      if (!normalizedInviteId) return callback({ error: 'Invite not found' });
+
+      const invite = pendingRoomInvites.get(normalizedInviteId);
+      if (!invite || invite.targetUserId !== user.userId) {
+        return callback({ error: 'This invite is no longer available' });
+      }
+
+      if (invite.expiresAt <= Date.now()) {
+        removeRoomInvite(io, normalizedInviteId, {
+          status: 'expired',
+          reason: 'This room invite expired.'
+        });
+        return callback({ error: 'This invite expired' });
+      }
+
+      const lobby = lobbies.get(invite.roomId);
+      if (!lobby) {
+        removeRoomInvite(io, normalizedInviteId, {
+          status: 'unavailable',
+          reason: 'This room no longer exists.'
+        });
+        return callback({ error: 'This room no longer exists' });
+      }
+
+      if (lobby.status !== 'waiting') {
+        removeRoomInvite(io, normalizedInviteId, {
+          status: 'unavailable',
+          reason: 'The match already started, so this invite is no longer valid.'
+        });
+        return callback({ error: 'This invite is no longer valid because the match already started' });
+      }
+
+      if (
+        !getAllLobbyMembers(lobby).some((member) => member.userId === user.userId)
+        && lobby.players.length >= MAX_ACTIVE_PLAYERS
+      ) {
+        return callback({ error: 'This room is full right now' });
+      }
+
+      if (lobby.bannedUserIds?.includes(user.userId)) {
+        removeRoomInvite(io, normalizedInviteId, {
+          status: 'unavailable',
+          reason: 'You are banned from this room.'
+        });
+        return callback({ error: 'You are banned from this room' });
+      }
+
+      const result = joinLobbySession(io, socket, user, {
+        roomId: invite.roomId,
+        allowAutoSpectator: false,
+        allowGameSpectating: false,
+        clearInvitesOnJoin: false
+      });
+      if (result?.error) {
+        return callback({ error: result.error });
+      }
+
+      removeRoomInvite(io, normalizedInviteId, { status: 'accepted' });
+      clearRoomInvitesForTarget(io, invite.roomId, user.userId, { status: 'joined' });
+      callback(result);
+    });
+
+    socket.on('decline_room_invite', ({ inviteId } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Log in to manage room invites' });
+
+      const normalizedInviteId = String(inviteId || '').trim();
+      const invite = pendingRoomInvites.get(normalizedInviteId);
+      if (!invite || invite.targetUserId !== user.userId) {
+        return callback({ error: 'This invite is no longer available' });
+      }
+
+      removeRoomInvite(io, normalizedInviteId, {
+        status: 'declined',
+        reason: `${user.username || user.displayName || user.name || 'A player'} declined the invite.`
+      });
+      callback({ success: true });
     });
 
     socket.on('send_reaction', ({ roomId, emojiId } = {}, callback = () => {}) => {
@@ -4636,6 +5085,11 @@ function attachSocketManager(io) {
         lobby.bannedUserIds.push(targetUserId);
       }
 
+      clearRoomInvitesForTarget(io, roomId, targetUserId, {
+        status: 'unavailable',
+        reason: 'You can no longer join this room.'
+      });
+
       const removed = removeMemberFromLobby(io, roomId, lobby, targetUserId, 'You were banned from the room');
       if (!removed) return callback({ error: 'Target player not found' });
 
@@ -4671,6 +5125,10 @@ function attachSocketManager(io) {
       lobby.status = 'playing';
       syncLobbySeatIndexes(lobby);
       ensureRulesetPermissionsForPlayers(lobby);
+      clearRoomInvitesForRoom(io, roomId, {
+        status: 'unavailable',
+        reason: 'The match started, so this invite is no longer valid.'
+      });
 
       const gameState = buildGameStateFromLobby(lobby, {
         matchMode: STANDARD_MATCH_MODE

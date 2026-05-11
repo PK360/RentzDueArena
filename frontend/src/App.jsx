@@ -163,6 +163,7 @@ const TRAINING_PLAYERS_RANGE = { min: 2, max: 6, defaultValue: 2 };
 const MATCH_MODE_STANDARD = 'standard';
 const MATCH_MODE_TRAINING = 'training';
 const RULESET_TYPE_OPTIONS = new Set(['per_round', 'end_game']);
+const ROOM_INVITE_TERMINAL_STATUSES = new Set(['accepted', 'declined', 'expired', 'unavailable', 'joined']);
 const RENTZ_METADATA_KEYS = new Set(['long_name', 'short_name', 'title', 'name', 'abbreviation', 'abbr', 'type']);
 const EDITOR_BOT_CATEGORY_DEFINITIONS = Object.freeze([
   { key: 'riskRewardBalance', label: 'Risk/reward balance' },
@@ -981,6 +982,28 @@ function createEmptyFriendState() {
     incomingRequests: [],
     outgoingRequests: []
   };
+}
+
+function upsertRoomInvite(queue, invite) {
+  if (!invite?.inviteId) {
+    return queue;
+  }
+
+  const existingIndex = queue.findIndex((entry) => entry.inviteId === invite.inviteId);
+  if (existingIndex === -1) {
+    return [...queue, invite];
+  }
+
+  const nextQueue = [...queue];
+  nextQueue[existingIndex] = {
+    ...nextQueue[existingIndex],
+    ...invite
+  };
+  return nextQueue;
+}
+
+function removeRoomInvite(queue, inviteId) {
+  return queue.filter((invite) => invite.inviteId !== inviteId);
 }
 
 function normalizeRelationshipIds(values) {
@@ -2486,6 +2509,13 @@ function App() {
   const [playerProfileLoading, setPlayerProfileLoading] = useState(false);
   const [rankLeaderboardModal, setRankLeaderboardModal] = useState(null);
   const [friendActionBusyTargetId, setFriendActionBusyTargetId] = useState('');
+  const [isRoomInviteModalOpen, setIsRoomInviteModalOpen] = useState(false);
+  const [roomInviteFriendsLoading, setRoomInviteFriendsLoading] = useState(false);
+  const [roomInviteFriendsError, setRoomInviteFriendsError] = useState('');
+  const [roomInviteFriends, setRoomInviteFriends] = useState([]);
+  const [roomInviteBusyTargetId, setRoomInviteBusyTargetId] = useState('');
+  const [incomingRoomInvites, setIncomingRoomInvites] = useState([]);
+  const [roomInviteDecisionBusyId, setRoomInviteDecisionBusyId] = useState('');
   const [chatMuteBusyTargetId, setChatMuteBusyTargetId] = useState('');
   const [pendingSpectatorJoin, setPendingSpectatorJoin] = useState(null);
   const [rulesetPreview, setRulesetPreview] = useState(null);
@@ -2508,6 +2538,8 @@ function App() {
   const latestGameStateVersionRef = useRef(0);
   const startingHandSizeRef = useRef(0);
   const activeProfileRef = useRef(null);
+  const roomIdRef = useRef('');
+  const isRoomInviteModalOpenRef = useRef(false);
   const isPublicBrowserOpenRef = useRef(false);
   const mobileNavRef = useRef(null);
   const tableStageRef = useRef(null);
@@ -2521,6 +2553,7 @@ function App() {
   const descriptionTextareaRef = useRef(null);
   const spectatorPopoverRef = useRef(null);
   const playerActionMenuRef = useRef(null);
+  const roomInvitePopoverRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const showReactionBubbleRef = useRef(() => {});
   const showChatTableBubbleRef = useRef(() => {});
@@ -2700,6 +2733,12 @@ function App() {
     setFriendState((current) => (authenticated ? current : createEmptyFriendState()));
     if (!authenticated) {
       setRankLeaderboardModal(null);
+      setIsRoomInviteModalOpen(false);
+      setRoomInviteFriends([]);
+      setRoomInviteFriendsError('');
+      setRoomInviteBusyTargetId('');
+      setIncomingRoomInvites([]);
+      setRoomInviteDecisionBusyId('');
     }
 
     if (authenticated) {
@@ -2739,6 +2778,131 @@ function App() {
       throw error;
     }
   }
+
+  function loadRoomInviteFriends({ suppressErrors = false, roomId: requestedRoomId = '' } = {}) {
+    const targetRoomId = String(requestedRoomId || roomId || '').trim().toUpperCase();
+
+    if (!isAuthenticated || !targetRoomId) {
+      setRoomInviteFriends([]);
+      setRoomInviteFriendsError('');
+      return Promise.resolve([]);
+    }
+
+    setRoomInviteFriendsLoading(true);
+    if (!suppressErrors) {
+      setRoomInviteFriendsError('');
+    }
+
+    return new Promise((resolve, reject) => {
+      socket.emit('get_room_invite_friends', { roomId: targetRoomId }, (response) => {
+        setRoomInviteFriendsLoading(false);
+
+        if (!response?.success) {
+          const error = new Error(response?.error || 'Unable to load your friends right now.');
+          if (!suppressErrors) {
+            setRoomInviteFriendsError(error.message);
+          }
+          reject(error);
+          return;
+        }
+
+        const nextFriends = Array.isArray(response?.friends) ? response.friends : [];
+        setRoomInviteFriends(nextFriends);
+        setRoomInviteFriendsError('');
+        resolve(nextFriends);
+      });
+    });
+  }
+
+  const openRoomInviteModal = () => {
+    if (!isAuthenticated || activeProfile?.guest) {
+      showTopPrompt('Log in to invite friends.', 'info');
+      return;
+    }
+
+    if (!roomId || gameStarted) {
+      return;
+    }
+
+    setIsRoomInviteModalOpen(true);
+    void loadRoomInviteFriends({ suppressErrors: false }).catch(() => {});
+  };
+
+  const handleSendRoomInvite = (targetUserId) => {
+    if (!roomId || !targetUserId) {
+      return;
+    }
+
+    setRoomInviteBusyTargetId(targetUserId);
+    socket.emit('send_room_invite', { roomId, targetUserId }, (response) => {
+      setRoomInviteBusyTargetId('');
+
+      if (response?.success) {
+        showTopPrompt(response.message || 'Invite sent.', 'success');
+        void loadRoomInviteFriends({ suppressErrors: true }).catch(() => {});
+        return;
+      }
+
+      showTopPrompt(response?.error || 'Unable to send that invite right now.', 'error');
+      void loadRoomInviteFriends({ suppressErrors: true }).catch(() => {});
+    });
+  };
+
+  const handleAcceptRoomInvite = (inviteId) => {
+    if (!inviteId) {
+      return;
+    }
+
+    setRoomInviteDecisionBusyId(inviteId);
+    socket.emit('accept_room_invite', { inviteId }, (response) => {
+      setRoomInviteDecisionBusyId('');
+
+      if (response?.success) {
+        setIncomingRoomInvites((current) => removeRoomInvite(current, inviteId));
+        updateStoredGuestRoom(response.roomId);
+        applyRestoredSession({
+          success: true,
+          roomId: response.roomId,
+          lobby: response.lobby,
+          game: response.game || null
+        });
+        showTopPrompt(`Joined ${response.lobby?.roomName || response.roomId}.`, 'success');
+        return;
+      }
+
+      if ([
+        'This invite expired',
+        'This room no longer exists',
+        'This invite is no longer valid because the match already started',
+        'You are banned from this room',
+        'This invite is no longer available'
+      ].includes(response?.error)) {
+        setIncomingRoomInvites((current) => removeRoomInvite(current, inviteId));
+      }
+
+      showTopPrompt(response?.error || 'Unable to accept that invite right now.', 'error');
+    });
+  };
+
+  const handleDeclineRoomInvite = (inviteId, { silent = false } = {}) => {
+    if (!inviteId) {
+      return;
+    }
+
+    setRoomInviteDecisionBusyId(inviteId);
+    socket.emit('decline_room_invite', { inviteId }, (response) => {
+      setRoomInviteDecisionBusyId('');
+
+      if (response?.success) {
+        setIncomingRoomInvites((current) => removeRoomInvite(current, inviteId));
+        return;
+      }
+
+      if (!silent) {
+        showTopPrompt(response?.error || 'Unable to decline that invite right now.', 'error');
+      }
+    });
+  };
 
   function refreshPublicRooms() {
     if (!activeProfile) {
@@ -3176,6 +3340,11 @@ function App() {
     setPlayerActionMenu(null);
     setPlayerProfileModal(null);
     setPlayerProfileLoading(false);
+    setIsRoomInviteModalOpen(false);
+    setRoomInviteFriends([]);
+    setRoomInviteFriendsLoading(false);
+    setRoomInviteFriendsError('');
+    setRoomInviteBusyTargetId('');
     setChatMuteBusyTargetId('');
     setPendingSpectatorJoin(null);
     setRulesetPreview(null);
@@ -3217,6 +3386,14 @@ function App() {
   }
 
   useEffect(() => {
+    roomIdRef.current = roomId;
+  }, [roomId]);
+
+  useEffect(() => {
+    isRoomInviteModalOpenRef.current = isRoomInviteModalOpen;
+  }, [isRoomInviteModalOpen]);
+
+  useEffect(() => {
     const promptTimeouts = topPromptTimeoutsRef.current;
     const gameEventTimeouts = gameEventTimeoutsRef.current;
 
@@ -3225,6 +3402,24 @@ function App() {
         window.clearTimeout(timeoutId);
       });
       gameEventTimeouts.clear();
+    };
+
+    const refreshInviteModalFriends = () => {
+      const currentRoomId = String(roomIdRef.current || '').trim().toUpperCase();
+      if (!currentRoomId || !isRoomInviteModalOpenRef.current || !activeProfileRef.current?.userId) {
+        return;
+      }
+
+      setRoomInviteFriendsLoading(true);
+      socket.emit('get_room_invite_friends', { roomId: currentRoomId }, (response) => {
+        setRoomInviteFriendsLoading(false);
+        if (!response?.success) {
+          return;
+        }
+
+        setRoomInviteFriends(Array.isArray(response?.friends) ? response.friends : []);
+        setRoomInviteFriendsError('');
+      });
     };
 
     const registerGameStateVersion = (nextVersion, { reset = false } = {}) => {
@@ -3634,6 +3829,28 @@ function App() {
       }
     });
 
+    socket.on('room_invite_received', (invite) => {
+      if (!invite?.inviteId) {
+        return;
+      }
+
+      setIncomingRoomInvites((current) => upsertRoomInvite(current, invite));
+    });
+
+    socket.on('room_invite_state_changed', (payload) => {
+      if (!payload?.inviteId) {
+        return;
+      }
+
+      if (ROOM_INVITE_TERMINAL_STATUSES.has(payload.status)) {
+        setIncomingRoomInvites((current) => removeRoomInvite(current, payload.inviteId));
+      }
+
+      if (payload.roomId && payload.roomId === roomIdRef.current && isRoomInviteModalOpenRef.current) {
+        refreshInviteModalFriends();
+      }
+    });
+
     socket.on('player_reaction', (payload) => {
       showReactionBubbleRef.current(payload || {});
     });
@@ -3663,6 +3880,8 @@ function App() {
       socket.off('live_game_session_closed');
       socket.off('game_error');
       socket.off('friend_state_update');
+      socket.off('room_invite_received');
+      socket.off('room_invite_state_changed');
       socket.off('player_reaction');
     };
     // Socket listeners are registered once; reconnect auth reads the live profile from a ref.
@@ -3752,6 +3971,34 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [playerActionMenu]);
+
+  useEffect(() => {
+    if (!isRoomInviteModalOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (roomInvitePopoverRef.current?.contains(event.target)) {
+        return;
+      }
+
+      setIsRoomInviteModalOpen(false);
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsRoomInviteModalOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isRoomInviteModalOpen]);
 
   useEffect(() => () => {
     reactionTimeoutsRef.current.forEach((timeoutId) => {
@@ -5966,6 +6213,8 @@ function App() {
   const myPlayerId = players[myIndex]?.userId || activeLobbyPlayer?.userId || activeProfile?.userId;
   const myPlayer = players[myIndex] || activeLobbyPlayer || null;
   const amIHost = inLobby && lobbyHostId === activeProfile?.userId;
+  const canInviteFriends = inLobby && !gameStarted && isAuthenticated && !activeProfile?.guest;
+  const currentRoomInvite = incomingRoomInvites[0] || null;
   const canAddGuestRoomRulesets = Boolean(activeProfile?.guest && amIHost && !gameStarted);
   const isTrainingMatch = matchMode === MATCH_MODE_TRAINING;
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
@@ -6006,6 +6255,7 @@ function App() {
     isTrainingSetupOpen ||
     trainingFinalReview ||
     playerProfileModal ||
+    currentRoomInvite ||
     rankLeaderboardModal ||
     banNoticeModal ||
     leaveMatchConfirmModal ||
@@ -6736,6 +6986,191 @@ function App() {
               })}
             </div>
           )}
+        </div>
+      </ModalShell>
+    );
+  };
+
+  const renderRoomInvitePopover = () => {
+    if (!isRoomInviteModalOpen) {
+      return null;
+    }
+
+    return (
+      <div className="absolute right-0 top-full z-[95] mt-3 w-[min(24rem,calc(100vw-2rem))] max-w-[24rem]">
+        <section className="flex max-h-[28rem] flex-col overflow-hidden rounded-[1.7rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[0_26px_64px_rgba(15,23,42,0.24)] backdrop-blur-2xl">
+          <div className="flex items-start justify-between gap-3 border-b border-[var(--glass-border)] px-4 py-4 sm:px-5">
+            <div className="min-w-0">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                Send room invite
+              </div>
+              <h4 className="mt-2 text-lg font-display font-black text-[var(--text-primary)] sm:text-xl">
+                Invite Friends
+              </h4>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadRoomInviteFriends({ suppressErrors: false }).catch(() => {})}
+                className="inline-flex items-center justify-center gap-2 rounded-[1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsRoomInviteModalOpen(false)}
+                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
+            {roomInviteFriendsLoading ? (
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+                Loading your friends...
+              </div>
+            ) : roomInviteFriendsError ? (
+              <div className="rounded-[1.4rem] border border-red-200/80 bg-red-100/80 p-5 text-sm font-semibold text-red-900">
+                {roomInviteFriendsError}
+              </div>
+            ) : roomInviteFriends.length === 0 ? (
+              <div className="rounded-[1.4rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+                You have no friends to invite yet.
+              </div>
+            ) : (
+              <div className="max-h-full overflow-y-auto pr-1" data-rentz-modal-scroll="y">
+                <div className="grid gap-3">
+                  {roomInviteFriends.map((friend) => {
+                    const isBusy = roomInviteBusyTargetId === friend.userId;
+                    return (
+                      <div
+                        key={friend.userId}
+                        className="flex flex-col gap-4 rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void openPlayerProfileModal(friend)}
+                          className="flex min-w-0 items-center gap-3 text-left"
+                        >
+                          <AvatarFace
+                            player={friend}
+                            alt={`${getPlayerName(friend)} avatar`}
+                            wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
+                            imageClassName="h-full w-full rounded-full object-cover"
+                            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(friend)}</div>
+                            <div className="mt-1 flex flex-wrap gap-2">
+                              <span className={clsx(
+                                'inline-flex rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em]',
+                                friend.isOnline
+                                  ? 'bg-emerald-100/85 text-emerald-900'
+                                  : 'bg-slate-200/85 text-slate-700'
+                              )}
+                              >
+                                {friend.isOnline ? 'Online' : 'Offline'}
+                              </span>
+                              {friend.inviteState !== 'ready'
+                                && friend.inviteState !== 'offline'
+                                && friend.inviteState !== 'already-here' ? (
+                                <span className="inline-flex rounded-full bg-[var(--surface-medium)] px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                                  {friend.inviteLabel}
+                                </span>
+                                ) : null}
+                            </div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={!friend.canInvite || isBusy}
+                          onClick={() => handleSendRoomInvite(friend.userId)}
+                          className={clsx(
+                            'rounded-[1.2rem] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] transition',
+                            friend.canInvite
+                              ? 'border border-sky-200/80 bg-sky-100/85 text-sky-900 hover:bg-sky-200/80'
+                              : 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-secondary)] opacity-80'
+                          )}
+                        >
+                          {isBusy ? 'Sending...' : friend.inviteLabel}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    );
+  };
+
+  const renderIncomingRoomInviteModal = () => {
+    if (!currentRoomInvite) {
+      return null;
+    }
+
+    const busy = roomInviteDecisionBusyId === currentRoomInvite.inviteId;
+    const inviter = currentRoomInvite.sender || {};
+    const inviterName = inviter.displayName || inviter.username || 'A friend';
+
+    return (
+      <ModalShell
+        title="Room Invite"
+        eyebrow="Join room"
+        onClose={() => handleDeclineRoomInvite(currentRoomInvite.inviteId, { silent: true })}
+        footer={(
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleDeclineRoomInvite(currentRoomInvite.inviteId)}
+              className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleAcceptRoomInvite(currentRoomInvite.inviteId)}
+              className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {busy ? 'Joining...' : 'Accept'}
+            </button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-4 rounded-[1.5rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+            <AvatarFace
+              player={inviter}
+              alt={`${inviterName} avatar`}
+              wrapperClassName="seat-avatar h-16 w-16 text-base shrink-0"
+              imageClassName="h-full w-full rounded-full object-cover"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+            />
+            <div className="min-w-0">
+              <div className="text-lg font-black text-[var(--text-primary)]">{inviterName}</div>
+              <p className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                invited you to join <span className="font-black text-[var(--text-primary)]">{currentRoomInvite.roomName || currentRoomInvite.roomId || 'a room'}</span>.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <div className="status-pill px-4 py-2">{currentRoomInvite.roomId}</div>
+            {currentRoomInvite.expiresAt ? (
+              <div className="status-pill px-4 py-2">
+                Expires {new Date(currentRoomInvite.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            ) : null}
+          </div>
         </div>
       </ModalShell>
     );
@@ -7690,10 +8125,23 @@ function App() {
                   Only these players receive cards and take turns in the match.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div ref={roomInvitePopoverRef} className="relative flex flex-wrap items-center gap-2">
                 <div className="status-pill px-4 py-2">
                   {players.length}/{MAX_ACTIVE_PLAYERS} seats used
                 </div>
+                {canInviteFriends ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={openRoomInviteModal}
+                      className="inline-flex items-center gap-2 rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    >
+                      <Users className="h-4 w-4" />
+                      Invite Friends
+                    </button>
+                    {renderRoomInvitePopover()}
+                  </>
+                ) : null}
                 {amIHost && !gameStarted && players.length < MAX_ACTIVE_PLAYERS ? (
                   <button
                     type="button"
@@ -12670,6 +13118,7 @@ endif`}
       {renderPlayerActionMenu()}
       {renderPlayerProfileModal()}
       {renderRankLeaderboardModal()}
+      {renderIncomingRoomInviteModal()}
       {renderBanNoticeModal()}
       {renderRoomStartBlockedModal()}
       {renderLeaveMatchConfirmModal()}

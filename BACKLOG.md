@@ -7,7 +7,7 @@ Use this section as the board-input layer for Trello. Each `TR-*` item below is 
 - multiplayer lobby flow and trick-taking table already exist
 - backend auth groundwork already exists, but the final sign-in approach is still open
 - ruleset parsing and isolated preview endpoints already exist
-- real account session handling, Friends, Library, and Ruleset Rater are still partial or placeholder-heavy
+- real account session handling, Friends, Library, and Rentz Forum are still partial or placeholder-heavy
 
 Suggested Trello labels:
 - Priority: `High Priority`, `Medium Priority`, `Low Priority`
@@ -46,13 +46,13 @@ Cards: `TR-28`, `TR-29`, `TR-30`, `TR-31`, `TR-36`, `TR-37`, `TR-38`, `TR-52`
 Goal: Make live matches resilient through better lobby controls, persistence, reconnect, and backend coverage.
 Cards: `TR-16`, `TR-17`, `TR-18`, `TR-19`, `TR-20`, `TR-27`, `TR-46`, `TR-50`, `TR-51`
 
-### Sprint 5 - Ruleset-Driven Gameplay and Ruleset Rater
-Goal: Connect selected rulesets to real matches and open up public sharing and rating through the Ruleset Rater.
-Cards: `TR-22`, `TR-23`, `TR-24`, `TR-25`, `TR-32`, `TR-33`, `TR-34`, `TR-35`
+### Sprint 5 - Ruleset-Driven Gameplay and Rentz Forum
+Goal: Connect selected rulesets to real matches and open up public sharing, discussion, and discovery through Rentz Forum.
+Cards: `TR-22`, `TR-23`, `TR-24`, `TR-25`, `TR-32`, `TR-33`, `TR-34`, `TR-35`, `TR-53`
 
 ### Sprint 6 - History, Discovery, Polish, and Release Readiness
 Goal: Finish public discovery, match history, notification and UX polish, then close out testing and release work.
-Cards: `TR-14`, `TR-15`, `TR-21`, `TR-26`, `TR-40`, `TR-41`, `TR-42`, `TR-47`, `TR-48`, `TR-49`
+Cards: `TR-14`, `TR-15`, `TR-21`, `TR-26`, `TR-40`, `TR-41`, `TR-42`, `TR-47`, `TR-48`, `TR-49`, `TR-54`, `TR-55`, `TR-56`, `TR-57`
 
 ### Epic A - Accounts and Session
 
@@ -322,7 +322,7 @@ Maps to: `RA-11`
 
 Trello checklist:
 - Add ruleset selection UI in the lobby.
-- Allow choosing from drafts, saved rulesets, or rulesets discovered through the Ruleset Rater.
+- Allow choosing from drafts, saved rulesets, or rulesets discovered through Rentz Forum.
 - Persist the selected ruleset with the match.
 - Show all players which ruleset is active.
 
@@ -381,7 +381,7 @@ Trello checklist:
 - Verify card dealing and trick resolution across supported player counts.
 - Confirm gameplay still behaves correctly after reconnects and lag spikes.
 
-### Epic E - Ruleset Editor, Library, and Ruleset Rater
+### Epic E - Ruleset Editor, Library, and Rentz Forum
 
 #### TR-28 - Expand the Ruleset Preview Simulator UI
 Priority: `High Priority`
@@ -425,7 +425,7 @@ Trello checklist:
 - Show authored, saved, and recently used rulesets.
 - Add empty, loading, and error states.
 - Add actions for open, edit, duplicate, and delete where appropriate.
-- Make rulesets saved from the Ruleset Rater easy to distinguish from authored ones.
+- Make rulesets saved from Rentz Forum easy to distinguish from authored ones.
 
 #### TR-32 - Add Publish and Unpublish Flow for Creator Rulesets
 Priority: `Medium Priority`
@@ -436,38 +436,38 @@ Trello checklist:
 - Add title, description, tags, and visibility controls.
 - Validate a ruleset before publication.
 - Support unpublish or republish without losing ownership history.
-- Store author and version metadata needed for Ruleset Rater display.
+- Store author and version metadata needed for Rentz Forum display.
 
-#### TR-33 - Build Ruleset Rater Browse, Filter, and Sort
+#### TR-33 - Build Rentz Forum Feed, Search, and Friend-Priority Sorting
 Priority: `Medium Priority`
-Area: `UI`, `API`, `Rulesets`
+Area: `UI`, `API`, `Rulesets`, `Social`
 Maps to: `RA-09`
 
 Trello checklist:
-- Replace the Ruleset Rater placeholder with a real browse screen.
-- Fetch public rulesets from the backend.
-- Add filters for type, tags, author, and popularity.
-- Add sorting for recent, upvoted, and downloaded.
+- Replace the ruleset-rater placeholder with a real social feed.
+- Show forum posts, thread-like comments, attached custom rulesets, and public profile previews.
+- Add search results for posts, users, and friends.
+- Sort relevant feed areas with friend-priority signals where appropriate.
 
-#### TR-34 - Add Upvote, Download, and Save Actions
+#### TR-34 - Add Likes, Bookmarks, Ratings, and Save Actions in Rentz Forum
 Priority: `Medium Priority`
-Area: `UI`, `API`, `Rulesets`
+Area: `UI`, `API`, `Rulesets`, `Social`
 Maps to: `RA-10`
 
 Trello checklist:
-- Add a one-vote-per-user upvote flow.
-- Track download counts consistently.
-- Let the user save rulesets from the Ruleset Rater into their library.
-- Reflect action counts in the Ruleset Rater UI.
+- Add like and bookmark actions for forum posts.
+- Add ratings and save-to-library actions for attached custom rulesets.
+- Keep action counts and aggregates consistent between feed and detail views.
+- Make saved rulesets from Rentz Forum easy to reopen from the library.
 
-#### TR-35 - Add Ruleset Selection From Library or Ruleset Rater Into the Lobby
+#### TR-35 - Add Ruleset Selection From Library or Rentz Forum Into the Lobby
 Priority: `Medium Priority`
 Area: `UI`, `API`, `Rulesets`
 Maps to: `RA-11`
 
 Trello checklist:
 - Open a ruleset picker from the lobby.
-- Show personal drafts, saved rulesets, and Ruleset Rater picks.
+- Show personal drafts, saved rulesets, and Rentz Forum picks.
 - Confirm the host selection to all players before start.
 - Persist the chosen ruleset with the game record.
 
@@ -506,7 +506,7 @@ Trello checklist:
 - Reduce shared state sprawl.
 - Make future UI work easier to test and review.
 
-#### TR-38 - Introduce Real Client Routing for Login, Verify, Play, Editor, Library, and Ruleset Rater
+#### TR-38 - Introduce Real Client Routing for Login, Verify, Play, Editor, Library, and Rentz Forum
 Priority: `Medium Priority`
 Area: `UI`
 Maps to: `RA-01`, `RA-07`, `RA-09`
@@ -523,7 +523,7 @@ Area: `UI`
 Maps to: `RA-02`, `RA-07`, `RA-09`, `RA-15`
 
 Trello checklist:
-- Replace placeholder copy on Friends, Library, and Ruleset Rater pages.
+- Replace placeholder copy on Friends, Library, and Rentz Forum pages.
 - Add loading skeletons, empty states, and inline error handling.
 - Make success feedback and recovery paths clear.
 - Remove confusing dead-end interactions.
@@ -537,7 +537,7 @@ Trello checklist:
 - Store unread invites and social notifications.
 - Add an inbox view and unread badge.
 - Let users dismiss or mark notifications as read.
-- Include invite, friend activity, and Ruleset Rater-related events.
+- Include invite, friend activity, and Rentz Forum-related events.
 
 #### TR-41 - Accessibility Baseline Pass
 Priority: `High Priority`
@@ -581,7 +581,7 @@ Maps to: `RA-19`
 
 Trello checklist:
 - Add rate limiting to authentication request endpoints.
-- Protect ruleset publication and Ruleset Rater actions from obvious abuse.
+- Protect ruleset publication and Rentz Forum actions from obvious abuse.
 - Consider invite spam protections.
 - Document any guest-play abuse limits.
 
@@ -603,9 +603,64 @@ Maps to: `RA-18`, `RA-22`
 
 Trello checklist:
 - Add tests for auth routes and session behavior.
-- Add tests for ruleset CRUD and Ruleset Rater endpoints.
+- Add tests for ruleset CRUD and Rentz Forum endpoints.
 - Add tests for game persistence and history retrieval.
 - Add socket-flow coverage for create, join, ready, start, play, and reconnect.
+
+#### TR-53 - Expand Rentz Forum Into a Public Social Feed
+Priority: `High Priority`
+Area: `UI`, `API`, `Rulesets`, `Social`
+Maps to: `RA-08`, `RA-09`, `RA-10`
+
+Trello checklist:
+- Build a public feed with posts, thread-like comments, likes, and bookmarks.
+- Support attached custom rulesets, ratings, and save-to-library actions from forum content.
+- Show profile previews and search results for posts, users, and friends.
+- Keep friend-priority sorting and discovery behavior aligned with the live social graph.
+
+#### TR-54 - Ship AI Bot Players and Bot Replacement
+Priority: `Medium Priority`
+Area: `API`, `UI`, `Realtime`
+Maps to: `RA-27`
+
+Trello checklist:
+- Add AI-controlled players that can fill seats and replace abandoned humans when needed.
+- Keep bot seats and abandonment replacement compatible with existing room and gameplay systems.
+- Preserve room-state clarity when bots are added, removed, or substituted.
+- Validate bot actions against the live multiplayer flow.
+
+#### TR-55 - Ship Trainer AI Mode
+Priority: `Medium Priority`
+Area: `API`, `UI`, `Realtime`
+Maps to: `RA-28`
+
+Trello checklist:
+- Support Trainer mode with adjustable difficulty.
+- Add trainer-specific feedback messages around play.
+- Keep trainer flows compatible with normal room and gameplay state.
+- Make trainer configuration understandable from the UI.
+
+#### TR-56 - Add Editor AI Ruleset Judge
+Priority: `Medium Priority`
+Area: `API`, `UI`, `Rulesets`
+Maps to: `RA-29`
+
+Trello checklist:
+- Expose editor-side AI judging for scoring and reviewing custom rulesets.
+- Return structured review output that fits the existing editor workflow.
+- Keep judge runs isolated from normal gameplay and room flows.
+- Make failure, timeout, and retry behavior clear in the editor UI.
+
+#### TR-57 - Save Matches and Resume Them Later
+Priority: `High Priority`
+Area: `API`, `UI`, `Realtime`
+Maps to: `RA-30`
+
+Trello checklist:
+- Add Save & Quit support for active matches.
+- Show saved game previews inside the Library.
+- Resume matches from saved state, including guest-to-bot conversion when needed.
+- Let players end saved games cleanly from the Library.
 
 #### TR-47 - Add Frontend or End-to-End Coverage for Core Journeys
 Priority: `High Priority`
@@ -640,10 +695,10 @@ Trello checklist:
 - Add backup and restore notes for MongoDB data.
 - Define basic recovery expectations for auth, rulesets, and game history.
 
-The detailed story backlog below remains unchanged and can be used as the higher-level product view behind the Trello cards.
+The detailed story backlog below is updated to match the Trello-ready cards and can be used as the higher-level product view behind them.
 
 
-This backlog is ordered from highest to lower priority and mixes functional and non-functional work. It is based on the current state of the project: multiplayer table play exists, the rules engine and ruleset parsing endpoints exist, while account UI, friends, library, and Ruleset Rater are still partial or placeholder-only.
+This backlog is ordered from highest to lower priority and mixes functional and non-functional work. It is based on the current state of the project: multiplayer table play exists, the rules engine and ruleset parsing endpoints exist, while account UI, friends, library, and Rentz Forum are still partial or placeholder-only.
 
 Priority guide:
 - `High Priority`: critical for a usable end-to-end product
@@ -737,41 +792,41 @@ Acceptance criteria:
 - A signed-in user can save or update a ruleset from the editor.
 - Rulesets are loaded from the backend, not only local storage.
 
-### RA-08 - Publish Rulesets to the Ruleset Rater
+### RA-08 - Publish Rulesets to Rentz Forum
 Priority: `Medium Priority`
 Type: `Functional`
 
 User story:
-As a creator, I want to publish a ruleset with title, description, tags, and visibility, so that other players can discover and use it.
+As a creator, I want to publish a ruleset with title, description, tags, and visibility, so that other players can discover, discuss, and use it through Rentz Forum.
 
 Acceptance criteria:
 - A signed-in author can publish or unpublish a ruleset.
 - Published rulesets include author, description, type, tags, and code version metadata.
 - Invalid or unsafe rulesets are rejected before publication.
 
-### RA-09 - Ruleset Rater Browse, Filter, and Sort
+### RA-09 - Rentz Forum Feed, Search, and Discovery
 Priority: `Medium Priority`
 Type: `Functional`
 
 User story:
-As a player, I want to browse and filter public rulesets, so that I can quickly find interesting game variants.
+As a player, I want a public social-feed style forum for rulesets and discussion, so that I can quickly find interesting game variants and community activity.
 
 Acceptance criteria:
-- The Ruleset Rater page shows public rulesets from the backend.
-- Players can filter by type, tags, author, and popularity.
-- Sorting supports recent, most upvoted, and most downloaded.
+- Rentz Forum shows public posts, thread-like comments, attached custom rulesets, and profile previews.
+- Players can search posts, users, and friends from the forum UI.
+- Discovery supports friend-priority sorting and other feed ordering rules defined by the product.
 
-### RA-10 - Upvote, Download, and Save Rulesets
+### RA-10 - Likes, Bookmarks, Ratings, and Save Actions in Rentz Forum
 Priority: `Medium Priority`
 Type: `Functional`
 
 User story:
-As a player, I want to upvote and save useful rulesets, so that high-quality variants rise and I can reuse them later.
+As a player, I want to like posts, bookmark interesting content, rate attached rulesets, and save useful rulesets, so that high-quality variants rise and I can reuse them later.
 
 Acceptance criteria:
-- A player can upvote a ruleset once and remove their vote later.
-- Download and save counts are updated consistently.
-- Rulesets saved from the Ruleset Rater appear in the player library.
+- A player can like or unlike forum content and bookmark it for later.
+- A player can rate attached rulesets and save them into the library.
+- Counts and saved-state indicators stay consistent across forum and library views.
 
 ### RA-11 - Select Rulesets Before Starting a Match (!!!)
 Priority: `Medium Priority`
@@ -781,7 +836,7 @@ User story:
 As a host, I want to choose the active rulesets before starting a match, so that the game uses the intended scoring and end-game behavior.
 
 Acceptance criteria:
-- A host can pick from personal drafts, saved rulesets, or Ruleset Rater rulesets in the lobby.
+- A host can pick from personal drafts, saved rulesets, or Rentz Forum rulesets in the lobby.
 - All players see which ruleset is active before the game starts.
 - The selected ruleset is persisted with the game record.
 
@@ -826,7 +881,7 @@ Priority: `Low Priority`
 Type: `Functional`
 
 User story:
-As a player, I want to see invites, friend activity, and Ruleset Rater updates in one place, so that I stay aware of relevant events without leaving the app.
+As a player, I want to see invites, friend activity, and Rentz Forum updates in one place, so that I stay aware of relevant events without leaving the app.
 
 Acceptance criteria:
 - The app records unread invites and social or content notifications.
@@ -869,6 +924,52 @@ Acceptance criteria:
 - A user can create, paste, or import a ruleset using the existing labeled ruleset format.
 - Imported rulesets are compiled or validated before they can be selected for a game.
 - Guests can use supported rulesets in the lobby and attach them to a game without needing library ownership.
+
+### RA-27 - AI Bot Players and Bot Replacement
+Priority: `Medium Priority`
+Type: `Functional`
+
+User story:
+As a player, I want AI bot players and bot replacement for abandoned seats, so that live matches can continue even when humans leave or extra seats need filling.
+
+Acceptance criteria:
+- AI-controlled players can fill seats and replace abandoned human players when the room flow allows it.
+
+### RA-28 - Trainer AI Mode
+Priority: `Medium Priority`
+Type: `Functional`
+
+User story:
+As a player, I want a training-focused AI opponent mode with adjustable difficulty and feedback, so that I can practice intentionally and improve.
+
+Acceptance criteria:
+- Trainer mode supports adjustable difficulty.
+- Trainer feedback messages appear in the intended parts of the training flow.
+- Trainer mode remains distinct from normal multiplayer matches.
+
+### RA-29 - Editor AI Ruleset Judge
+Priority: `Medium Priority`
+Type: `Functional`
+
+User story:
+As a ruleset creator, I want an editor-side AI judge that scores and reviews my custom rulesets, so that I can get guided feedback before sharing or using them.
+
+Acceptance criteria:
+- The editor can request an AI review for a custom ruleset.
+- The returned score or review is shown clearly inside the editor workflow.
+- Error, timeout, and retry behavior are handled cleanly for judge requests.
+
+### RA-30 - Save Game and Continue Later
+Priority: `High Priority`
+Type: `Functional`
+
+User story:
+As a player, I want to save a match and continue it later, so that I can leave a game without losing the table state.
+
+Acceptance criteria:
+- A player can use Save & Quit to persist the current match state.
+- The Library shows saved game previews and lets the user resume an eligible match.
+- Resume-from-saved-state support handles guest-to-bot conversion when required and lets the user end saved games from the Library.
 
 ## Non-Functional User Stories
 
