@@ -119,7 +119,11 @@ function serializeRelationshipProfile(user) {
     rankTierKey: getRankTierForElo(user.elo).key,
     accountCreatedAt: user.accountCreatedAt || user.createdAt || null,
     favouriteRulesets: Array.isArray(user.favouriteRulesets) ? user.favouriteRulesets : [],
-    rulesetLoadout: Array.isArray(user.rulesetLoadout) ? user.rulesetLoadout : []
+    rulesetLoadout: Array.isArray(user.rulesetLoadout) ? user.rulesetLoadout : [],
+    muteAllNotifications: Boolean(user.muteAllNotifications),
+    mutedForumThreadNotificationIds: Array.isArray(user.mutedForumThreadNotificationIds)
+      ? user.mutedForumThreadNotificationIds.map((value) => String(value))
+      : []
   };
 }
 

@@ -8,6 +8,7 @@ const matchHistorySchema = new mongoose.Schema({
   roundsPlayed: { type: Number, default: 0 },
   winnerUserId: { type: String, default: '' },
   winnerName: { type: String, default: '' },
+  eloApplied: { type: Boolean, default: false },
   standings: { type: [mongoose.Schema.Types.Mixed], default: [] },
   eloResults: { type: [mongoose.Schema.Types.Mixed], default: [] },
   userSummaries: { type: [mongoose.Schema.Types.Mixed], default: [] },

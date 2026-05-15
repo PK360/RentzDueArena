@@ -147,7 +147,11 @@ function serializeAccount(user) {
     friendCode: user.friendCode || null,
     friends: normalizeRelationshipIds(user.friends),
     incomingFriendRequests: normalizeRelationshipIds(user.incomingFriendRequests),
-    outgoingFriendRequests: normalizeRelationshipIds(user.outgoingFriendRequests)
+    outgoingFriendRequests: normalizeRelationshipIds(user.outgoingFriendRequests),
+    muteAllNotifications: Boolean(user.muteAllNotifications),
+    mutedForumThreadNotificationIds: Array.isArray(user.mutedForumThreadNotificationIds)
+      ? user.mutedForumThreadNotificationIds.map((value) => String(value))
+      : []
   };
 }
 

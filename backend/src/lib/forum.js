@@ -244,6 +244,12 @@ function serializeForumPost(post, viewer, { replies = [], replyCount = replies.l
   const bookmarkedBy = normalizeObjectIdArray(post.bookmarkedBy);
   const author = serializeForumAuthor(post.author);
   const friendIds = new Set(normalizeRelationshipIds(viewer?.friends));
+  const forumThreadId = getEntityId(post.rootPost) || getEntityId(post);
+  const mutedNotificationThreadIds = new Set(
+    Array.isArray(viewer?.mutedForumThreadNotificationIds)
+      ? viewer.mutedForumThreadNotificationIds.map((value) => String(value))
+      : []
+  );
 
   return {
     id: getEntityId(post),
@@ -267,6 +273,7 @@ function serializeForumPost(post, viewer, { replies = [], replyCount = replies.l
     replyCount: Math.max(0, Number(replyCount || 0)),
     likedByViewer: viewerId ? likedBy.includes(viewerId) : false,
     bookmarkedByViewer: viewerId ? bookmarkedBy.includes(viewerId) : false,
+    notificationsMutedByViewer: forumThreadId ? mutedNotificationThreadIds.has(forumThreadId) : false,
     isFriendAuthor: author?.userId ? friendIds.has(author.userId) : false,
     author,
     replies

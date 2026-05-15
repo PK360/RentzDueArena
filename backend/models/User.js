@@ -130,7 +130,7 @@ const userSchema = new mongoose.Schema({
   },
   accountCreatedAt: { type: Date, default: Date.now },
   favouriteRulesets: {
-    type: [Number],
+    type: [String],
     default: [],
     validate: {
       validator(value) {
@@ -140,7 +140,7 @@ const userSchema = new mongoose.Schema({
     }
   },
   rulesetLoadout: {
-    type: [Number],
+    type: [String],
     default: [],
     validate: {
       validator(value) {
@@ -152,6 +152,8 @@ const userSchema = new mongoose.Schema({
   lastSeenAt: { type: Date, default: null },
   passwordResetRequestedAt: { type: Date, default: null },
   sessionVersion: { type: Number, default: 0 },
+  muteAllNotifications: { type: Boolean, default: false },
+  mutedForumThreadNotificationIds: [{ type: mongoose.Schema.Types.ObjectId }],
   friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   incomingFriendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   outgoingFriendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
@@ -184,6 +186,7 @@ userSchema.pre('validate', function normalizeAccountFields(next) {
     this.outgoingFriendRequests = normalizeRelationshipReferenceList(this.outgoingFriendRequests, selfId);
     this.savedRulesets = normalizeObjectIdReferenceList(this.savedRulesets);
     this.createdRulesets = normalizeObjectIdReferenceList(this.createdRulesets);
+    this.mutedForumThreadNotificationIds = normalizeObjectIdReferenceList(this.mutedForumThreadNotificationIds);
     next();
   } catch (error) {
     next(error);

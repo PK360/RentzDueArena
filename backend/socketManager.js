@@ -3,6 +3,9 @@ const Ruleset = require('./models/Ruleset');
 const User = require('./models/User');
 const { randomFriendCode } = require('./utils/helpers');
 const { DEFAULT_PROFILE_PICTURE_PATH } = require('./src/lib/accountAssets');
+const {
+  parseRulesetReference
+} = require('./src/lib/accountRulesets');
 const { buildFriendStatePayload, normalizeRelationshipIds } = require('./src/lib/friends');
 const {
   MatchHistory,
@@ -32,6 +35,12 @@ const {
   calculateMultiplayerEloChanges,
   normalizeEloValue
 } = require('./src/lib/elo');
+const {
+  createNotification,
+  emitNotificationSnapshot,
+  getNotificationSocketRoom,
+  updateNotifications
+} = require('./src/lib/notifications');
 const { getAuthenticatedUserFromCookieHeader, serializeAccount } = require('./src/lib/auth');
 const { generateDeck, shuffle, dealCards } = require('./utils/cards');
 const {
@@ -52,6 +61,7 @@ const pendingGameAbandonments = new Map(); // roomId:userId -> timeout
 const pendingRoomInvites = new Map(); // inviteId -> invite
 const pendingRoomInviteKeys = new Map(); // roomId:senderUserId:targetUserId -> inviteId
 const pendingRoomInviteTimeouts = new Map(); // inviteId -> timeout
+const pendingResumeRejoinRequests = new Map(); // resumeRequestId -> pending request
 let nextJoinOrder = 1;
 const MIN_PLAYERS_TO_START = 2;
 const MAX_ACTIVE_PLAYERS = 6;
@@ -557,6 +567,114 @@ function deleteCustomRulesetFromLobby(lobby, rulesetId) {
   );
 
   return { definition };
+}
+
+async function syncUserLoadoutRulesetsIntoLobby(lobby, userId) {
+  if (!lobby) {
+    return;
+  }
+
+  await rebuildLobbyLoadoutRulesets(lobby);
+}
+
+async function rebuildLobbyLoadoutRulesets(lobby) {
+  if (!lobby) {
+    return;
+  }
+
+  const persistentCustomRulesets = (Array.isArray(lobby.customRulesets) ? lobby.customRulesets : [])
+    .filter((definition) => definition?.source !== 'loadout');
+  const eligibleUserIds = [...new Set(
+    (Array.isArray(lobby.players) ? lobby.players : [])
+      .filter((player) => !isBotPlayer(player) && !player?.guest && /^[a-f\d]{24}$/i.test(String(player.userId || '').trim()))
+      .map((player) => String(player.userId).trim())
+  )];
+
+  if (eligibleUserIds.length === 0) {
+    lobby.customRulesets = persistentCustomRulesets;
+    lobby.selectedRulesets = sanitizeRulesetSelections(lobby.selectedRulesets, lobby.customRulesets);
+    ensureRulesetPermissionsForPlayers(lobby);
+    return;
+  }
+
+  const accounts = await User.find({ _id: { $in: eligibleUserIds } })
+    .select('username rulesetLoadout')
+    .lean();
+  const accountsById = new Map(accounts.map((account) => [String(account._id), account]));
+  const ownerDataByRulesetId = new Map();
+
+  eligibleUserIds.forEach((userId) => {
+    const account = accountsById.get(userId);
+    if (!account) {
+      return;
+    }
+
+    const savedRulesetIds = [...new Set(
+      (Array.isArray(account.rulesetLoadout) ? account.rulesetLoadout : [])
+        .map((entry) => parseRulesetReference(entry))
+        .filter((reference) => reference?.kind === 'saved' && reference.rulesetId)
+        .map((reference) => reference.rulesetId)
+    )];
+
+    savedRulesetIds.forEach((rulesetId) => {
+      const existingOwnerData = ownerDataByRulesetId.get(rulesetId) || {
+        ownerUserIds: new Set(),
+        ownerNames: new Set()
+      };
+      existingOwnerData.ownerUserIds.add(userId);
+      existingOwnerData.ownerNames.add(account.username || 'Player');
+      ownerDataByRulesetId.set(rulesetId, existingOwnerData);
+    });
+  });
+
+  const savedRulesetIds = [...ownerDataByRulesetId.keys()];
+  if (savedRulesetIds.length === 0) {
+    lobby.customRulesets = persistentCustomRulesets;
+    lobby.selectedRulesets = sanitizeRulesetSelections(lobby.selectedRulesets, lobby.customRulesets);
+    ensureRulesetPermissionsForPlayers(lobby);
+    return;
+  }
+
+  const storedRulesets = await Ruleset.find({ _id: { $in: savedRulesetIds } })
+    .select('title shortName type code author')
+    .lean();
+  const rulesetsById = new Map(storedRulesets.map((ruleset) => [String(ruleset._id), ruleset]));
+  const loadoutCustomRulesets = savedRulesetIds.reduce((acc, rulesetId) => {
+    const storedRuleset = rulesetsById.get(rulesetId);
+    if (!storedRuleset) {
+      return acc;
+    }
+
+    const ownerData = ownerDataByRulesetId.get(rulesetId);
+    const primaryOwnerUserId = ownerData ? [...ownerData.ownerUserIds][0] : '';
+    const label = sanitizeRulesetTextField(storedRuleset.title, 'Saved Ruleset', ROOM_RULESET_NAME_MAX_LENGTH);
+    const abbreviation = sanitizeRulesetTextField(
+      storedRuleset.shortName,
+      buildRulesetAbbreviationFallback(label),
+      ROOM_RULESET_ABBREVIATION_MAX_LENGTH
+    );
+
+    acc.push({
+      id: `library_${rulesetId}`,
+      label,
+      abbreviation,
+      type: storedRuleset.type === 'end_game' ? 'end_game' : 'per_round',
+      code: String(storedRuleset.code || ''),
+      source: 'loadout',
+      sourceRulesetId: rulesetId,
+      enabledByDefault: true,
+      createdBy: String(storedRuleset.author || primaryOwnerUserId || ''),
+      ownerUserIds: ownerData ? [...ownerData.ownerUserIds] : [],
+      ownerNames: ownerData ? [...ownerData.ownerNames] : [],
+      compiled: compileRuleset(String(storedRuleset.code || ''), storedRuleset.type === 'end_game' ? 'end_game' : 'per_round')
+    });
+
+    return acc;
+  }, []);
+
+  lobby.customRulesets = [...persistentCustomRulesets, ...loadoutCustomRulesets];
+  lobby.selectedRulesets = sanitizeRulesetSelections(lobby.selectedRulesets, lobby.customRulesets);
+  ensureRulesetPermissionsForPlayers(lobby);
 }
 
 async function resolveTrainingRulesetForUser(user, selectedRulesetId) {
@@ -1215,6 +1333,37 @@ function isAuthenticatedUserOnline(userId) {
   return listActiveSocketIdsForUserId(userId).length > 0;
 }
 
+async function createRoomInviteNotification(io, invite) {
+  if (!invite?.inviteId || !invite.targetUserId) {
+    return null;
+  }
+
+  return createNotification(io, {
+    recipientUserId: invite.targetUserId,
+    type: 'game_invite',
+    dedupeKey: `game_invite:${invite.inviteId}`,
+    actor: {
+      userId: invite.senderUserId,
+      username: invite.senderUsername,
+      avatarUrl: invite.senderAvatarUrl || DEFAULT_PROFILE_PICTURE_PATH
+    },
+    entity: {
+      inviteId: invite.inviteId,
+      roomId: invite.roomId,
+      roomName: invite.roomName || '',
+      expiresAt: invite.expiresAt
+    },
+    redirect: {
+      tab: 'play',
+      roomId: invite.roomId
+    },
+    display: {
+      title: 'Game invite',
+      body: `${invite.senderUsername || 'A friend'} invited you to join ${invite.roomName || invite.roomId || 'a room'}.`
+    }
+  });
+}
+
 function emitRoomInviteStateChange(io, invite, status, {
   reason = '',
   notifyTarget = true
@@ -1239,6 +1388,32 @@ function emitRoomInviteStateChange(io, invite, status, {
   socketIds.forEach((socketId) => {
     io.to(socketId).emit('room_invite_state_changed', payload);
   });
+
+  if (notifyTarget && invite?.targetUserId) {
+    const actionState = status === 'accepted'
+      ? 'accepted'
+      : status === 'declined'
+        ? 'declined'
+        : status === 'pending'
+          ? 'pending'
+          : 'resolved';
+    void updateNotifications(
+      invite.targetUserId,
+      {
+        type: 'game_invite',
+        'entity.inviteId': invite.inviteId
+      },
+      {
+        $set: {
+          actionState,
+          readAt: actionState === 'pending' ? null : new Date(),
+          'entity.status': status,
+          'entity.statusReason': String(reason || '').trim()
+        }
+      },
+      io
+    );
+  }
 }
 
 function clearPendingRoomInviteTimeout(inviteId) {
@@ -1263,6 +1438,102 @@ function removeRoomInvite(io, inviteId, {
   clearPendingRoomInviteTimeout(inviteId);
   emitRoomInviteStateChange(io, invite, status, { reason });
   return invite;
+}
+
+function createResumeRejoinRequestId() {
+  return `resume_${randomFriendCode().toLowerCase()}_${Date.now().toString(36)}`;
+}
+
+async function createResumeRejoinRequest(io, {
+  roomId,
+  roomName,
+  savedGameId,
+  requester,
+  targetPlayer
+} = {}) {
+  if (!roomId || !savedGameId || !requester?.userId || !targetPlayer?.userId || targetPlayer.isBot) {
+    return null;
+  }
+
+  const resumeRequest = {
+    resumeRequestId: createResumeRejoinRequestId(),
+    roomId,
+    roomName: roomName || roomId,
+    savedGameId: String(savedGameId),
+    requesterUserId: requester.userId,
+    requesterUsername: requester.username || requester.displayName || requester.name || 'Player',
+    requesterAvatarUrl: getAvatarSource(requester),
+    targetUserId: targetPlayer.userId,
+    createdAt: Date.now()
+  };
+
+  pendingResumeRejoinRequests.set(resumeRequest.resumeRequestId, resumeRequest);
+  await createNotification(io, {
+    recipientUserId: targetPlayer.userId,
+    type: 'resume_rejoin',
+    dedupeKey: `resume_rejoin:${resumeRequest.resumeRequestId}`,
+    actor: {
+      userId: resumeRequest.requesterUserId,
+      username: resumeRequest.requesterUsername,
+      avatarUrl: resumeRequest.requesterAvatarUrl || DEFAULT_PROFILE_PICTURE_PATH
+    },
+    entity: {
+      resumeRequestId: resumeRequest.resumeRequestId,
+      roomId: resumeRequest.roomId,
+      roomName: resumeRequest.roomName,
+      savedGameId: resumeRequest.savedGameId
+    },
+    redirect: {
+      tab: 'play',
+      roomId: resumeRequest.roomId
+    },
+    display: {
+      title: 'Resume saved game',
+      body: `${resumeRequest.requesterUsername} resumed ${resumeRequest.roomName || 'a saved game'} and wants you to rejoin.`
+    }
+  });
+
+  return resumeRequest;
+}
+
+async function resolveResumeRejoinRequest(io, resumeRequestId, actionState = 'resolved', {
+  reason = ''
+} = {}) {
+  const request = pendingResumeRejoinRequests.get(String(resumeRequestId || '').trim());
+  if (!request) {
+    return null;
+  }
+
+  pendingResumeRejoinRequests.delete(request.resumeRequestId);
+  await updateNotifications(
+    request.targetUserId,
+    {
+      type: 'resume_rejoin',
+      'entity.resumeRequestId': request.resumeRequestId
+    },
+    {
+      $set: {
+        actionState,
+        readAt: actionState === 'pending' ? null : new Date(),
+        'entity.statusReason': String(reason || '').trim()
+      }
+    },
+    io
+  );
+
+  return request;
+}
+
+async function resolveResumeRejoinRequestsForRoom(io, roomId, {
+  actionState = 'resolved',
+  reason = ''
+} = {}) {
+  const matchingRequests = [...pendingResumeRejoinRequests.values()]
+    .filter((request) => request.roomId === roomId);
+
+  await Promise.all(
+    matchingRequests.map((request) => resolveResumeRejoinRequest(io, request.resumeRequestId, actionState, { reason }))
+  );
 }
 
 function scheduleRoomInviteExpiration(io, invite) {
@@ -2531,6 +2802,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
     lastRoundStats: null,
     lastEloResults: [],
     lastEloDeltaByUserId: {},
+    eloApplied: false,
     eloUpdateStatus: 'idle',
     eloUpdatePromise: null,
     matchHistoryStatus: 'idle',
@@ -3108,6 +3380,10 @@ function closeLiveGameSession(io, roomId, lobby, {
     reason,
     savedGame: savedGame ? serializeSavedGameForLibrary(savedGame) : null
   });
+  void resolveResumeRejoinRequestsForRoom(io, roomId, {
+    actionState: 'resolved',
+    reason
+  });
 
   getAllLobbyMembers(currentLobby).forEach((member) => {
     if (!isBotPlayer(member)) {
@@ -3118,7 +3394,7 @@ function closeLiveGameSession(io, roomId, lobby, {
   lobbies.delete(roomId);
 }
 
-async function finishBigGame(io, roomId, game) {
+async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
   if (!game || game.gameFinishInProgress || game.gameFinishedEventSent) {
     return;
   }
@@ -3144,7 +3420,15 @@ async function finishBigGame(io, roomId, game) {
       });
     }
 
-    await applyCompletedGameEloUpdates(io, roomId, game, buildStandings(game));
+    if (applyElo) {
+      await applyCompletedGameEloUpdates(io, roomId, game, buildStandings(game));
+    } else {
+      game.lastEloResults = [];
+      game.lastEloDeltaByUserId = {};
+      game.eloUpdateStatus = 'skipped';
+      game.eloUpdatePromise = null;
+    }
+    game.eloApplied = Array.isArray(game.lastEloResults) && game.lastEloResults.length > 0;
 
     const standings = buildNumberedStandings(game);
     await persistCompletedMatchHistory(game, standings);
@@ -3396,6 +3680,25 @@ async function endGameFromStats(io, roomId, game) {
   return { success: true };
 }
 
+async function endActiveGameRoom(io, roomId, game, {
+  reason = 'The host ended the game and closed the room.'
+} = {}) {
+  const lobby = lobbies.get(roomId);
+  if (!game || !lobby) {
+    return { error: 'Game not found' };
+  }
+
+  await finishBigGame(io, roomId, game, {
+    applyElo: game.phase === 'round_stats'
+  });
+  closeLiveGameSession(io, roomId, lobby, { reason });
+
+  return {
+    success: true,
+    eloApplied: Boolean(game.eloApplied)
+  };
+}
+
 async function saveAndQuitGame(io, roomId, game, ownerUserId) {
   const lobby = lobbies.get(roomId);
   if (!game || !lobby || game.phase !== 'round_stats') {
@@ -3640,6 +3943,7 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     lastRoundStats: cloneStateSnapshot(snapshot.lastRoundStats || null),
     lastEloResults: [],
     lastEloDeltaByUserId: {},
+    eloApplied: false,
     eloUpdateStatus: 'idle',
     eloUpdatePromise: null,
     matchKey: snapshot.matchKey || `${roomId}:${Date.now().toString(36)}:${randomFriendCode().toLowerCase()}`,
@@ -3701,16 +4005,31 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
 
   emitLobbyUpdate(io, roomId, lobby, `${getUserDisplayName(user)} resumed a saved game.`);
 
-  game.players.forEach((player) => {
+  for (const player of game.players) {
     if (player.userId === user.userId || player.isBot) {
-      return;
+      continue;
     }
 
-    const member = lobby.players.find((entry) => entry.userId === player.userId);
-    if (member) {
-      scheduleGameAbandonment(io, roomId, lobby, member, player);
+    if (isAuthenticatedUserOnline(player.userId)) {
+      const member = lobby.players.find((entry) => entry.userId === player.userId);
+      if (member) {
+        setSeatConnectionState(member, 'reconnecting');
+      }
+      setSeatConnectionState(player, 'reconnecting');
+      await createResumeRejoinRequest(io, {
+        roomId,
+        roomName: lobby.roomName,
+        savedGameId: savedGame._id,
+        requester: user,
+        targetPlayer: player
+      });
+    } else {
+      markPlayerAbandonedDuringGame(io, roomId, game, player.userId, {
+        forceReplacement: true,
+        replacementMessage: `${player.name || 'A player'} was unavailable and was replaced by a bot.`
+      });
     }
-  });
+  }
 
   if (game.phase === 'round_stats') {
     scheduleRoundAutoContinueIfNeeded(io, roomId, game);
@@ -3976,7 +4295,7 @@ function banMemberFromActiveGame(io, roomId, lobby, game, targetUserId) {
   };
 }
 
-function abandonUserSession(io, socket, user) {
+async function abandonUserSession(io, socket, user) {
   const currentRoom = findCurrentRoomForUser(user);
   if (!currentRoom) {
     return { success: true };
@@ -4022,6 +4341,7 @@ function abandonUserSession(io, socket, user) {
     return { success: true };
   }
 
+  await rebuildLobbyLoadoutRulesets(lobby);
   const nextHost = outcome.nextHostId ? getMemberByUserId(lobby, outcome.nextHostId) : null;
   emitLobbyUpdate(
     io,
@@ -4034,51 +4354,148 @@ function abandonUserSession(io, socket, user) {
   return { success: true };
 }
 
+async function leaveCurrentRoomForResumeJoin(io, socket, user) {
+  const currentRoom = findCurrentRoomForUser(user);
+  if (!currentRoom) {
+    return { success: true };
+  }
+
+  const { roomId, room: lobby } = currentRoom;
+  const member = getMemberByUserId(lobby, user.userId);
+  if (!member) {
+    return { success: true };
+  }
+
+  if (lobby.status !== 'waiting') {
+    const game = activeGames.get(roomId);
+    if (lobby.spectators.some((spectator) => spectator.userId === user.userId)) {
+      return leaveSpectatingDuringActiveGame(io, roomId, lobby, user);
+    }
+
+    if (game) {
+      if (isTrainingMatch(game)) {
+        return endTrainingMatchFromDeparture(io, roomId, lobby, game, member, {
+          reason: `${getUserDisplayName(member)} left to rejoin another saved game.`,
+          message: 'Training session ended.'
+        });
+      }
+
+      return abandonActiveMatch(io, roomId, lobby, game, member);
+    }
+
+    return { success: true };
+  }
+
+  const outcome = removeWaitingLobbyMember(lobby, user.userId);
+  if (!outcome) {
+    return { success: true };
+  }
+
+  clearPendingLobbyDisconnect(roomId, user.userId);
+  socket.leave(roomId);
+
+  if (outcome.shouldDeleteRoom) {
+    closeWaitingLobby(io, roomId, lobby, {
+      reason: 'The room closed because no active players remained.'
+    });
+    return { success: true };
+  }
+
+  await rebuildLobbyLoadoutRulesets(lobby);
+  const nextHost = outcome.nextHostId ? getMemberByUserId(lobby, outcome.nextHostId) : null;
+  emitLobbyUpdate(
+    io,
+    roomId,
+    lobby,
+    outcome.hostChanged && nextHost
+      ? `${getUserDisplayName(outcome.member)} left the room. ${getUserDisplayName(nextHost)} is now host.`
+      : `${getUserDisplayName(outcome.member)} left the room.`
+  );
+
+  return { success: true };
+}
+
+function attachUserToActiveResumedSeat(io, socket, user, roomId) {
+  const lobby = lobbies.get(roomId);
+  const game = activeGames.get(roomId);
+
+  if (!lobby || !game) {
+    return { error: 'That resumed game is no longer available' };
+  }
+
+  const member = updateLobbyMemberSocket(lobby, user, socket.id);
+  if (!member) {
+    return { error: 'Your saved seat is no longer available in that resumed game' };
+  }
+
+  clearPendingLobbyDisconnect(roomId, user.userId);
+  clearPendingGameAbandonment(roomId, user.userId);
+  socket.join(roomId);
+
+  const gamePlayer = game.players.find((player) => player.userId === user.userId);
+  applyLiveUserIdentityToGamePlayer(gamePlayer, user, socket.id);
+  emitLobbyUpdate(io, roomId, lobby, `${getUserDisplayName(user)} rejoined the resumed game.`);
+
+  return {
+    success: true,
+    roomId,
+    lobby: serializeLobby(lobby),
+    game: buildGameSessionSnapshot(roomId, game, user.userId, {
+      isSpectator: member.role === 'spectator'
+    })
+  };
+}
+
 function scheduleWaitingLobbyDisconnectCleanup(io, roomId, lobby, member, disconnectedSocketId) {
   clearPendingLobbyDisconnect(roomId, member.userId);
   setSeatConnectionState(member, 'reconnecting');
 
-  const timeoutId = setTimeout(() => {
-    pendingLobbyDisconnects.delete(getLobbyDisconnectKey(roomId, member.userId));
+  const timeoutId = setTimeout(async () => {
+    try {
+      pendingLobbyDisconnects.delete(getLobbyDisconnectKey(roomId, member.userId));
 
-    const currentLobby = lobbies.get(roomId);
-    if (!currentLobby || currentLobby.status !== 'waiting') {
-      return;
+      const currentLobby = lobbies.get(roomId);
+      if (!currentLobby || currentLobby.status !== 'waiting') {
+        return;
+      }
+
+      const currentMember = getMemberByUserId(currentLobby, member.userId);
+      if (!currentMember || currentMember.socketId !== disconnectedSocketId || currentMember.isConnected) {
+        return;
+      }
+
+      const outcome = removeWaitingLobbyMember(currentLobby, member.userId);
+      if (!outcome) {
+        return;
+      }
+
+      if (outcome.shouldDeleteRoom) {
+        closeWaitingLobby(io, roomId, currentLobby, {
+          reason: 'The room closed because no active players remained.'
+        });
+        return;
+      }
+
+      await rebuildLobbyLoadoutRulesets(currentLobby);
+      const nextHost = outcome.nextHostId ? getMemberByUserId(currentLobby, outcome.nextHostId) : null;
+      emitLobbyUpdate(
+        io,
+        roomId,
+        currentLobby,
+        outcome.hostChanged && nextHost
+          ? `${getUserDisplayName(outcome.member)} left the room. ${getUserDisplayName(nextHost)} is now host.`
+          : `${getUserDisplayName(outcome.member)} left the room.`
+      );
+    } catch (error) {
+      console.error(`Failed to clean up waiting lobby ${roomId} after disconnect:`, error);
     }
-
-    const currentMember = getMemberByUserId(currentLobby, member.userId);
-    if (!currentMember || currentMember.socketId !== disconnectedSocketId || currentMember.isConnected) {
-      return;
-    }
-
-    const outcome = removeWaitingLobbyMember(currentLobby, member.userId);
-    if (!outcome) {
-      return;
-    }
-
-    if (outcome.shouldDeleteRoom) {
-      closeWaitingLobby(io, roomId, currentLobby, {
-        reason: 'The room closed because no active players remained.'
-      });
-      return;
-    }
-
-    const nextHost = outcome.nextHostId ? getMemberByUserId(currentLobby, outcome.nextHostId) : null;
-    emitLobbyUpdate(
-      io,
-      roomId,
-      currentLobby,
-      outcome.hostChanged && nextHost
-        ? `${getUserDisplayName(outcome.member)} left the room. ${getUserDisplayName(nextHost)} is now host.`
-        : `${getUserDisplayName(outcome.member)} left the room.`
-    );
   }, DISCONNECT_GRACE_MS);
 
   timeoutId.unref?.();
   pendingLobbyDisconnects.set(getLobbyDisconnectKey(roomId, member.userId), timeoutId);
 }
 
-function removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member) {
+async function removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member) {
   const outcome = removeWaitingLobbyMember(lobby, member.userId);
   if (!outcome) {
     return;
@@ -4091,6 +4508,7 @@ function removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member) {
     return;
   }
 
+  await rebuildLobbyLoadoutRulesets(lobby);
   const nextHost = outcome.nextHostId ? getMemberByUserId(lobby, outcome.nextHostId) : null;
   emitLobbyUpdate(
     io,
@@ -4326,6 +4744,8 @@ function attachSocketManager(io) {
       if (authenticatedAccount) {
         const accountProfile = serializeAccount(authenticatedAccount);
         socketToUser.set(socket.id, accountProfile);
+        socket.join(getNotificationSocketRoom(accountProfile.userId));
+        void emitNotificationSnapshot(io, accountProfile.userId);
         console.log(`Socket ${socket.id} authenticated via account session as ${accountProfile.username}`);
       }
     } catch (error) {
@@ -4335,6 +4755,8 @@ function attachSocketManager(io) {
     socket.on('authenticate', (userData, callback = () => {}) => {
       const currentUser = socketToUser.get(socket.id);
       if (currentUser && !currentUser.guest) {
+        socket.join(getNotificationSocketRoom(currentUser.userId));
+        void emitNotificationSnapshot(io, currentUser.userId);
         callback({ success: true, user: currentUser, source: 'account' });
         return;
       }
@@ -4370,7 +4792,9 @@ function attachSocketManager(io) {
         return callback({ success: true });
       }
 
-      callback(abandonUserSession(io, socket, user));
+      abandonUserSession(io, socket, user)
+        .then((result) => callback(result))
+        .catch(() => callback({ error: 'Unable to leave the current room right now' }));
     });
 
     // 1. Create a Lobby
@@ -4411,9 +4835,9 @@ function attachSocketManager(io) {
       };
       syncLobbySeatIndexes(lobby);
       ensureRulesetPermissionsForPlayers(lobby);
-      socket.join(roomId);
-
       lobbies.set(roomId, lobby);
+      await syncUserLoadoutRulesetsIntoLobby(lobby, user.userId);
+      socket.join(roomId);
 
       console.log(`Room ${roomId} created by ${user.displayName || user.name}`);
       callback({ success: true, roomId, lobby: serializeLobby(lobbies.get(roomId)), assignedRole: 'player' });
@@ -4518,6 +4942,7 @@ function attachSocketManager(io) {
         invite.inviteId
       );
       scheduleRoomInviteExpiration(io, invite);
+      await createRoomInviteNotification(io, invite);
 
       listActiveSocketIdsForUserId(normalizedTargetUserId).forEach((targetSocketId) => {
         io.to(targetSocketId).emit('room_invite_received', buildRoomInvitePayload(invite));
@@ -4532,13 +4957,22 @@ function attachSocketManager(io) {
     });
 
     // 2. Join a Lobby
-    socket.on('join_lobby', ({ roomId, asSpectator = false } = {}, callback = () => {}) => {
+    socket.on('join_lobby', async ({ roomId, asSpectator = false } = {}, callback = () => {}) => {
       const user = socketToUser.get(socket.id);
       if (!user) return callback({ error: 'Not authenticated' });
-      callback(joinLobbySession(io, socket, user, { roomId, asSpectator }));
+      const result = joinLobbySession(io, socket, user, { roomId, asSpectator });
+      if (result?.success && result.assignedRole === 'player' && !user.guest) {
+        const lobby = lobbies.get(result.roomId);
+        if (lobby?.status === 'waiting') {
+          await syncUserLoadoutRulesetsIntoLobby(lobby, user.userId);
+          emitLobbyUpdate(io, result.roomId, lobby);
+          result.lobby = serializeLobby(lobby);
+        }
+      }
+      callback(result);
     });
 
-    socket.on('accept_room_invite', ({ inviteId } = {}, callback = () => {}) => {
+    socket.on('accept_room_invite', async ({ inviteId } = {}, callback = () => {}) => {
       const user = socketToUser.get(socket.id);
       if (!user) return callback({ error: 'Not authenticated' });
       if (user.guest) return callback({ error: 'Log in to accept room invites' });
@@ -4599,6 +5033,15 @@ function attachSocketManager(io) {
       });
       if (result?.error) {
         return callback({ error: result.error });
+      }
+
+      if (result.assignedRole === 'player') {
+        const currentLobby = lobbies.get(result.roomId);
+        if (currentLobby?.status === 'waiting') {
+          await syncUserLoadoutRulesetsIntoLobby(currentLobby, user.userId);
+          emitLobbyUpdate(io, result.roomId, currentLobby);
+          result.lobby = serializeLobby(currentLobby);
+        }
       }
 
       removeRoomInvite(io, normalizedInviteId, { status: 'accepted' });
@@ -4786,7 +5229,7 @@ function attachSocketManager(io) {
       callback({ success: true, lobby: serializeLobby(lobby), isReady: player.isReady });
     });
 
-    socket.on('set_lobby_role', ({ roomId, role }, callback = () => {}) => {
+    socket.on('set_lobby_role', async ({ roomId, role }, callback = () => {}) => {
       const lobby = lobbies.get(roomId);
       if (!lobby) return callback({ error: 'Lobby not found' });
       if (lobby.status !== 'waiting') return callback({ error: 'Game already in progress' });
@@ -4803,6 +5246,8 @@ function attachSocketManager(io) {
         lobby.hostId = getNextHostId(lobby);
       }
 
+      await rebuildLobbyLoadoutRulesets(lobby);
+
       if (roleUpdate.changed) {
         emitLobbyUpdate(io, roomId, lobby);
       }
@@ -4814,7 +5259,7 @@ function attachSocketManager(io) {
       });
     });
 
-    socket.on('leave_lobby', ({ roomId }, callback = () => {}) => {
+    socket.on('leave_lobby', async ({ roomId }, callback = () => {}) => {
       const lobby = lobbies.get(roomId);
       const user = socketToUser.get(socket.id);
 
@@ -4839,6 +5284,7 @@ function attachSocketManager(io) {
         });
       }
 
+      await rebuildLobbyLoadoutRulesets(lobby);
       const nextHost = outcome.nextHostId ? getMemberByUserId(lobby, outcome.nextHostId) : null;
       emitLobbyUpdate(
         io,
@@ -5041,7 +5487,7 @@ function attachSocketManager(io) {
       callback({ success: true, lobby: serializeLobby(lobby) });
     });
 
-    socket.on('kick_member', ({ roomId, targetUserId }, callback = () => {}) => {
+    socket.on('kick_member', async ({ roomId, targetUserId }, callback = () => {}) => {
       const lobby = lobbies.get(roomId);
       const user = socketToUser.get(socket.id);
 
@@ -5054,11 +5500,12 @@ function attachSocketManager(io) {
       const removed = removeMemberFromLobby(io, roomId, lobby, targetUserId, 'You were kicked from the room');
       if (!removed) return callback({ error: 'Target player not found' });
 
+      await rebuildLobbyLoadoutRulesets(lobby);
       emitLobbyUpdate(io, roomId, lobby, `${getUserDisplayName(removed)} was kicked`);
       callback({ success: true, lobby: serializeLobby(lobby) });
     });
 
-    socket.on('ban_member', ({ roomId, targetUserId }, callback = () => {}) => {
+    socket.on('ban_member', async ({ roomId, targetUserId }, callback = () => {}) => {
       const lobby = lobbies.get(roomId);
       const game = activeGames.get(roomId);
       const user = socketToUser.get(socket.id);
@@ -5093,6 +5540,7 @@ function attachSocketManager(io) {
       const removed = removeMemberFromLobby(io, roomId, lobby, targetUserId, 'You were banned from the room');
       if (!removed) return callback({ error: 'Target player not found' });
 
+      await rebuildLobbyLoadoutRulesets(lobby);
       emitLobbyUpdate(io, roomId, lobby, `${getUserDisplayName(removed)} was banned`);
       callback({ success: true, lobby: serializeLobby(lobby) });
     });
@@ -5236,6 +5684,63 @@ function attachSocketManager(io) {
       callback(result);
     });
 
+    socket.on('host_leave_match', async ({ roomId, mode } = {}, callback = () => {}) => {
+      const lobby = lobbies.get(roomId);
+      const game = activeGames.get(roomId);
+      const user = socketToUser.get(socket.id);
+      if (!lobby) return callback({ error: 'Lobby not found' });
+      if (!game) return callback({ error: 'Game not found' });
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (game.hostId !== user.userId) return callback({ error: 'Only the host can choose this leave action' });
+      if (isTrainingMatch(game)) return callback({ error: 'Training sessions can only be ended normally' });
+
+      const selectedMode = mode === 'end_room' ? 'end_room' : 'transfer_and_leave';
+      if (selectedMode === 'end_room') {
+        return callback(await endActiveGameRoom(io, roomId, game, {
+          reason: game.phase === 'round_stats'
+            ? 'The host ended the game and closed the room between rounds.'
+            : 'The host ended the game and closed the room mid-round.'
+        }));
+      }
+
+      const member = getMemberByUserId(lobby, user.userId);
+      if (!member) {
+        return callback({ error: 'You are no longer in this match' });
+      }
+
+      const nextHostId = getNextHostCandidateId(lobby, { excludeUserId: user.userId });
+      if (!nextHostId) {
+        return callback(await endActiveGameRoom(io, roomId, game, {
+          reason: 'The host left and no other real players remained, so the room closed.'
+        }));
+      }
+
+      lobby.hostId = nextHostId;
+      game.hostId = nextHostId;
+
+      const result = lobby.players.some((player) => player.userId === user.userId)
+        ? abandonActiveMatch(io, roomId, lobby, game, member)
+        : leaveSpectatingDuringActiveGame(io, roomId, lobby, user);
+      if (result?.error) {
+        return callback(result);
+      }
+
+      const nextHost = getMemberByUserId(lobby, nextHostId);
+      if (nextHost) {
+        emitGameActivity(io, roomId, `${getUserDisplayName(nextHost)} is now host.`, {
+          tone: 'info'
+        });
+      }
+
+      callback({
+        ...result,
+        nextHostId,
+        message: nextHost
+          ? `You left the match. ${getUserDisplayName(nextHost)} is now host.`
+          : (result.message || 'You left the match.')
+      });
+    });
+
     socket.on('save_and_quit', async ({ roomId }, callback = () => {}) => {
       const game = activeGames.get(roomId);
       const user = socketToUser.get(socket.id);
@@ -5300,6 +5805,79 @@ function attachSocketManager(io) {
       callback(result);
     });
 
+    socket.on('accept_resume_rejoin', async ({ resumeRequestId } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Only logged-in accounts can rejoin saved games' });
+
+      const request = pendingResumeRejoinRequests.get(String(resumeRequestId || '').trim());
+      if (!request || request.targetUserId !== user.userId) {
+        return callback({ error: 'That rejoin request is no longer available' });
+      }
+
+      const lobby = lobbies.get(request.roomId);
+      const game = activeGames.get(request.roomId);
+      const currentRoom = findCurrentRoomForUser(user);
+
+      if (!lobby || !game) {
+        await resolveResumeRejoinRequest(io, request.resumeRequestId, 'resolved', {
+          reason: 'The resumed game is no longer available.'
+        });
+        return callback({ error: 'That resumed game is no longer available' });
+      }
+
+      if (!game.players.some((player) => player.userId === user.userId && !isBotPlayer(player))) {
+        await resolveResumeRejoinRequest(io, request.resumeRequestId, 'resolved', {
+          reason: 'Your original seat was already replaced.'
+        });
+        return callback({ error: 'Your original seat is no longer available in that resumed game' });
+      }
+
+      if (currentRoom && currentRoom.roomId !== request.roomId) {
+        const leaveResult = await leaveCurrentRoomForResumeJoin(io, socket, user);
+        if (leaveResult?.error) {
+          return callback(leaveResult);
+        }
+      }
+
+      const attachResult = attachUserToActiveResumedSeat(io, socket, user, request.roomId);
+      if (attachResult.error) {
+        await resolveResumeRejoinRequest(io, request.resumeRequestId, 'resolved', {
+          reason: attachResult.error
+        });
+        return callback({ error: attachResult.error });
+      }
+
+      await resolveResumeRejoinRequest(io, request.resumeRequestId, 'accepted', {
+        reason: 'Player rejoined the resumed game.'
+      });
+      callback(attachResult);
+    });
+
+    socket.on('decline_resume_rejoin', async ({ resumeRequestId } = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) return callback({ error: 'Not authenticated' });
+      if (user.guest) return callback({ error: 'Only logged-in accounts can manage saved-game rejoin requests' });
+
+      const request = pendingResumeRejoinRequests.get(String(resumeRequestId || '').trim());
+      if (!request || request.targetUserId !== user.userId) {
+        return callback({ error: 'That rejoin request is no longer available' });
+      }
+
+      const game = activeGames.get(request.roomId);
+      if (game && game.players.some((player) => player.userId === user.userId && !isBotPlayer(player))) {
+        markPlayerAbandonedDuringGame(io, request.roomId, game, user.userId, {
+          forceReplacement: true,
+          replacementMessage: `${user.username || user.displayName || user.name || 'A player'} declined to rejoin and was replaced by a bot.`
+        });
+      }
+
+      await resolveResumeRejoinRequest(io, request.resumeRequestId, 'declined', {
+        reason: 'Player declined to rejoin the resumed game.'
+      });
+      callback({ success: true });
+    });
+
     // 5. Play Card
     socket.on('play_card', ({ roomId, card }) => {
       const user = socketToUser.get(socket.id);
@@ -5327,7 +5905,9 @@ function attachSocketManager(io) {
 
           if (lobby.status === 'waiting') {
             if (user.guest) {
-              removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member);
+              void removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member).catch((error) => {
+                console.error(`Failed to remove waiting lobby member ${member.userId} from ${roomId}:`, error);
+              });
             } else {
               scheduleWaitingLobbyDisconnectCleanup(io, roomId, lobby, member, socket.id);
               ensureRulesetPermissionsForPlayers(lobby);

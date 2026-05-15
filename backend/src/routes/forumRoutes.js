@@ -12,6 +12,9 @@ const {
   serializeSavedGameForLibrary
 } = require('../lib/gamePersistence');
 const {
+  createNotification
+} = require('../lib/notifications');
+const {
   buildForumThread,
   escapeRegex,
   getEntityId,
@@ -303,6 +306,31 @@ router.post('/posts', async (req, res, next) => {
       bookmarkedBy: []
     });
 
+    if (parentPost && String(parentPost.author) !== String(user._id)) {
+      const forumThreadId = getEntityId(parentPost.rootPost) || String(parentPost._id);
+      await createNotification(req.app.get('io'), {
+        recipientUserId: parentPost.author,
+        type: 'forum_comment',
+        dedupeKey: `forum_comment:${String(parentPost.author)}:${String(post._id)}`,
+        actor: user,
+        entity: {
+          forumPostId: String(post._id),
+          parentPostId: String(parentPost._id),
+          rootPostId: forumThreadId
+        },
+        redirect: {
+          tab: 'ruleset-rater',
+          postId: String(post._id),
+          rootPostId: forumThreadId
+        },
+        display: {
+          title: parentPost.parentPost ? 'New reply on your comment' : 'New comment on your post',
+          body: `${user.username} replied in your Rentz Forum thread.`
+        },
+        forumThreadId
+      });
+    }
+
     res.status(201).json({
       ok: true,
       post: await loadSerializedPost(post._id, user)
@@ -541,6 +569,36 @@ router.post('/posts/:postId/rate-ruleset', async (req, res, next) => {
 
     await ruleset.save();
 
+    const populatedPost = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId }))
+      .select('author rootPost')
+      .lean();
+    const recipientUserId = getEntityId(populatedPost?.author);
+    const forumThreadId = getEntityId(populatedPost?.rootPost) || postId;
+    if (recipientUserId) {
+      await createNotification(req.app.get('io'), {
+        recipientUserId,
+        type: 'forum_rating',
+        dedupeKey: `forum_rating:${recipientUserId}:${postId}:${userId}`,
+        actor: user,
+        entity: {
+          forumPostId: postId,
+          rulesetId: String(ruleset._id),
+          rootPostId: forumThreadId,
+          ratingValue
+        },
+        redirect: {
+          tab: 'ruleset-rater',
+          postId,
+          rootPostId: forumThreadId
+        },
+        display: {
+          title: 'Ruleset rating updated',
+          body: `${user.username} rated your attached ruleset ${ratingValue.toFixed(1)} stars.`
+        },
+        forumThreadId
+      });
+    }
+
     res.json({
       ok: true,
       post: await loadSerializedPost(postId, user)
@@ -550,6 +608,41 @@ router.post('/posts/:postId/rate-ruleset', async (req, res, next) => {
       return res.status(400).json({ error: error.message });
     }
 
+    next(error);
+  }
+});
+
+router.post('/posts/:postId/mute-notifications', async (req, res, next) => {
+  try {
+    const user = await requireAuthenticatedAccount(req, res, 'You must be logged in to mute forum notifications');
+    if (!user) {
+      return;
+    }
+
+    const postId = readPostId(req.params.postId);
+    if (!mongoose.isValidObjectId(postId)) {
+      return res.status(400).json({ error: 'Forum post is invalid' });
+    }
+
+    const post = await ForumPost.findOne(buildVisibleForumFilter({ _id: postId })).select('rootPost');
+    if (!post) {
+      return res.status(404).json({ error: 'Forum post not found' });
+    }
+
+    const threadId = getEntityId(post.rootPost) || String(post._id);
+    const currentThreadIds = normalizeObjectIdArray(user.mutedForumThreadNotificationIds);
+    const muted = !currentThreadIds.includes(threadId);
+    user.mutedForumThreadNotificationIds = muted
+      ? [...currentThreadIds, threadId]
+      : currentThreadIds.filter((value) => value !== threadId);
+    await user.save();
+
+    res.json({
+      ok: true,
+      muted,
+      threadId
+    });
+  } catch (error) {
     next(error);
   }
 });

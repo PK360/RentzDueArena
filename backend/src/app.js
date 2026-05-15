@@ -7,6 +7,7 @@ const authRoutes = require('./routes/authRoutes');
 const forumRoutes = require('./routes/forumRoutes');
 const rulesetRoutes = require('./routes/rulesetRoutes');
 const gameRoutes = require('./routes/gameRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 function createApp() {
   const app = express();
@@ -25,6 +26,7 @@ function createApp() {
   app.use('/api/forum', forumRoutes);
   app.use('/api/rulesets', rulesetRoutes);
   app.use('/api/games', gameRoutes);
+  app.use('/api/notifications', notificationRoutes);
 
   app.use((error, _req, res, _next) => {
     console.error(error);

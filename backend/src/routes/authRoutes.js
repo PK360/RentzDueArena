@@ -27,6 +27,11 @@ const {
   getRankLeaderboardForUserId
 } = require('../lib/elo');
 const {
+  createNotification,
+  emitNotificationSnapshot,
+  updateNotifications
+} = require('../lib/notifications');
+const {
   clearSessionCookie,
   getAuthenticatedUserFromRequest,
   hashPassword,
@@ -181,6 +186,10 @@ function normalizeAccountUpdatePayload(body = {}) {
       maxItems: MAX_RULESET_LOADOUT,
       fieldName: 'rulesetLoadout'
     });
+  }
+
+  if (hasField('muteAllNotifications')) {
+    payload.muteAllNotifications = Boolean(body.muteAllNotifications);
   }
 
   return payload;
@@ -392,6 +401,10 @@ router.patch('/me', async (req, res, next) => {
       user.rulesetLoadout = payload.rulesetLoadout;
     }
 
+    if (Object.prototype.hasOwnProperty.call(payload, 'muteAllNotifications')) {
+      user.muteAllNotifications = Boolean(payload.muteAllNotifications);
+    }
+
     if (payload.profilePictureUpload) {
       user.profilePicture = await saveUploadedAccountImage(
         payload.profilePictureUpload,
@@ -534,6 +547,19 @@ router.post('/friends/request', async (req, res, next) => {
     await user.save();
     await targetUser.save();
     await syncFriendStateForUsers(req, [user, targetUser]);
+    await createNotification(req.app.get('io'), {
+      recipientUserId: targetUser._id,
+      type: 'friend_request',
+      dedupeKey: `friend_request:${targetUserId}:${String(user._id)}`,
+      actor: user,
+      entity: {
+        friendUserId: String(user._id)
+      },
+      display: {
+        title: 'Incoming friend request',
+        body: `${user.username} sent you a friend request.`
+      }
+    });
 
     res.json(await buildFriendActionResponse(user, targetUser, 'Friend request sent.'));
   } catch (error) {
@@ -587,6 +613,21 @@ router.post('/friends/accept', async (req, res, next) => {
     await user.save();
     await targetUser.save();
     await syncFriendStateForUsers(req, [user, targetUser]);
+    await updateNotifications(
+      user._id,
+      {
+        type: 'friend_request',
+        'entity.friendUserId': targetUserId
+      },
+      {
+        $set: {
+          actionState: 'accepted',
+          readAt: new Date()
+        }
+      },
+      req.app.get('io')
+    );
+    await emitNotificationSnapshot(req.app.get('io'), targetUser._id);
 
     res.json(await buildFriendActionResponse(user, targetUser, 'Friend request accepted.'));
   } catch (error) {
@@ -635,6 +676,21 @@ router.post('/friends/reject', async (req, res, next) => {
     await user.save();
     await targetUser.save();
     await syncFriendStateForUsers(req, [user, targetUser]);
+    await updateNotifications(
+      user._id,
+      {
+        type: 'friend_request',
+        'entity.friendUserId': targetUserId
+      },
+      {
+        $set: {
+          actionState: 'declined',
+          readAt: new Date()
+        }
+      },
+      req.app.get('io')
+    );
+    await emitNotificationSnapshot(req.app.get('io'), targetUser._id);
 
     res.json(await buildFriendActionResponse(user, targetUser, 'Friend request rejected.'));
   } catch (error) {
@@ -736,6 +792,21 @@ router.post('/friends/cancel', async (req, res, next) => {
     await user.save();
     await targetUser.save();
     await syncFriendStateForUsers(req, [user, targetUser]);
+    await updateNotifications(
+      targetUser._id,
+      {
+        type: 'friend_request',
+        'entity.friendUserId': String(user._id)
+      },
+      {
+        $set: {
+          actionState: 'resolved',
+          readAt: new Date()
+        }
+      },
+      req.app.get('io')
+    );
+    await emitNotificationSnapshot(req.app.get('io'), user._id);
 
     res.json(await buildFriendActionResponse(user, targetUser, 'Friend request canceled.'));
   } catch (error) {

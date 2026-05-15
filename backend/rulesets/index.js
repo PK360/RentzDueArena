@@ -100,6 +100,9 @@ function serializeRulesetDefinition(definition) {
     abbreviation: definition.abbreviation,
     type: definition.type,
     source: definition.source,
+    sourceRulesetId: definition.sourceRulesetId || '',
+    ownerUserIds: Array.isArray(definition.ownerUserIds) ? [...definition.ownerUserIds] : [],
+    ownerNames: Array.isArray(definition.ownerNames) ? [...definition.ownerNames] : [],
     code: buildRulesetPreviewCode(definition),
     composite: definition.composite || null,
     enabledByDefault: Boolean(definition.enabledByDefault)

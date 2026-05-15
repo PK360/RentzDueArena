@@ -215,6 +215,7 @@ function buildMatchHistoryDocument({ game, standings = [], savedGameId = null })
     roundsPlayed: Number(game.roundNumber || 0),
     winnerUserId: standings[0]?.userId || '',
     winnerName: standings[0]?.name || '',
+    eloApplied: Boolean(game.eloApplied),
     standings: cloneJsonSafe(standings),
     eloResults: cloneJsonSafe(eloResults),
     userSummaries,
@@ -294,7 +295,8 @@ async function finalizeEndedSavedGame(savedGame) {
       matchKey: savedGame.matchKey,
       roomName: savedGame.roomName || savedGame.snapshot?.roomName || 'Saved Match',
       roundNumber: Number(savedGame.roundsFinished || savedGame.snapshot?.roundNumber || 0),
-      lastEloResults: eloResults
+      lastEloResults: eloResults,
+      eloApplied: eloResults.length > 0
     },
     standings,
     savedGameId: savedGame._id
@@ -316,6 +318,7 @@ function serializeMatchHistoryForLibrary(matchHistory, viewerUserId) {
     roundsPlayed: Number(matchHistory.roundsPlayed || 0),
     winnerUserId: matchHistory.winnerUserId || '',
     winnerName: matchHistory.winnerName || '',
+    eloApplied: Boolean(matchHistory.eloApplied),
     standings: cloneJsonSafe(matchHistory.standings || []),
     viewerSummary: cloneJsonSafe(viewerSummary || null)
   };

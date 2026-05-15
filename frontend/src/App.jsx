@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  Bell,
+  BellOff,
   Ban,
   BarChart3,
   Bot,
@@ -134,6 +136,8 @@ const ACCOUNT_RULESET_OPTIONS = ROOM_RULESET_OPTIONS.map((option, index) => ({
   ...option,
   index
 }));
+const DEFAULT_RULESET_REF_PREFIX = 'default:';
+const SAVED_RULESET_REF_PREFIX = 'saved:';
 const DEFAULT_REGISTER_PROFILE_PREVIEW = '/media/defaults/default-profile.gif';
 const DEFAULT_REGISTER_BANNER_PREVIEW = '/media/defaults/default-banner.jpeg';
 const EMOJI_REACTION_REGISTRY = Object.freeze([
@@ -154,6 +158,40 @@ const DEFAULT_ROOM_RULESET_SELECTIONS = Object.freeze(
     return acc;
   }, {})
 );
+
+function buildDefaultRulesetRef(index) {
+  return `${DEFAULT_RULESET_REF_PREFIX}${Number(index)}`;
+}
+
+function buildSavedRulesetRef(rulesetId) {
+  return `${SAVED_RULESET_REF_PREFIX}${String(rulesetId || '').trim()}`;
+}
+
+function parseRulesetSelectionRef(value) {
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value.trim()))) {
+    const index = Number(value);
+    return Number.isInteger(index) && index >= 0
+      ? { kind: 'default', index, selectionId: buildDefaultRulesetRef(index) }
+      : null;
+  }
+
+  const normalizedValue = String(value || '').trim();
+  if (normalizedValue.startsWith(DEFAULT_RULESET_REF_PREFIX)) {
+    const index = Number(normalizedValue.slice(DEFAULT_RULESET_REF_PREFIX.length));
+    return Number.isInteger(index) && index >= 0
+      ? { kind: 'default', index, selectionId: buildDefaultRulesetRef(index) }
+      : null;
+  }
+
+  if (normalizedValue.startsWith(SAVED_RULESET_REF_PREFIX)) {
+    const rulesetId = normalizedValue.slice(SAVED_RULESET_REF_PREFIX.length).trim();
+    return rulesetId
+      ? { kind: 'saved', rulesetId, selectionId: buildSavedRulesetRef(rulesetId) }
+      : null;
+  }
+
+  return null;
+}
 const DEFAULT_ROOM_VISIBILITY = 'public';
 const TURN_TIMER_RANGE = { min: 15, max: 300, defaultValue: 45 };
 const DEFAULT_ACCOUNT_ELO = 500;
@@ -591,6 +629,14 @@ function createAccountEditForm(user = null) {
     profilePicturePreview: user?.avatarUrl || DEFAULT_REGISTER_PROFILE_PREVIEW,
     bannerFile: null,
     bannerPreview: user?.banner || DEFAULT_REGISTER_BANNER_PREVIEW
+  };
+}
+
+function createEmptyNotificationsState() {
+  return {
+    items: [],
+    unreadCount: 0,
+    loading: false
   };
 }
 
@@ -2479,6 +2525,10 @@ function App() {
   const [accountRulesetPicker, setAccountRulesetPicker] = useState(null);
   const [accountRulesetBusyField, setAccountRulesetBusyField] = useState('');
   const [accountImagePreview, setAccountImagePreview] = useState(null);
+  const [notificationsState, setNotificationsState] = useState(() => createEmptyNotificationsState());
+  const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false);
+  const [notificationCategory, setNotificationCategory] = useState('all');
+  const [notificationActionBusyId, setNotificationActionBusyId] = useState('');
 
   const [gameStarted, setGameStarted] = useState(false);
   const [isSpectatingGame, setIsSpectatingGame] = useState(false);
@@ -2535,6 +2585,7 @@ function App() {
   const [banNoticeModal, setBanNoticeModal] = useState(null);
   const [roomStartBlockedModal, setRoomStartBlockedModal] = useState(null);
   const [leaveMatchConfirmModal, setLeaveMatchConfirmModal] = useState(null);
+  const [hostLeaveChoiceModal, setHostLeaveChoiceModal] = useState(null);
   const [savedGameRulesetTableModal, setSavedGameRulesetTableModal] = useState(null);
   const [emojiPickerState, setEmojiPickerState] = useState(null);
   const [activeReactions, setActiveReactions] = useState({});
@@ -2567,6 +2618,7 @@ function App() {
   const spectatorPopoverRef = useRef(null);
   const playerActionMenuRef = useRef(null);
   const roomInvitePopoverRef = useRef(null);
+  const notificationButtonRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const showReactionBubbleRef = useRef(() => {});
   const showChatTableBubbleRef = useRef(() => {});
@@ -2744,6 +2796,7 @@ function App() {
     setIsAuthenticated(authenticated);
     setUserProfile(authenticated ? user : null);
     setFriendState((current) => (authenticated ? current : createEmptyFriendState()));
+    setNotificationsState((current) => (authenticated ? current : createEmptyNotificationsState()));
     if (!authenticated) {
       setRankLeaderboardModal(null);
       setIsRoomInviteModalOpen(false);
@@ -2789,6 +2842,93 @@ function App() {
         setAuthFeedback(error.message || 'Unable to load friend requests right now.');
       }
       throw error;
+    }
+  }
+
+  async function loadNotifications({ suppressErrors = false } = {}) {
+    if (!isAuthenticated) {
+      const emptyState = createEmptyNotificationsState();
+      setNotificationsState(emptyState);
+      return emptyState;
+    }
+
+    setNotificationsState((current) => ({
+      ...current,
+      loading: true
+    }));
+
+    try {
+      const response = await requestJson('/api/notifications');
+      const nextState = {
+        items: Array.isArray(response?.notifications) ? response.notifications : [],
+        unreadCount: Number(response?.unreadCount || 0),
+        loading: false
+      };
+      setNotificationsState(nextState);
+      return nextState;
+    } catch (error) {
+      setNotificationsState((current) => ({
+        ...current,
+        loading: false
+      }));
+      if (!suppressErrors) {
+        showTopPrompt(error.message || 'Unable to load notifications right now.', 'error');
+      }
+      throw error;
+    }
+  }
+
+  async function markNotificationsRead(notificationIds = []) {
+    const normalizedIds = (Array.isArray(notificationIds) ? notificationIds : []).filter(Boolean);
+    if (!isAuthenticated || normalizedIds.length === 0) {
+      return;
+    }
+
+    setNotificationsState((current) => {
+      const nextItems = current.items.map((notification) => (
+        normalizedIds.includes(notification.id)
+          ? { ...notification, read: true, readAt: notification.readAt || new Date().toISOString() }
+          : notification
+      ));
+
+      return {
+        ...current,
+        items: nextItems,
+        unreadCount: nextItems.filter((notification) => !notification.read).length
+      };
+    });
+
+    try {
+      await requestJson('/api/notifications/read', {
+        method: 'POST',
+        body: JSON.stringify({ notificationIds: normalizedIds })
+      });
+    } catch {
+      // Socket snapshots or a later refresh will reconcile any mismatch.
+    }
+  }
+
+  async function markAllNotificationsRead() {
+    if (!isAuthenticated || notificationsState.items.length === 0) {
+      return;
+    }
+
+    setNotificationsState((current) => ({
+      ...current,
+      items: current.items.map((notification) => ({
+        ...notification,
+        read: true,
+        readAt: notification.readAt || new Date().toISOString()
+      })),
+      unreadCount: 0
+    }));
+
+    try {
+      await requestJson('/api/notifications/read-all', {
+        method: 'POST'
+      });
+    } catch {
+      // Socket snapshots or a later refresh will reconcile any mismatch.
     }
   }
 
@@ -2863,11 +3003,12 @@ function App() {
 
   const handleAcceptRoomInvite = (inviteId) => {
     if (!inviteId) {
-      return;
+      return Promise.resolve(false);
     }
 
     setRoomInviteDecisionBusyId(inviteId);
-    socket.emit('accept_room_invite', { inviteId }, (response) => {
+    return new Promise((resolve) => {
+      socket.emit('accept_room_invite', { inviteId }, (response) => {
       setRoomInviteDecisionBusyId('');
 
       if (response?.success) {
@@ -2880,6 +3021,7 @@ function App() {
           game: response.game || null
         });
         showTopPrompt(`Joined ${response.lobby?.roomName || response.roomId}.`, 'success');
+        resolve(true);
         return;
       }
 
@@ -2894,27 +3036,123 @@ function App() {
       }
 
       showTopPrompt(response?.error || 'Unable to accept that invite right now.', 'error');
+      resolve(false);
+    });
     });
   };
 
   const handleDeclineRoomInvite = (inviteId, { silent = false } = {}) => {
     if (!inviteId) {
-      return;
+      return Promise.resolve(false);
     }
 
     setRoomInviteDecisionBusyId(inviteId);
-    socket.emit('decline_room_invite', { inviteId }, (response) => {
+    return new Promise((resolve) => {
+      socket.emit('decline_room_invite', { inviteId }, (response) => {
       setRoomInviteDecisionBusyId('');
 
       if (response?.success) {
         setIncomingRoomInvites((current) => removeRoomInvite(current, inviteId));
+        resolve(true);
         return;
       }
 
       if (!silent) {
         showTopPrompt(response?.error || 'Unable to decline that invite right now.', 'error');
       }
+      resolve(false);
     });
+    });
+  };
+
+  const handleOpenNotificationsFeed = () => {
+    setNotificationCategory('all');
+    setIsNotificationDropdownOpen(false);
+    setIsMobileMoreOpen(false);
+    setActiveTab('notifications');
+    void markAllNotificationsRead();
+  };
+
+  const handleOpenForumNotification = async (notification) => {
+    const targetPostId = notification?.redirect?.postId || notification?.entity?.forumPostId || '';
+    if (!targetPostId) {
+      return;
+    }
+
+    await markNotificationsRead(notification?.id ? [notification.id] : []);
+    setIsNotificationDropdownOpen(false);
+    setActiveTab('ruleset-rater');
+    void loadForumThread(targetPostId, { suppressErrors: false, switchTab: false });
+  };
+
+  const handleRespondToResumeNotification = async (notification, accepted) => {
+    const resumeRequestId = notification?.entity?.resumeRequestId;
+    if (!resumeRequestId) {
+      return false;
+    }
+
+    setNotificationActionBusyId(notification.id);
+
+    try {
+      const response = await new Promise((resolve) => {
+        socket.emit(accepted ? 'accept_resume_rejoin' : 'decline_resume_rejoin', { resumeRequestId }, resolve);
+      });
+
+      if (response?.error) {
+        showTopPrompt(response.error, 'error');
+        return false;
+      }
+
+      if (accepted && response?.success) {
+        applyRestoredSession(response);
+        showTopPrompt(`Rejoined ${response?.lobby?.roomName || response?.roomId || 'the resumed game'}.`, 'success');
+      }
+
+      return true;
+    } finally {
+      setNotificationActionBusyId('');
+    }
+  };
+
+  const handleNotificationAction = async (notification, action) => {
+    if (!notification) {
+      return false;
+    }
+
+    if (notification.type === 'friend_request') {
+      setNotificationActionBusyId(notification.id);
+      try {
+        return await runFriendAction(
+          action === 'accept' ? 'accept' : 'reject',
+          notification.entity?.friendUserId,
+          action === 'accept' ? 'Friend request accepted.' : 'Friend request declined.'
+        );
+      } finally {
+        setNotificationActionBusyId('');
+      }
+    }
+
+    if (notification.type === 'game_invite') {
+      setNotificationActionBusyId(notification.id);
+      try {
+        return action === 'accept'
+          ? handleAcceptRoomInvite(notification.entity?.inviteId)
+          : handleDeclineRoomInvite(notification.entity?.inviteId);
+      } finally {
+        setNotificationActionBusyId('');
+      }
+    }
+
+    if (notification.type === 'resume_rejoin') {
+      return handleRespondToResumeNotification(notification, action === 'accept');
+    }
+
+    if (notification.category === 'forum') {
+      await handleOpenForumNotification(notification);
+      return true;
+    }
+
+    return false;
   };
 
   function refreshPublicRooms() {
@@ -3184,6 +3422,36 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!isAuthenticated) {
+      setNotificationsState(createEmptyNotificationsState());
+      return undefined;
+    }
+
+    const loadCurrentNotifications = async () => {
+      try {
+        const nextState = await loadNotifications({ suppressErrors: true });
+        if (!cancelled) {
+          setNotificationsState(nextState);
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthFeedback((current) => current || 'Unable to load notifications right now.');
+        }
+      }
+    };
+
+    void loadCurrentNotifications();
+
+    return () => {
+      cancelled = true;
+    };
+    // Notification bootstrap should rerun only when auth state flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
   function applySpectatorVisibleHandState(payload = null) {
     const nextVisibleHand = Array.isArray(payload?.spectatorVisibleHand) ? payload.spectatorVisibleHand : [];
     const nextStartingHandSize = Math.max(
@@ -3363,6 +3631,7 @@ function App() {
     setRulesetPreview(null);
     setRoomStartBlockedModal(null);
     setLeaveMatchConfirmModal(null);
+    setHostLeaveChoiceModal(null);
     reactionTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
     });
@@ -3842,6 +4111,14 @@ function App() {
       }
     });
 
+    socket.on('notifications_snapshot', (payload) => {
+      setNotificationsState({
+        items: Array.isArray(payload?.notifications) ? payload.notifications : [],
+        unreadCount: Number(payload?.unreadCount || 0),
+        loading: false
+      });
+    });
+
     socket.on('room_invite_received', (invite) => {
       if (!invite?.inviteId) {
         return;
@@ -3893,6 +4170,7 @@ function App() {
       socket.off('live_game_session_closed');
       socket.off('game_error');
       socket.off('friend_state_update');
+      socket.off('notifications_snapshot');
       socket.off('room_invite_received');
       socket.off('room_invite_state_changed');
       socket.off('player_reaction');
@@ -4320,8 +4598,32 @@ function App() {
     }
   };
 
-  const getAccountRulesetDefinition = (index) => {
-    return accountRulesetCatalog.find((option) => option.index === index) || null;
+  const getAccountRulesetDefinition = (selectionRef) => {
+    const parsedReference = parseRulesetSelectionRef(selectionRef);
+    if (!parsedReference) {
+      return null;
+    }
+
+    const resolvedDefinition = combinedAccountRulesetCatalog.find((option) => option.selectionId === parsedReference.selectionId) || null;
+    if (resolvedDefinition) {
+      return resolvedDefinition;
+    }
+
+    if (parsedReference.kind === 'saved') {
+      return {
+        kind: 'saved',
+        selectionId: parsedReference.selectionId,
+        label: 'Saved Ruleset',
+        abbreviation: 'Saved',
+        type: 'per_round',
+        code: [
+          '# This saved ruleset belongs to another account.',
+          '# Its full code is not available in this local picker view.'
+        ].join('\n')
+      };
+    }
+
+    return null;
   };
 
   const persistAccountProfileUpdate = async (payload, { busyAction = 'account-save', successMessage = '' } = {}) => {
@@ -4441,8 +4743,8 @@ function App() {
     await handleAccountAssetUpload(fieldName, label, file);
   };
 
-  const handleAccountRulesetPreview = (index) => {
-    const definition = getAccountRulesetDefinition(index);
+  const handleAccountRulesetPreview = (selectionRef) => {
+    const definition = getAccountRulesetDefinition(selectionRef);
     if (!definition) {
       return;
     }
@@ -4458,8 +4760,8 @@ function App() {
     });
   };
 
-  const handleAccountRulesetOpenInEditor = (index) => {
-    const definition = getAccountRulesetDefinition(index);
+  const handleAccountRulesetOpenInEditor = (selectionRef) => {
+    const definition = getAccountRulesetDefinition(selectionRef);
     if (!definition) {
       return;
     }
@@ -4479,30 +4781,34 @@ function App() {
   };
 
   const openAccountRulesetPicker = (fieldName, limit) => {
+    if (isAuthenticated && !libraryState.loading && savedCustomRulesets.length === 0) {
+      void loadLibraryData({ suppressErrors: true });
+    }
+
     setAccountRulesetPicker({ fieldName, limit });
   };
 
-  const handleAddAccountRuleset = async (fieldName, index) => {
+  const handleAddAccountRuleset = async (fieldName, selectionRef) => {
     const currentIndexes = Array.isArray(userProfile?.[fieldName]) ? userProfile[fieldName] : [];
-    if (currentIndexes.includes(index)) {
+    if (currentIndexes.includes(selectionRef)) {
       return;
     }
 
     try {
-      await persistAccountRulesetIndexes(fieldName, [...currentIndexes, index]);
+      await persistAccountRulesetIndexes(fieldName, [...currentIndexes, selectionRef]);
       setAccountRulesetPicker(null);
     } catch {
       // The request helper already surfaced a readable error.
     }
   };
 
-  const handleRemoveAccountRuleset = async (fieldName, index) => {
+  const handleRemoveAccountRuleset = async (fieldName, selectionRef) => {
     const currentIndexes = Array.isArray(userProfile?.[fieldName]) ? userProfile[fieldName] : [];
 
     try {
       await persistAccountRulesetIndexes(
         fieldName,
-        currentIndexes.filter((entry) => entry !== index)
+        currentIndexes.filter((entry) => entry !== selectionRef)
       );
     } catch {
       // The request helper already surfaced a readable error.
@@ -4987,6 +5293,45 @@ function App() {
       return true;
     } catch (error) {
       showTopPrompt(error.message || 'That forum action could not be completed.', 'error');
+      return false;
+    } finally {
+      setForumActionBusyKey('');
+    }
+  };
+
+  const handleToggleForumThreadNotifications = async (entry) => {
+    if (!entry?.id) {
+      return false;
+    }
+
+    if (!isAuthenticated) {
+      setActiveTab('login');
+      showTopPrompt('Log in to mute forum thread notifications.', 'info');
+      return false;
+    }
+
+    setForumActionBusyKey(`${entry.id}:mute-notifications`);
+
+    try {
+      const response = await requestJson(`/api/forum/posts/${encodeURIComponent(entry.id)}/mute-notifications`, {
+        method: 'POST'
+      });
+
+      const nextMuted = Boolean(response?.muted);
+      applyAuthenticatedUser({
+        ...(userProfile || {}),
+        mutedForumThreadNotificationIds: nextMuted
+          ? [...new Set([...(userProfile?.mutedForumThreadNotificationIds || []), String(response?.threadId || entry.rootPostId || entry.id)])]
+          : (userProfile?.mutedForumThreadNotificationIds || []).filter((value) => value !== String(response?.threadId || entry.rootPostId || entry.id))
+      });
+      void loadForumFeed({ suppressErrors: true });
+      if (forumThread?.selected?.id) {
+        void loadForumThread(forumThread.selected.id, { suppressErrors: true });
+      }
+      showTopPrompt(nextMuted ? 'Forum notifications muted for this thread.' : 'Forum notifications restored for this thread.', 'success');
+      return true;
+    } catch (error) {
+      showTopPrompt(error.message || 'Unable to update forum notification muting right now.', 'error');
       return false;
     } finally {
       setForumActionBusyKey('');
@@ -5971,6 +6316,14 @@ function App() {
         return;
       }
 
+      if (amIHost && !isTrainingMatch) {
+        setHostLeaveChoiceModal({
+          betweenRounds: choiceState?.phase === 'round_stats',
+          roomName: roomName || roomSettings.roomName || roomId
+        });
+        return;
+      }
+
       setLeaveMatchConfirmModal({
         title: isTrainingMatch ? 'End Training' : 'Abandon Match',
         message: isTrainingMatch
@@ -6009,6 +6362,36 @@ function App() {
 
       resetActiveRoomState();
       showTopPrompt(response?.message || 'You abandoned the match.', 'info');
+    });
+  };
+
+  const handleHostLeaveMatchChoice = (mode) => {
+    if (!mode) {
+      return;
+    }
+
+    setTrainingReturnBusy(true);
+    socket.emit('host_leave_match', { roomId, mode }, (response) => {
+      setTrainingReturnBusy(false);
+      if (response?.error) {
+        showErrorMessage(response.error);
+        return;
+      }
+
+      setHostLeaveChoiceModal(null);
+      if (mode === 'transfer_and_leave') {
+        resetActiveRoomState();
+      }
+      if (response?.message) {
+        showTopPrompt(response.message, 'info');
+      } else if (mode === 'end_room') {
+        showTopPrompt(
+          response?.eloApplied
+            ? 'Room closed. ELO was applied because the match ended between rounds.'
+            : 'Room closed without ELO because the match ended mid-round.',
+          'info'
+        );
+      }
     });
   };
 
@@ -6171,6 +6554,7 @@ function App() {
     { id: 'ruleset-rater', label: 'Rentz Forum', icon: Users2 },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
     { id: 'login', label: isAuthenticated ? 'Account' : 'Login', icon: isAuthenticated ? UserRound : LogIn },
+    ...(activeTab === 'notifications' ? [{ id: 'notifications', label: 'Notifications', icon: Bell }] : []),
     ...(forumSearchState.hasResultsTab ? [{ id: 'search-results', label: 'Search results', icon: Search }] : [])
   ];
   const mobilePrimaryNavIds = new Set(['play', 'library', 'login']);
@@ -6181,7 +6565,8 @@ function App() {
   const activeTabLabel = activeNavItem?.label
     || ({
       settings: 'Settings',
-      guide: 'Guide'
+      guide: 'Guide',
+      notifications: 'Notifications'
     }[activeTab] || activeTab);
 
   const handleNavSelect = (tabId) => {
@@ -6215,6 +6600,28 @@ function App() {
       source: 'saved'
     }))
     : [];
+  const combinedAccountRulesetCatalog = [
+    ...accountRulesetCatalog.map((option) => ({
+      ...option,
+      kind: 'default',
+      selectionId: buildDefaultRulesetRef(option.index),
+      title: option.label
+    })),
+    ...savedCustomRulesets.map((ruleset) => ({
+      ...ruleset,
+      kind: 'saved',
+      selectionId: buildSavedRulesetRef(ruleset.id),
+      label: ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset',
+      abbreviation: ruleset.shortName || ruleset.abbreviation || buildRulesetShortNameFallback(ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset')
+    }))
+  ];
+  const visibleNotificationItems = notificationsState.items.filter((notification) => {
+    if (notificationCategory === 'all') {
+      return true;
+    }
+
+    return notification.category === notificationCategory;
+  });
   const trainingSelectedRegularBots = Math.max(0, trainingSetup.playerCount - 2);
   const trainingStartDisabled = trainingStartBusy || !trainingSetup.selectedRulesetId;
   const activeLobbyPlayer = players.find(
@@ -6566,7 +6973,7 @@ function App() {
   }) => {
     const indexes = Array.isArray(profile?.[fieldName]) ? profile[fieldName] : [];
     const slots = Array.from({ length: limit }, (_, slotIndex) => indexes[slotIndex] ?? null);
-    const filledCount = slots.filter((index) => index != null).length;
+    const filledCount = slots.filter((selectionRef) => selectionRef != null).length;
     const cardShellClassName = 'relative flex min-h-[13.25rem] w-full min-w-0 flex-col overflow-hidden rounded-[1.45rem] box-border p-4';
     const gridClassName = limit === 5
       ? 'grid grid-cols-1 justify-start gap-3 sm:grid-cols-2 md:grid-cols-3 lg:[grid-template-columns:repeat(5,var(--ruleset-card-width))]'
@@ -6584,8 +6991,8 @@ function App() {
 
         <div className="overflow-x-auto pb-1">
           <div className={gridClassName} style={gridStyle}>
-            {slots.map((index, slotIndex) => {
-              const definition = index == null ? null : getAccountRulesetDefinition(index);
+            {slots.map((selectionRef, slotIndex) => {
+              const definition = selectionRef == null ? null : getAccountRulesetDefinition(selectionRef);
 
               if (isLoading) {
                 return (
@@ -6621,7 +7028,7 @@ function App() {
 
               return (
                 <div
-                  key={`${fieldName}-${definition.index}`}
+                  key={`${fieldName}-${definition.selectionId}`}
                   className={clsx(cardShellClassName, 'h-full border border-slate-300/80 shadow-[0_14px_30px_rgba(15,23,42,0.10)]')}
                   style={{
                     background: 'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(237,242,247,0.98) 100%)'
@@ -6648,7 +7055,7 @@ function App() {
                   <div className="mt-auto space-y-2 pt-4">
                     <button
                       type="button"
-                      onClick={() => handleAccountRulesetPreview(definition.index)}
+                      onClick={() => handleAccountRulesetPreview(definition.selectionId)}
                       className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
                     >
                       <FileCode2 className="h-3.5 w-3.5" />
@@ -6658,7 +7065,7 @@ function App() {
                       type="button"
                       onClick={() => {
                         setPlayerProfileModal(null);
-                        handleAccountRulesetOpenInEditor(definition.index);
+                        handleAccountRulesetOpenInEditor(definition.selectionId);
                       }}
                       className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
                     >
@@ -10015,8 +10422,8 @@ function App() {
         </div>
 
         <div className={gridClassName} style={gridStyle}>
-          {slots.map((index, slotIndex) => {
-            const definition = index == null ? null : getAccountRulesetDefinition(index);
+          {slots.map((selectionRef, slotIndex) => {
+            const definition = selectionRef == null ? null : getAccountRulesetDefinition(selectionRef);
             if (!definition) {
               return (
                 <button
@@ -10037,7 +10444,7 @@ function App() {
 
             return (
               <div
-                key={`${fieldName}-${definition.index}`}
+                key={`${fieldName}-${definition.selectionId}`}
                 className={clsx(cardShellClassName, 'h-full border border-slate-300/80 shadow-[0_14px_30px_rgba(15,23,42,0.10)]')}
                 style={{
                   background: 'linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(237,242,247,0.98) 100%)'
@@ -10045,7 +10452,7 @@ function App() {
               >
                 <button
                   type="button"
-                  onClick={() => handleRemoveAccountRuleset(fieldName, definition.index)}
+                  onClick={() => handleRemoveAccountRuleset(fieldName, definition.selectionId)}
                   disabled={isBusy}
                   className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white/90 text-slate-700 shadow-sm transition hover:border-slate-400 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
                   title={`Remove ${definition.label}`}
@@ -10074,7 +10481,7 @@ function App() {
                 <div className="mt-auto space-y-2 pt-4">
                   <button
                     type="button"
-                    onClick={() => handleAccountRulesetPreview(definition.index)}
+                    onClick={() => handleAccountRulesetPreview(definition.selectionId)}
                     className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
                   >
                     <FileCode2 className="h-3.5 w-3.5" />
@@ -10082,7 +10489,7 @@ function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleAccountRulesetOpenInEditor(definition.index)}
+                    onClick={() => handleAccountRulesetOpenInEditor(definition.selectionId)}
                     className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
                   >
                     <Settings className="h-3.5 w-3.5" />
@@ -10093,6 +10500,197 @@ function App() {
             );
           })}
         </div>
+      </div>
+    );
+  };
+
+  const renderNotificationActionRow = (notification, { compact = false } = {}) => {
+    if (!notification || notification.actionState !== 'pending') {
+      return null;
+    }
+
+    const isBusy = notificationActionBusyId === notification.id;
+    const buttonClassName = compact
+      ? 'rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70'
+      : 'rounded-[1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70';
+
+    if (notification.type === 'friend_request' || notification.type === 'game_invite' || notification.type === 'resume_rejoin') {
+      return (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={isBusy}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleNotificationAction(notification, 'accept');
+            }}
+            className={clsx(buttonClassName, 'border-emerald-200 bg-emerald-100/85 text-emerald-950')}
+          >
+            {isBusy ? 'Working...' : (notification.type === 'resume_rejoin' ? 'Rejoin' : 'Accept')}
+          </button>
+          <button
+            type="button"
+            disabled={isBusy}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleNotificationAction(notification, 'decline');
+            }}
+            className={clsx(buttonClassName, 'border-rose-200 bg-rose-100/85 text-rose-950')}
+          >
+            {notification.type === 'resume_rejoin' ? 'Abandon' : 'Decline'}
+          </button>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
+  const renderNotificationCard = (notification, { compact = false } = {}) => {
+    if (!notification) {
+      return null;
+    }
+
+    const actorName = notification.actor?.username || 'Rentz Arena';
+    const isForumNotification = notification.category === 'forum';
+    const statusLabel = notification.actionState === 'pending'
+      ? 'Pending'
+      : notification.actionState === 'accepted'
+        ? 'Accepted'
+        : notification.actionState === 'declined'
+          ? 'Declined'
+          : 'Resolved';
+
+    return (
+      <article
+        key={notification.id}
+        role={isForumNotification ? 'button' : undefined}
+        tabIndex={isForumNotification ? 0 : undefined}
+        onClick={isForumNotification ? () => void handleOpenForumNotification(notification) : undefined}
+        onKeyDown={isForumNotification
+          ? (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              void handleOpenForumNotification(notification);
+            }
+          }
+          : undefined}
+        className={clsx(
+          'rounded-[1.35rem] border p-4 text-left transition',
+          notification.read
+            ? 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
+            : 'border-sky-200/80 bg-sky-50/80 shadow-[0_14px_28px_rgba(56,112,156,0.10)]',
+          isForumNotification && 'cursor-pointer hover:bg-[var(--surface-medium)]'
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-black text-[var(--text-primary)]">{notification.display?.title || 'Notification'}</span>
+              {!notification.read && (
+                <span className="rounded-full border border-sky-200 bg-sky-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-sky-950">
+                  New
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+              {actorName} • {formatForumTimestamp(notification.updatedAt || notification.createdAt)}
+            </div>
+          </div>
+          <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+            {statusLabel}
+          </div>
+        </div>
+
+        <p className={clsx('mt-3 font-semibold text-[var(--text-primary)]', compact ? 'text-xs leading-6' : 'text-sm leading-7')}>
+          {notification.display?.body || 'No additional details are available for this notification.'}
+        </p>
+
+        {!compact && notification.category === 'forum' && (
+          <div className="mt-3 text-xs font-bold text-[var(--text-secondary)]">
+            Opens the related Rentz Forum thread.
+          </div>
+        )}
+
+        <div className="mt-3">
+          {renderNotificationActionRow(notification, { compact })}
+        </div>
+      </article>
+    );
+  };
+
+  const renderNotificationsContent = () => {
+    if (!isAuthenticated) {
+      return renderPlaceholderModule(
+        'Notifications',
+        'Log in to receive friend requests, invites, resumed-game rejoin prompts, and Rentz Forum activity here.'
+      );
+    }
+
+    const tabs = [
+      { id: 'all', label: `All (${notificationsState.items.length})` },
+      { id: 'game_invites', label: `Game Invites (${notificationsState.items.filter((item) => item.category === 'game_invites').length})` },
+      { id: 'friend_requests', label: `Friend Requests (${notificationsState.items.filter((item) => item.category === 'friend_requests').length})` },
+      { id: 'forum', label: `Rentz Forum (${notificationsState.items.filter((item) => item.category === 'forum').length})` }
+    ];
+
+    return (
+      <div className="space-y-5">
+        <section className="glass-panel p-5 sm:p-6">
+          <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Notifications</h3>
+              <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                Hover the bell for quick actions, or use this feed for the full grouped history.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void loadNotifications()}
+                disabled={notificationsState.loading}
+                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {notificationsState.loading ? 'Refreshing...' : 'Refresh'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void markAllNotificationsRead()}
+                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              >
+                Mark all read
+              </button>
+            </div>
+          </div>
+
+          <div className="mb-5 flex flex-wrap gap-2">
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setNotificationCategory(tab.id)}
+                className={clsx(
+                  'rounded-full px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition',
+                  notificationCategory === tab.id
+                    ? 'border border-white/80 bg-[var(--surface-solid)] text-[var(--text-primary)] shadow-md'
+                    : 'border border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]'
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {visibleNotificationItems.length === 0 ? (
+            <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              {notificationsState.loading ? 'Loading notifications...' : 'No notifications match this category right now.'}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {visibleNotificationItems.map((notification) => renderNotificationCard(notification))}
+            </div>
+          )}
+        </section>
       </div>
     );
   };
@@ -11399,6 +11997,24 @@ endif`}
                   <Bookmark className={clsx('h-4 w-4', entry.bookmarkedByViewer && 'fill-current')} />
                   Save {entry.bookmarkCount > 0 ? entry.bookmarkCount : ''}
                 </button>
+
+                <button
+                  type="button"
+                  disabled={actionBusy('mute-notifications')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleToggleForumThreadNotifications(entry);
+                  }}
+                  className={clsx(
+                    'inline-flex items-center gap-2 rounded-full border px-3 py-2 transition disabled:cursor-not-allowed disabled:opacity-70',
+                    entry.notificationsMutedByViewer
+                      ? 'border-slate-300 bg-slate-200/80 text-slate-900'
+                      : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)] hover:bg-[var(--surface-hover)]'
+                  )}
+                >
+                  <BellOff className="h-4 w-4" />
+                  {entry.notificationsMutedByViewer ? 'Unmute Thread' : 'Mute Thread'}
+                </button>
               </div>
             )}
           </div>
@@ -11611,6 +12227,59 @@ endif`}
     );
   };
 
+  const renderHostLeaveChoiceModal = () => {
+    if (!hostLeaveChoiceModal) {
+      return null;
+    }
+
+    return (
+      <ModalShell
+        title="Host Leave Options"
+        eyebrow="Choose how to leave"
+        onClose={() => setHostLeaveChoiceModal(null)}
+      >
+        <div className="space-y-4">
+          <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+            You are the current host of <span className="font-black text-[var(--text-primary)]">{hostLeaveChoiceModal.roomName || 'this room'}</span>.
+            Ending the room will close the live match for everyone. Leaving and transferring host keeps the game running and replaces your seat with a bot if needed.
+          </div>
+
+          <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-xs font-bold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+            {hostLeaveChoiceModal.betweenRounds
+              ? 'The match is currently between rounds, so ending now still applies ELO.'
+              : 'The match is currently mid-round, so ending now closes the room without applying ELO.'}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              disabled={trainingReturnBusy}
+              onClick={() => handleHostLeaveMatchChoice('end_room')}
+              className="rounded-[1.3rem] border border-rose-200 bg-rose-100/90 p-4 text-left transition hover:bg-rose-200/85 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <div className="text-sm font-black uppercase tracking-[0.14em] text-rose-950">End Game / Room</div>
+              <div className="mt-2 text-sm font-semibold leading-6 text-rose-900">
+                Close the live table for everyone now.
+              </div>
+            </button>
+
+            <button
+              type="button"
+              disabled={trainingReturnBusy}
+              onClick={() => handleHostLeaveMatchChoice('transfer_and_leave')}
+              className="rounded-[1.3rem] border border-emerald-200 bg-emerald-100/90 p-4 text-left transition hover:bg-emerald-200/85 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <div className="text-sm font-black uppercase tracking-[0.14em] text-emerald-950">Leave + Transfer Host</div>
+              <div className="mt-2 text-sm font-semibold leading-6 text-emerald-900">
+                Hand host control to the next real player and keep the game going.
+              </div>
+            </button>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  };
+
   const renderTrainingFinalReviewModal = () => {
     if (!isTrainingMatch || !trainingFinalReview || !trainerPlayer) {
       return null;
@@ -11643,17 +12312,23 @@ endif`}
               <div className="inline-flex items-center justify-center gap-2.5 rounded-full bg-slate-950/35 px-4 py-2.5 shadow-[0_18px_42px_rgba(0,0,0,0.28)] sm:gap-3 sm:px-5">
                 {Array.from({ length: 5 }).map((_, index) => {
                   const starValue = index + 1;
-                  const fillPercent = trainingFinalReview.starRating >= starValue
-                    ? 100
-                    : trainingFinalReview.starRating >= starValue - 0.5
-                      ? 50
-                      : 0;
+                  const fill = clampNumber(trainingFinalReview.starRating - index, 0, 1);
 
                   return (
                     <div key={`training-review-star-${starValue}`} className="relative h-9 w-9 shrink-0 sm:h-11 sm:w-11">
-                      <Star className="h-full w-full text-white/35" />
-                      <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fillPercent}%` }}>
-                        <Star fill="currentColor" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" />
+                      <svg viewBox="0 0 24 24" className="absolute inset-0 h-full w-full text-white/35" aria-hidden="true">
+                        <path
+                          fill="currentColor"
+                          d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+                        />
+                      </svg>
+                      <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
+                        <svg viewBox="0 0 24 24" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" aria-hidden="true">
+                          <path
+                            fill="currentColor"
+                            d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+                          />
+                        </svg>
                       </div>
                     </div>
                   );
@@ -11867,7 +12542,12 @@ endif`}
               Completed {formatForumTimestamp(entry.completedAt)}
             </div>
           </div>
-          <div className="status-pill px-3 py-2">{entry.roundsPlayed || 0} rounds</div>
+          <div className="flex flex-wrap gap-2">
+            <div className="status-pill px-3 py-2">{entry.roundsPlayed || 0} rounds</div>
+            <div className="status-pill px-3 py-2">
+              {entry.eloApplied ? 'ELO applied' : 'No ELO applied'}
+            </div>
+          </div>
         </div>
 
         {viewerSummary ? (
@@ -12358,6 +13038,44 @@ endif`}
             </div>
           </div>
 
+          {isAuthenticated && (
+            <section className="glass-panel p-5 sm:p-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Notification Mute</h4>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
+                    When this is enabled, new notifications are not created for your profile at all.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={authBusyAction === 'notification-mute'}
+                  onClick={() => void persistAccountProfileUpdate(
+                    { muteAllNotifications: !userProfile?.muteAllNotifications },
+                    {
+                      busyAction: 'notification-mute',
+                      successMessage: !userProfile?.muteAllNotifications
+                        ? 'All profile notifications are now muted.'
+                        : 'Profile notifications are active again.'
+                    }
+                  )}
+                  className={clsx(
+                    'rounded-full px-4 py-3 text-xs font-black uppercase tracking-[0.14em] transition',
+                    userProfile?.muteAllNotifications
+                      ? 'border border-rose-200 bg-rose-100 text-rose-950'
+                      : 'border border-emerald-200 bg-emerald-100 text-emerald-950'
+                  )}
+                >
+                  {authBusyAction === 'notification-mute'
+                    ? 'Saving...'
+                    : userProfile?.muteAllNotifications
+                      ? 'Muted'
+                      : 'Notifications On'}
+                </button>
+              </div>
+            </section>
+          )}
+
           <SettingsSlider
             title="Font Size"
             description="Scale the app typography in fixed 5% steps for easier reading across the interface."
@@ -12385,6 +13103,10 @@ endif`}
 
     if (activeTab === 'library') {
       return renderLibraryContent();
+    }
+
+    if (activeTab === 'notifications') {
+      return renderNotificationsContent();
     }
 
     if (activeTab === 'ruleset-rater') {
@@ -12436,7 +13158,58 @@ endif`}
             </form>
           </div>
 
-          <div className="flex w-auto shrink-0 justify-end md:w-24">
+          <div className="flex w-auto shrink-0 items-center justify-end gap-2 md:w-auto">
+            <div
+              ref={notificationButtonRef}
+              className="relative"
+              onMouseEnter={() => setIsNotificationDropdownOpen(true)}
+              onMouseLeave={() => setIsNotificationDropdownOpen(false)}
+            >
+              <button
+                type="button"
+                onClick={handleOpenNotificationsFeed}
+                className="relative rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
+                title="Open notifications"
+              >
+                <Bell className="h-4 w-4" />
+                {notificationsState.unreadCount > 0 && (
+                  <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full border border-white/90 bg-rose-500 px-1 text-[10px] font-black text-white">
+                    {notificationsState.unreadCount > 9 ? '9+' : notificationsState.unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {isNotificationDropdownOpen && (
+                <div className="absolute right-0 top-[calc(100%+0.6rem)] z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3 shadow-[0_24px_54px_rgba(15,23,42,0.18)] backdrop-blur-2xl">
+                  <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                    <div>
+                      <div className="text-sm font-black text-[var(--text-primary)]">Recent notifications</div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                        {notificationsState.unreadCount} unread
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void markAllNotificationsRead()}
+                      className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    >
+                      Mark all read
+                    </button>
+                  </div>
+
+                  <div className="max-h-[24rem] space-y-3 overflow-y-auto pr-1">
+                    {notificationsState.items.length === 0 ? (
+                      <div className="rounded-[1.1rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-3 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
+                        {notificationsState.loading ? 'Loading notifications...' : 'Nothing new has arrived yet.'}
+                      </div>
+                    ) : (
+                      notificationsState.items.slice(0, 8).map((notification) => renderNotificationCard(notification, { compact: true }))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={() => handleNavSelect('settings')}
               className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
@@ -13012,7 +13785,9 @@ endif`}
                           <div className="min-w-0">
                             <div className="text-lg font-black text-[var(--text-primary)]">{option.abbreviation || option.label}</div>
                             <div className="text-xs font-bold text-[var(--text-secondary)]">
-                              {option.label}{option.source === 'room' ? ' (room)' : ''}
+                              {option.label}
+                              {option.source === 'room' ? ' (room)' : option.source === 'loadout' ? ' (loadout)' : ''}
+                              {option.ownerNames?.length > 0 ? ` • ${option.ownerNames.join(', ')}` : ''}
                             </div>
                           </div>
                           {option.source === 'room' && (
@@ -13137,6 +13912,7 @@ endif`}
       {renderBanNoticeModal()}
       {renderRoomStartBlockedModal()}
       {renderLeaveMatchConfirmModal()}
+      {renderHostLeaveChoiceModal()}
       {renderSavedGameRulesetTableModal()}
 
       {pendingSpectatorJoin && (
@@ -13206,20 +13982,23 @@ endif`}
           onClose={() => setAccountRulesetPicker(null)}
         >
           <div className="space-y-3">
-            {accountRulesetCatalog
-              .filter((option) => !(Array.isArray(userProfile?.[accountRulesetPicker.fieldName]) ? userProfile[accountRulesetPicker.fieldName] : []).includes(option.index))
+            {combinedAccountRulesetCatalog
+              .filter((option) => !(Array.isArray(userProfile?.[accountRulesetPicker.fieldName]) ? userProfile[accountRulesetPicker.fieldName] : []).includes(option.selectionId))
               .map((option) => (
                 <button
-                  key={option.index}
+                  key={option.selectionId}
                   type="button"
-                  onClick={() => handleAddAccountRuleset(accountRulesetPicker.fieldName, option.index)}
+                  onClick={() => handleAddAccountRuleset(accountRulesetPicker.fieldName, option.selectionId)}
                   disabled={accountRulesetBusyField === accountRulesetPicker.fieldName}
                   className="w-full rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-left transition hover:bg-[var(--surface-medium)] disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="text-lg font-black text-[var(--text-primary)]">{option.label}</div>
-                      <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">{option.abbreviation}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                        <span>{option.abbreviation}</span>
+                        <span>{option.kind === 'saved' ? 'Saved' : 'Default'}</span>
+                      </div>
                     </div>
                     <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]">
                       <Plus className="h-4 w-4" />
@@ -13228,9 +14007,9 @@ endif`}
                 </button>
               ))}
 
-            {accountRulesetCatalog.filter((option) => !(Array.isArray(userProfile?.[accountRulesetPicker.fieldName]) ? userProfile[accountRulesetPicker.fieldName] : []).includes(option.index)).length === 0 && (
+            {combinedAccountRulesetCatalog.filter((option) => !(Array.isArray(userProfile?.[accountRulesetPicker.fieldName]) ? userProfile[accountRulesetPicker.fieldName] : []).includes(option.selectionId)).length === 0 && (
               <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                Every available built-in ruleset is already in this section.
+                Every available default or saved ruleset is already in this section.
               </div>
             )}
           </div>
