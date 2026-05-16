@@ -147,6 +147,7 @@ Notes:
 - Bot difficulty is derived from the average ELO of non-bot active players, defaulting to `500` when no human ELO is present.
 - Mixed human/bot games only update human ELO, and abandoned players that get replaced by bots are excluded from ELO updates.
 - If `qwen2.5:7b` is too slow for the ruleset editor on your machine, keep it for gameplay bots and set the Editor Bot full/lean model env vars to `llama3.2:3b`.
+- The backend also accepts `OLLAMA_EDITOR_BOT_MODEL`, `OLLAMA_EDITOR_BOT_FULL_MODEL`, `OLLAMA_EDITOR_BOT_LEAN_MODEL`, and `OLLAMA_EDITOR_BOT_BASE_URL` as aliases for the Editor Bot-specific Ollama settings.
 
 ## Start Commands
 

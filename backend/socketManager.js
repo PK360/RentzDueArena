@@ -935,6 +935,7 @@ function emitGameActivity(io, roomId, message, { tone = 'info' } = {}) {
 
   io.to(roomId).emit('game_activity', {
     id: `activity_${Date.now().toString(36)}_${randomFriendCode().toLowerCase()}`,
+    roomId,
     message: String(message),
     tone,
     createdAt: new Date().toISOString()
@@ -1536,6 +1537,30 @@ async function resolveResumeRejoinRequestsForRoom(io, roomId, {
   );
 }
 
+function expirePendingResumeRejoinRequestsForStartedMatch(io, roomId, game) {
+  if (!io || !roomId || !game) {
+    return;
+  }
+
+  const pendingRequests = [...pendingResumeRejoinRequests.values()]
+    .filter((request) => request.roomId === roomId);
+
+  pendingRequests.forEach((request) => {
+    const targetPlayer = game.players.find((player) => player.userId === request.targetUserId);
+    if (targetPlayer && !isBotPlayer(targetPlayer)) {
+      markPlayerAbandonedDuringGame(io, roomId, game, request.targetUserId, {
+        forceReplacement: true,
+        replacementMessage: `${targetPlayer.name || 'A player'} did not rejoin before the resumed match started and was replaced by a bot.`
+      });
+    }
+  });
+
+  void resolveResumeRejoinRequestsForRoom(io, roomId, {
+    actionState: 'declined',
+    reason: 'The resumed match started before this player rejoined.'
+  });
+}
+
 function scheduleRoomInviteExpiration(io, invite) {
   if (!invite?.inviteId) {
     return;
@@ -1957,6 +1982,103 @@ function buildGameSessionSnapshot(roomId, game, userId, { isSpectator = false } 
   };
 }
 
+function inspectReconnectStateForRoom(roomId, lobby, game, user) {
+  if (!roomId || !lobby || !user?.userId) {
+    return null;
+  }
+
+  const isBanned = Array.isArray(lobby.bannedUserIds) && lobby.bannedUserIds.includes(user.userId);
+  const role = getLobbyMemberRole(lobby, user.userId);
+  const member = role ? getMemberByUserId(lobby, user.userId) : null;
+  const gamePlayer = game?.players?.find((player) => player.userId === user.userId && !isBotPlayer(player)) || null;
+  const abandonedSeat = game?.abandonedPlayers?.[user.userId] || null;
+  const displayName = getUserDisplayName(member || gamePlayer || abandonedSeat || user);
+
+  if (!isBanned && !member && !gamePlayer && !abandonedSeat) {
+    return null;
+  }
+
+  if (isBanned) {
+    return {
+      available: false,
+      reason: 'banned',
+      roomId,
+      displayName
+    };
+  }
+
+  if (!game) {
+    return lobby.status === 'playing'
+      ? {
+        available: false,
+        reason: 'ended',
+        roomId,
+        displayName
+      }
+      : null;
+  }
+
+  if (lobby.status !== 'playing' && !abandonedSeat) {
+    return null;
+  }
+
+  if (game.status === 'finished' || game.phase === 'finished') {
+    return {
+      available: false,
+      reason: 'ended',
+      roomId,
+      displayName
+    };
+  }
+
+  if (abandonedSeat) {
+    return {
+      available: false,
+      reason: abandonedSeat.replacedByBotUserId ? 'replaced' : 'expired',
+      roomId,
+      displayName
+    };
+  }
+
+  const connectionStatus = gamePlayer?.connectionStatus || member?.connectionStatus || 'connected';
+  if (connectionStatus === 'abandoned') {
+    return {
+      available: false,
+      reason: 'expired',
+      roomId,
+      displayName
+    };
+  }
+
+  return {
+    available: true,
+    roomId,
+    role: role || 'player',
+    displayName
+  };
+}
+
+function getReconnectStateForUser(user) {
+  if (!user?.userId) {
+    return {
+      available: false,
+      reason: 'none'
+    };
+  }
+
+  for (const [roomId, lobby] of lobbies.entries()) {
+    const reconnectState = inspectReconnectStateForRoom(roomId, lobby, activeGames.get(roomId), user);
+    if (reconnectState) {
+      return reconnectState;
+    }
+  }
+
+  return {
+    available: false,
+    reason: 'none'
+  };
+}
+
 function restoreUserSession(io, socket, user) {
   const currentRoom = findCurrentRoomForUser(user);
   if (!currentRoom) {
@@ -1964,6 +2086,11 @@ function restoreUserSession(io, socket, user) {
   }
 
   const { roomId, room: lobby } = currentRoom;
+  const reconnectState = inspectReconnectStateForRoom(roomId, lobby, activeGames.get(roomId), user);
+  if (reconnectState && !reconnectState.available) {
+    return null;
+  }
+
   const role = getLobbyMemberRole(lobby, user.userId);
   const member = updateLobbyMemberSocket(lobby, user, socket.id);
   if (!member || !role) {
@@ -2825,6 +2952,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
 function emitGameStartedToMembers(io, roomId, lobby, gameState) {
   const gameStartedVersion = bumpGameStateVersion(gameState);
   const spectatorVisibleHandState = buildSpectatorVisibleHandState(gameState);
+  expirePendingResumeRejoinRequestsForStartedMatch(io, roomId, gameState);
 
   lobby.players.forEach((player, index) => {
     io.to(player.socketId).emit('game_started', {
@@ -4786,6 +4914,16 @@ function attachSocketManager(io) {
       callback({ success: true, restoredRoom: true, ...restoredSession });
     });
 
+    socket.on('get_reconnect_state', (_payload = {}, callback = () => {}) => {
+      const user = socketToUser.get(socket.id);
+      if (!user) {
+        return callback({ success: false, error: 'Not authenticated' });
+      }
+
+      const reconnectState = getReconnectStateForUser(user);
+      callback({ success: true, ...reconnectState });
+    });
+
     socket.on('abandon_session', (_payload = {}, callback = () => {}) => {
       const user = socketToUser.get(socket.id);
       if (!user) {
@@ -5421,7 +5559,6 @@ function attachSocketManager(io) {
 
       if (!lobby) return callback({ error: 'Lobby not found' });
       if (!user) return callback({ error: 'Not authenticated' });
-      if (!user.guest) return callback({ error: 'Only guest hosts can add room rulesets' });
       if (lobby.status !== 'waiting') return callback({ error: 'Room rulesets can only be added before the match starts' });
       if (lobby.hostId !== user.userId) return callback({ error: 'Only the host can add room rulesets' });
 
@@ -5440,7 +5577,6 @@ function attachSocketManager(io) {
 
       if (!lobby) return callback({ error: 'Lobby not found' });
       if (!user) return callback({ error: 'Not authenticated' });
-      if (!user.guest) return callback({ error: 'Only guest hosts can edit room rulesets' });
       if (lobby.status !== 'waiting') return callback({ error: 'Room rulesets can only be edited before the match starts' });
       if (lobby.hostId !== user.userId) return callback({ error: 'Only the host can edit room rulesets' });
 
@@ -5459,7 +5595,6 @@ function attachSocketManager(io) {
 
       if (!lobby) return callback({ error: 'Lobby not found' });
       if (!user) return callback({ error: 'Not authenticated' });
-      if (!user.guest) return callback({ error: 'Only guest hosts can delete room rulesets' });
       if (lobby.status !== 'waiting') return callback({ error: 'Room rulesets can only be deleted before the match starts' });
       if (lobby.hostId !== user.userId) return callback({ error: 'Only the host can delete room rulesets' });
 
@@ -5952,6 +6087,7 @@ module.exports.addBotToLobby = addBotToLobby;
 module.exports.removeBotFromLobby = removeBotFromLobby;
 module.exports.applyCompletedGameEloUpdates = applyCompletedGameEloUpdates;
 module.exports.abandonActiveMatch = abandonActiveMatch;
+module.exports.expirePendingResumeRejoinRequestsForStartedMatch = expirePendingResumeRejoinRequestsForStartedMatch;
 module.exports.createTrainingMatchSession = createTrainingMatchSession;
 module.exports.persistCompletedMatchHistory = persistCompletedMatchHistory;
 module.exports.setNvChoiceForRound = setNvChoiceForRound;

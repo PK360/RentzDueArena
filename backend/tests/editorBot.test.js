@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const {
   CATEGORY_DEFINITIONS,
   buildFallbackEditorBotReview,
+  buildHybridEditorBotReviewFromScoreMap,
   buildEditorBotPromptPayload,
   buildRulesetJudgeMetrics,
+  buildSalvagedEditorBotReview,
   buildSafeRulesetPayload,
   clampEditorBotScore,
   reviewRulesetWithEditorBot,
@@ -51,9 +53,9 @@ test('sanitizeEditorBotReview clamps invalid AI output and fills missing categor
   });
   const sanitized = sanitizeEditorBotReview({
     overallScore: 11.4,
-    categoryRatings: {
+    categories: {
       fairness: { score: 9.5, explanation: 'Legacy category that should be ignored.' },
-      riskRewardBalance: { score: -3, explanation: '' }
+      comebackPotential: { score: -3, explanation: '' }
     },
     rulesetSummary: '',
     constructiveReview: '  Great base idea but it needs a bit more tuning.  ',
@@ -63,8 +65,8 @@ test('sanitizeEditorBotReview clamps invalid AI output and fills missing categor
 
   assert.equal(sanitized.overallScore, 10);
   assert.equal(sanitized.categoryRatings.fairness, undefined);
-  assert.equal(sanitized.categoryRatings.riskRewardBalance.score, 0);
-  assert.equal(sanitized.categoryRatings.riskRewardBalance.explanation, fallback.categoryRatings.riskRewardBalance.explanation);
+  assert.equal(sanitized.categoryRatings.comebackPotential.score, 0);
+  assert.equal(sanitized.categoryRatings.comebackPotential.explanation, fallback.categoryRatings.comebackPotential.explanation);
   assert.equal(sanitized.categoryRatings.scoringBalance.score, fallback.categoryRatings.scoringBalance.score);
   assert.equal(sanitized.rulesetSummary, fallback.rulesetSummary);
   assert.equal(sanitized.constructiveReview, 'Great base idea but it needs a bit more tuning.');
@@ -104,6 +106,117 @@ test('sanitizeEditorBotReview preserves heuristic reviewSource when AI text was 
   }, fallback);
 
   assert.equal(sanitized.reviewSource, 'heuristic');
+});
+
+test('buildHybridEditorBotReviewFromScoreMap keeps AI scores while marking the review as hybrid', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'add(-10, HEART_NR > 0)',
+    ast: compileRuleset('add(-10, HEART_NR > 0)', 'per_round')
+  });
+  const hybrid = buildHybridEditorBotReviewFromScoreMap({
+    comebackPotential: 8,
+    playerAgency: 6,
+    claritySimplicity: 9,
+    scoringBalance: 7
+  }, fallback);
+
+  assert.equal(hybrid.reviewSource, 'hybrid');
+  assert.equal(hybrid.categories.comebackPotential.score > 0, true);
+  assert.equal(hybrid.categories.playerAgency.score > 0, true);
+  assert.equal(hybrid.categories.claritySimplicity.score > 0, true);
+  assert.equal(hybrid.categories.scoringBalance.score > 0, true);
+  assert.deepEqual(hybrid.warnings, []);
+});
+
+test('buildHybridEditorBotReviewFromScoreMap blends extreme AI deviations back toward the Rentz baseline', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'if(HEART_KING)\n  add(-20)\n  end()\nendif',
+    ast: compileRuleset('if(HEART_KING)\n  add(-20)\n  end()\nendif', 'per_round')
+  });
+  const hybrid = buildHybridEditorBotReviewFromScoreMap({
+    comebackPotential: 2.5,
+    playerAgency: 3,
+    claritySimplicity: 4,
+    scoringBalance: 3.5
+  }, fallback);
+
+  assert.equal(hybrid.categories.comebackPotential.score > 2.5, true);
+  assert.equal(hybrid.categories.playerAgency.score > 3, true);
+  assert.equal(hybrid.categories.claritySimplicity.score > 4, true);
+  assert.equal(hybrid.categories.scoringBalance.score > 3.5, true);
+  assert.deepEqual(hybrid.warnings, []);
+});
+
+test('buildSalvagedEditorBotReview rejects score-only category maps for real reviews', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'add(-10, HEART_NR > 0)',
+    ast: compileRuleset('add(-10, HEART_NR > 0)', 'per_round')
+  });
+  const salvaged = buildSalvagedEditorBotReview(
+    '{"comebackPotential":"6","playerAgency":"8","claritySimplicity":"9","scoringBalance":"7"}',
+    fallback
+  );
+
+  assert.equal(salvaged, null);
+});
+
+test('buildSalvagedEditorBotReview can still accept score-only maps when explicitly allowed for warmup', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'add(-10, HEART_NR > 0)',
+    ast: compileRuleset('add(-10, HEART_NR > 0)', 'per_round')
+  });
+  const salvaged = buildSalvagedEditorBotReview(
+    '{"comebackPotential":"6","playerAgency":"8","claritySimplicity":"9","scoringBalance":"7"}',
+    fallback,
+    { allowScoreOnly: true }
+  );
+
+  assert.equal(salvaged.categories.comebackPotential.score, 6);
+  assert.equal(salvaged.categories.playerAgency.score, 8);
+  assert.equal(salvaged.categories.claritySimplicity.score, 9);
+  assert.equal(salvaged.categories.scoringBalance.score, 7);
+});
+
+test('buildSalvagedEditorBotReview rejects repeated category tokens with a shared score for real reviews', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'add(-10, HEART_NR > 0)',
+    ast: compileRuleset('add(-10, HEART_NR > 0)', 'per_round')
+  });
+  const salvaged = buildSalvagedEditorBotReview(
+    '{"score":0,"category":"comebackPotential","reason":"","category":"playerAgency","reason":"","category":"claritySimplicity","reason":"","category":"scoringBalance","reason":""}',
+    fallback
+  );
+
+  assert.equal(salvaged, null);
+});
+
+test('buildSalvagedEditorBotReview accepts repeated category tokens with a shared score for warmup readiness', () => {
+  const fallback = buildFallbackEditorBotReview({
+    title: 'Fallback Rule',
+    type: 'per_round',
+    code: 'add(-10, HEART_NR > 0)',
+    ast: compileRuleset('add(-10, HEART_NR > 0)', 'per_round')
+  });
+  const salvaged = buildSalvagedEditorBotReview(
+    '{"score":0,"category":"comebackPotential","reason":"","category":"playerAgency","reason":"","category":"claritySimplicity","reason":"","category":"scoringBalance","reason":""}',
+    fallback,
+    { allowScoreOnly: true }
+  );
+
+  assert.equal(salvaged.categories.comebackPotential.score, 0);
+  assert.equal(salvaged.categories.playerAgency.score, 0);
+  assert.equal(salvaged.categories.claritySimplicity.score, 0);
+  assert.equal(salvaged.categories.scoringBalance.score, 0);
 });
 
 test('buildEditorBotPromptPayload trims retry payloads for lean requests', () => {
@@ -184,10 +297,11 @@ test('buildEditorBotPromptPayload trims retry payloads for lean requests', () =>
 
   assert.equal(fullPayload.ruleset.code.length > leanPayload.ruleset.code.length, true);
   assert.equal(leanPayload.ruleset.codeTruncated, true);
-  assert.equal(fullPayload.heuristics.identifiers.length > leanPayload.heuristics.identifiers.length, true);
-  assert.deepEqual(Object.keys(leanPayload.compiler), ['status', 'message']);
-  assert.equal(fullPayload.compiler.errors.length, 3);
-  assert.equal(fullPayload.compiler.warnings.length, 3);
+  assert.equal(fullPayload.parsedSummary.identifiers.length > leanPayload.parsedSummary.identifiers.length, true);
+  assert.equal(Array.isArray(fullPayload.calibration.anchors), true);
+  assert.equal(fullPayload.calibration.anchors.length > leanPayload.calibration.anchors.length, true);
+  assert.equal(fullPayload.compiler.errors.length, 2);
+  assert.equal(fullPayload.compiler.warnings.length, 2);
 });
 
 test('reviewRulesetWithEditorBot falls back cleanly when Ollama is unavailable', async () => {

@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  ArrowLeft,
   Bell,
   BellOff,
   Ban,
@@ -78,6 +79,12 @@ const CARD_VALUE_NAMES = {
   '3': 'Three',
   '2': 'Two'
 };
+
+const AERO_SECONDARY_BUTTON_CLASS = 'aero-button aero-button-secondary';
+const AERO_POSITIVE_BUTTON_CLASS = 'aero-button aero-button-positive';
+const AERO_ICON_BUTTON_CLASS = 'aero-button aero-button-secondary aero-button-icon';
+const AERO_BACK_BUTTON_CLASS = 'aero-button aero-button-back aero-button-sm';
+const AERO_DESTRUCTIVE_BUTTON_CLASS = 'aero-button aero-button-destructive';
 
 const CARD_ASSET_VALUE_NAMES = {
   A: 'ace',
@@ -204,13 +211,12 @@ const RULESET_TYPE_OPTIONS = new Set(['per_round', 'end_game']);
 const ROOM_INVITE_TERMINAL_STATUSES = new Set(['accepted', 'declined', 'expired', 'unavailable', 'joined']);
 const RENTZ_METADATA_KEYS = new Set(['long_name', 'short_name', 'title', 'name', 'abbreviation', 'abbr', 'type']);
 const EDITOR_BOT_CATEGORY_DEFINITIONS = Object.freeze([
-  { key: 'riskRewardBalance', label: 'Risk/reward balance' },
   { key: 'comebackPotential', label: 'Comeback potential' },
-  { key: 'claritySimplicity', label: 'Clarity / simplicity' },
-  { key: 'scoringBalance', label: 'Scoring balance' },
   { key: 'playerAgency', label: 'Player agency' },
-  { key: 'interactionQuality', label: 'Interaction quality' }
+  { key: 'claritySimplicity', label: 'Clarity / simplicity' },
+  { key: 'scoringBalance', label: 'Scoring balance' }
 ]);
+const EDITOR_JUDGE_INTERNAL_TEXT_PATTERN = /ollama|fallback|hybrid|heuristic|score-map|diagnostic|model-warmup|json-parse|invalid-structured-output|full ai-written review text|generated category scores/i;
 
 const VALUE_ORDER = ['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2'];
 const SUIT_ORDER = ['H', 'S', 'D', 'C'];
@@ -218,7 +224,9 @@ const STORAGE_KEYS = {
   theme: 'rentz-theme',
   fontScale: 'rentz-font-scale',
   pageZoom: 'rentz-page-zoom',
-  guestProfile: 'rentz-guest-profile'
+  guestProfile: 'rentz-guest-profile',
+  activeSessionRecovery: 'rentz-active-session-recovery',
+  persistentActiveSessionRecovery: 'rentz-persistent-active-session-recovery'
 };
 const FONT_SCALE_RANGE = { min: 70, max: 130, step: 5, defaultValue: 100 };
 const PAGE_ZOOM_RANGE = { min: 100, max: 125, step: 5, defaultValue: 100 };
@@ -283,8 +291,13 @@ function normalizeEditorJudgeReview(review = null) {
     return null;
   }
 
+  const rawCategories = review.categories && typeof review.categories === 'object'
+    ? review.categories
+    : review.categoryRatings && typeof review.categoryRatings === 'object'
+      ? review.categoryRatings
+      : {};
   const categoryRatings = EDITOR_BOT_CATEGORY_DEFINITIONS.reduce((acc, category) => {
-    const entry = review.categoryRatings?.[category.key] || {};
+    const entry = rawCategories[category.key] || {};
     acc[category.key] = {
       score: clampScoreToTenth(entry.score, 0),
       explanation: sanitizeEditorJudgeText(entry.explanation, 'No extra detail was provided for this category yet.', 220)
@@ -297,11 +310,17 @@ function normalizeEditorJudgeReview(review = null) {
   return {
     overallScore: clampScoreToTenth(review.overallScore, categoryAverage),
     categoryRatings,
-    rulesetSummary: sanitizeEditorJudgeText(review.rulesetSummary, 'The ruleset review summary is unavailable right now.', 500),
-    constructiveReview: sanitizeEditorJudgeText(review.constructiveReview, 'The Editor Bot did not provide a longer review this time.', 500),
+    rulesetSummary: sanitizeEditorJudgeText(review.rulesetSummary, 'Ruleset summary unavailable right now.', 500),
+    constructiveReview: sanitizeEditorJudgeText(review.constructiveReview, 'Review unavailable right now.', 500),
     recommendations: sanitizeEditorJudgeList(review.recommendations, []),
-    warnings: sanitizeEditorJudgeList(review.warnings, []),
-    reviewSource: review.reviewSource === 'fallback' ? 'fallback' : review.reviewSource === 'heuristic' ? 'heuristic' : 'ai',
+    warnings: sanitizeEditorJudgeList(review.warnings, []).filter((warning) => !EDITOR_JUDGE_INTERNAL_TEXT_PATTERN.test(warning)),
+    reviewSource: review.reviewSource === 'fallback'
+      ? 'fallback'
+      : review.reviewSource === 'heuristic'
+        ? 'heuristic'
+        : review.reviewSource === 'hybrid'
+          ? 'hybrid'
+          : 'ai',
     diagnostics: Array.isArray(review.diagnostics)
       ? review.diagnostics.map((entry) => ({
         attempt: sanitizeEditorJudgeText(entry?.attempt, 'unknown', 80),
@@ -767,6 +786,38 @@ function formatForumRatingLabel(value) {
   return typeof value === 'number' ? `${value.toFixed(1)} avg` : 'No rating yet';
 }
 
+function RatingStarFill({
+  fill = 0,
+  className = '',
+  baseClassName = 'text-slate-300',
+  fillClassName = 'text-amber-500'
+}) {
+  const normalizedFill = clampNumber(fill, 0, 1);
+  const insetRight = `${100 - (normalizedFill * 100)}%`;
+
+  return (
+    <div className={clsx('relative', className)}>
+      <svg viewBox="0 0 24 24" className={clsx('absolute inset-0 h-full w-full', baseClassName)} aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+        />
+      </svg>
+      <svg
+        viewBox="0 0 24 24"
+        className={clsx('absolute inset-0 h-full w-full', fillClassName)}
+        style={{ clipPath: `inset(0 ${insetRight} 0 0)` }}
+        aria-hidden="true"
+      >
+        <path
+          fill="currentColor"
+          d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
+        />
+      </svg>
+    </div>
+  );
+}
+
 function normalizeChatMessageContent(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
@@ -933,21 +984,177 @@ function storeGuestProfile(profile, { roomId = null } = {}) {
   }
 
   try {
-    if (!profile?.userId || !profile?.name || roomId) {
+    if (!profile?.userId || !profile?.name) {
       window.sessionStorage.removeItem(STORAGE_KEYS.guestProfile);
+      return;
     }
+
+    window.sessionStorage.setItem(STORAGE_KEYS.guestProfile, JSON.stringify({
+      userId: String(profile.userId || '').trim(),
+      name: String(profile.name || '').trim(),
+      guest: true,
+      roomId: roomId ? String(roomId || '').trim().toUpperCase() : ''
+    }));
   } catch {
     // Ignore storage failures in restricted environments.
   }
 }
 
 function updateStoredGuestRoom(roomId) {
-  void roomId;
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    const storedValue = window.sessionStorage.getItem(STORAGE_KEYS.guestProfile);
+    if (!storedValue) {
+      return;
+    }
+
+    const parsed = JSON.parse(storedValue);
+    if (!parsed?.userId || !parsed?.name) {
+      return;
+    }
+
+    window.sessionStorage.setItem(STORAGE_KEYS.guestProfile, JSON.stringify({
+      ...parsed,
+      roomId: roomId ? String(roomId || '').trim().toUpperCase() : ''
+    }));
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
+function readStoredGuestProfile() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const storedValue = window.sessionStorage.getItem(STORAGE_KEYS.guestProfile);
+    if (!storedValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(storedValue);
+    if (!parsed?.userId || !parsed?.name) {
+      return null;
+    }
+
+    return {
+      userId: String(parsed.userId || '').trim(),
+      name: String(parsed.name || '').trim(),
+      guest: true
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseRecoverableSessionValue(storedValue) {
+  if (!storedValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(storedValue);
+    if (!parsed?.roomId || !parsed?.wasActiveGame) {
+      return null;
+    }
+
+    return {
+      roomId: String(parsed.roomId || '').trim().toUpperCase(),
+      wasActiveGame: true,
+      displayName: String(parsed.displayName || '').trim() || 'your previous seat',
+      profile: parsed.profile && parsed.profile.userId
+        ? {
+          userId: parsed.profile.userId,
+          name: parsed.profile.name,
+          guest: Boolean(parsed.profile.guest)
+        }
+        : null
+    };
+  } catch {
+    return null;
+  }
 }
 
 function readRecoverableGuestSessionForCurrentNavigation() {
   storeGuestProfile(null);
-  return null;
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const storedValue = window.sessionStorage.getItem(STORAGE_KEYS.activeSessionRecovery);
+    window.sessionStorage.removeItem(STORAGE_KEYS.activeSessionRecovery);
+    const sessionRecovery = parseRecoverableSessionValue(storedValue);
+    if (sessionRecovery) {
+      return sessionRecovery;
+    }
+
+    const persistedValue = window.localStorage.getItem(STORAGE_KEYS.persistentActiveSessionRecovery);
+    window.localStorage.removeItem(STORAGE_KEYS.persistentActiveSessionRecovery);
+    return parseRecoverableSessionValue(persistedValue);
+  } catch {
+    return null;
+  }
+}
+
+function persistRecoverableSessionForReopen(session = null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (!session?.roomId || !session?.wasActiveGame) {
+      window.localStorage.removeItem(STORAGE_KEYS.persistentActiveSessionRecovery);
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEYS.persistentActiveSessionRecovery, JSON.stringify({
+      roomId: String(session.roomId || '').trim().toUpperCase(),
+      wasActiveGame: true,
+      displayName: String(session.displayName || '').trim() || 'your previous seat',
+      profile: session.profile?.userId
+        ? {
+          userId: session.profile.userId,
+          name: session.profile.name,
+          guest: Boolean(session.profile.guest)
+        }
+        : null
+    }));
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
+}
+
+function storeRecoverableSessionPrompt(session = null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (!session?.roomId || !session?.wasActiveGame) {
+      window.sessionStorage.removeItem(STORAGE_KEYS.activeSessionRecovery);
+      return;
+    }
+
+    window.sessionStorage.setItem(STORAGE_KEYS.activeSessionRecovery, JSON.stringify({
+      roomId: String(session.roomId || '').trim().toUpperCase(),
+      wasActiveGame: true,
+      displayName: String(session.displayName || '').trim() || 'your previous seat',
+      profile: session.profile?.userId
+        ? {
+          userId: session.profile.userId,
+          name: session.profile.name,
+          guest: Boolean(session.profile.guest)
+        }
+        : null
+    }));
+  } catch {
+    // Ignore storage failures in restricted environments.
+  }
 }
 
 function parseCard(cardString) {
@@ -1761,7 +1968,7 @@ function SettingsSlider({ title, description, min, max, step, value, defaultValu
           <button
             type="button"
             onClick={() => onChange(defaultValue)}
-            className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            className="aero-button aero-button-secondary aero-button-xs"
           >
             Reset
           </button>
@@ -1784,9 +1991,11 @@ function SettingsSlider({ title, description, min, max, step, value, defaultValu
           <span>{midpointValue}%</span>
           <span>{max}%</span>
         </div>
-        <p className="mt-3 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
-          {description}
-        </p>
+        {description ? (
+          <p className="mt-3 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
+            {description}
+          </p>
+        ) : null}
       </div>
     </section>
   );
@@ -2495,9 +2704,10 @@ function App() {
   const [trainingValidationMessage, setTrainingValidationMessage] = useState('');
   const [trainingReturnBusy, setTrainingReturnBusy] = useState(false);
   const [guestNameInput, setGuestNameInput] = useState('');
-  const [guestProfile, setGuestProfile] = useState(null);
+  const [guestProfile, setGuestProfile] = useState(() => readStoredGuestProfile());
   const [recoverableGuestSession, setRecoverableGuestSession] = useState(() => readRecoverableGuestSessionForCurrentNavigation());
-  const [isRecoveryPromptOpen, setIsRecoveryPromptOpen] = useState(() => Boolean(recoverableGuestSession?.profile));
+  const [isRecoveryPromptOpen, setIsRecoveryPromptOpen] = useState(() => Boolean(recoverableGuestSession));
+  const [recoveryActionBusy, setRecoveryActionBusy] = useState('');
   const [authLoading, setAuthLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userProfile, setUserProfile] = useState(null);
@@ -2529,6 +2739,7 @@ function App() {
   const [isNotificationDropdownOpen, setIsNotificationDropdownOpen] = useState(false);
   const [notificationCategory, setNotificationCategory] = useState('all');
   const [notificationActionBusyId, setNotificationActionBusyId] = useState('');
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
 
   const [gameStarted, setGameStarted] = useState(false);
   const [isSpectatingGame, setIsSpectatingGame] = useState(false);
@@ -2615,6 +2826,7 @@ function App() {
   const accountAvatarInputRef = useRef(null);
   const accountBannerInputRef = useRef(null);
   const descriptionTextareaRef = useRef(null);
+  const mobileSearchInputRef = useRef(null);
   const spectatorPopoverRef = useRef(null);
   const playerActionMenuRef = useRef(null);
   const roomInvitePopoverRef = useRef(null);
@@ -2624,6 +2836,11 @@ function App() {
   const showChatTableBubbleRef = useRef(() => {});
   const desktopChatOpenRef = useRef(false);
   const activeChatScopeRef = useRef('');
+  const recoverableSessionPromptRef = useRef(null);
+  const recoveryPromptOpenRef = useRef(false);
+  const recoveryValidationKeyRef = useRef('');
+  const lifecyclePromptGuardRef = useRef(null);
+  const recentGameFinishRef = useRef(0);
   const turnTimerWarningStateRef = useRef({ deadline: null, halfShown: false, quarterShown: false });
   const turnTimerNoticeTimeoutRef = useRef(null);
   const reactionTimeoutsRef = useRef(new Map());
@@ -2648,6 +2865,7 @@ function App() {
   const [editorJudgeError, setEditorJudgeError] = useState('');
   const [editorJudgeReview, setEditorJudgeReview] = useState(null);
   const [editorJudgeSignature, setEditorJudgeSignature] = useState('');
+  const [roomRulesetSourcePicker, setRoomRulesetSourcePicker] = useState(null);
   const [ruleDrafts, setRuleDrafts] = useState(() => {
     try {
       return JSON.parse(window.localStorage.getItem('rentz-rule-drafts') || '[]');
@@ -2783,10 +3001,16 @@ function App() {
     }
   }, [gameChatMessages.length]);
 
-  const clearGuestIdentity = () => {
+  const clearGuestIdentity = ({ preserveRecoveryPrompt = false } = {}) => {
     storeGuestProfile(null);
-    setRecoverableGuestSession(null);
-    setIsRecoveryPromptOpen(false);
+    if (!preserveRecoveryPrompt) {
+      storeRecoverableSessionPrompt(null);
+      persistRecoverableSessionForReopen(null);
+      setRecoverableGuestSession(null);
+      setIsRecoveryPromptOpen(false);
+      setRecoveryActionBusy('');
+      recoveryValidationKeyRef.current = '';
+    }
     setGuestProfile(null);
   };
 
@@ -2808,7 +3032,7 @@ function App() {
     }
 
     if (authenticated) {
-      clearGuestIdentity();
+      clearGuestIdentity({ preserveRecoveryPrompt: true });
       setGuestNameInput('');
     }
   };
@@ -3099,6 +3323,30 @@ function App() {
       });
 
       if (response?.error) {
+        if ([
+          'That rejoin request is no longer available',
+          'That resumed game is no longer available',
+          'Your original seat is no longer available in that resumed game'
+        ].includes(response.error)) {
+          setNotificationsState((current) => ({
+            ...current,
+            items: current.items.map((entry) => (
+              entry.id === notification.id
+                ? {
+                  ...entry,
+                  actionState: 'resolved',
+                  display: {
+                    ...(entry.display || {}),
+                    body: 'This invite expired.'
+                  }
+                }
+                : entry
+            ))
+          }));
+          showTopPrompt('This invite expired.', 'error');
+          return false;
+        }
+
         showTopPrompt(response.error, 'error');
         return false;
       }
@@ -3490,6 +3738,12 @@ function App() {
       return;
     }
 
+    storeRecoverableSessionPrompt(null);
+    persistRecoverableSessionForReopen(null);
+    setRecoverableGuestSession(null);
+    setIsRecoveryPromptOpen(false);
+    setRecoveryActionBusy('');
+    recoveryValidationKeyRef.current = '';
     const restoredGame = response.game || null;
     const restoredHand = restoredGame?.hand || [];
     applyMatchMetadata(restoredGame || response.lobby, response.lobby);
@@ -3573,6 +3827,9 @@ function App() {
     }
 
     updateStoredGuestRoom(null);
+    storeRecoverableSessionPrompt(null);
+    persistRecoverableSessionForReopen(null);
+    clearLifecyclePromptGuard();
     latestGameStateVersionRef.current = 0;
     startingHandSizeRef.current = 0;
     setMatchMode(MATCH_MODE_STANDARD);
@@ -3632,6 +3889,7 @@ function App() {
     setRoomStartBlockedModal(null);
     setLeaveMatchConfirmModal(null);
     setHostLeaveChoiceModal(null);
+    setRoomRulesetSourcePicker(null);
     reactionTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
     });
@@ -3736,6 +3994,10 @@ function App() {
     };
 
     const authenticateAndRestoreSession = () => {
+      if (recoverableSessionPromptRef.current?.wasActiveGame && recoveryPromptOpenRef.current) {
+        return;
+      }
+
       const profile = activeProfileRef.current;
       const restoreSession = () => {
         socket.emit('restore_session', {}, (response) => {
@@ -3984,6 +4246,7 @@ function App() {
     socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, trainingFinalReview: nextTrainingFinalReview, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        recentGameFinishRef.current = Date.now();
         const normalizedTrainingReview = normalizeTrainingFinalReview(nextTrainingFinalReview);
         setRoundActionBusy('');
         setGameFinished(true);
@@ -4012,8 +4275,12 @@ function App() {
       });
     });
 
-    socket.on('game_activity', ({ message, tone }) => {
+    socket.on('game_activity', ({ roomId: activityRoomId, message, tone }) => {
       if (!message) {
+        return;
+      }
+
+      if (shouldSuppressLifecyclePrompt({ roomId: activityRoomId, message })) {
         return;
       }
 
@@ -4067,19 +4334,25 @@ function App() {
       );
     });
 
-    socket.on('live_game_session_closed', ({ reason, savedGame }) => {
+    socket.on('live_game_session_closed', ({ roomId: closedRoomId, reason, savedGame }) => {
       const shouldOpenLibrary = Boolean(
         savedGame
         && savedGame.ownerUserId
         && savedGame.ownerUserId === activeProfileRef.current?.userId
       );
+      const shouldSuppressPrompt = shouldSuppressLifecyclePrompt({
+        roomId: closedRoomId,
+        reason
+      }) || (Date.now() - recentGameFinishRef.current) < 4000;
 
       resetActiveRoomState();
       if (shouldOpenLibrary) {
         setActiveTab('library');
         void loadLibraryData({ suppressErrors: true });
       }
-      showTopPrompt(reason || 'The live match session closed.', 'info');
+      if (!shouldSuppressPrompt) {
+        showTopPrompt(reason || 'The live match session closed.', 'info');
+      }
     });
 
     socket.on('game_error', (message) => {
@@ -4291,6 +4564,230 @@ function App() {
     };
   }, [isRoomInviteModalOpen]);
 
+  useEffect(() => {
+    recoverableSessionPromptRef.current = recoverableGuestSession;
+    recoveryPromptOpenRef.current = isRecoveryPromptOpen;
+  }, [isRecoveryPromptOpen, recoverableGuestSession]);
+
+  useEffect(() => {
+    if (!recoverableGuestSession?.wasActiveGame || !isRecoveryPromptOpen) {
+      recoveryValidationKeyRef.current = '';
+      return;
+    }
+
+    if (authLoading) {
+      return;
+    }
+
+    const promptProfile = recoverableGuestSession.profile?.userId
+      ? recoverableGuestSession.profile
+      : null;
+    const accountProfile = isAuthenticated && userProfile?.userId ? userProfile : null;
+    const effectiveProfile = promptProfile || accountProfile;
+
+    if (!effectiveProfile?.userId) {
+      storeRecoverableSessionPrompt(null);
+      persistRecoverableSessionForReopen(null);
+      setRecoverableGuestSession(null);
+      setIsRecoveryPromptOpen(false);
+      recoveryValidationKeyRef.current = '';
+      return;
+    }
+
+    const validationKey = [
+      effectiveProfile.userId,
+      recoverableGuestSession.roomId,
+      promptProfile ? 'guest' : 'account'
+    ].join('::');
+
+    if (recoveryValidationKeyRef.current === validationKey) {
+      return;
+    }
+    recoveryValidationKeyRef.current = validationKey;
+
+    const resolveUnavailableRecovery = (reason = '') => {
+      storeRecoverableSessionPrompt(null);
+      persistRecoverableSessionForReopen(null);
+      setRecoverableGuestSession(null);
+      setIsRecoveryPromptOpen(false);
+      setRecoveryActionBusy('');
+      recoveryValidationKeyRef.current = '';
+
+      if (reason === 'banned') {
+        setBanNoticeModal({
+          title: 'Removed From Game',
+          message: 'You were banned from this game. You cannot rejoin it.'
+        });
+        return;
+      }
+
+      if (reason === 'replaced') {
+        showTopPrompt('You were replaced after the reconnect timeout.', 'error');
+        return;
+      }
+
+      if (reason === 'expired') {
+        showTopPrompt('That rejoin window already expired.', 'error');
+        return;
+      }
+
+      if (reason === 'ended') {
+        showTopPrompt('That match already ended.', 'info');
+      }
+    };
+
+    const validateRecoveryState = () => {
+      socket.emit('get_reconnect_state', {}, (response) => {
+        if (!response?.success) {
+          resolveUnavailableRecovery('');
+          return;
+        }
+
+        if (!response.available) {
+          resolveUnavailableRecovery(response.reason || '');
+          return;
+        }
+
+        setRecoverableGuestSession((current) => {
+          if (!current) {
+            return current;
+          }
+
+          return {
+            ...current,
+            roomId: response.roomId || current.roomId,
+            displayName: response.displayName || current.displayName,
+            role: response.role || current.role || ''
+          };
+        });
+      });
+    };
+
+    const authenticateForRecovery = (profile) => {
+      socket.emit('authenticate', profile, (response) => {
+        if (!response?.success) {
+          resolveUnavailableRecovery('');
+          return;
+        }
+
+        validateRecoveryState();
+      });
+    };
+
+    if (promptProfile?.userId) {
+      authenticateForRecovery(promptProfile);
+      return;
+    }
+
+    authenticateForRecovery(effectiveProfile);
+  }, [authLoading, isAuthenticated, isRecoveryPromptOpen, recoverableGuestSession, userProfile]);
+
+  useEffect(() => {
+    if (!isMobileSearchOpen) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      mobileSearchInputRef.current?.focus();
+      mobileSearchInputRef.current?.select?.();
+    }, 10);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isMobileSearchOpen]);
+
+  useEffect(() => {
+    if (!isRoomInviteModalOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isRoomInviteModalOpen]);
+
+  useEffect(() => {
+    const currentProfile = isAuthenticated ? userProfile : guestProfile;
+    const shouldRememberActiveSession = Boolean(
+      roomId
+      && inLobby
+      && gameStarted
+      && !gameFinished
+      && currentProfile?.userId
+    );
+
+    if (!shouldRememberActiveSession) {
+      storeRecoverableSessionPrompt(null);
+      if (!(recoverableGuestSession?.wasActiveGame && isRecoveryPromptOpen)) {
+        persistRecoverableSessionForReopen(null);
+      }
+      return;
+    }
+
+    storeRecoverableSessionPrompt({
+      roomId,
+      wasActiveGame: true,
+      displayName: getPlayerName(currentProfile) || '',
+      profile: isAuthenticated ? null : guestProfile
+    });
+  }, [
+    gameFinished,
+    gameStarted,
+    guestProfile,
+    inLobby,
+    isAuthenticated,
+    isRecoveryPromptOpen,
+    roomId,
+    recoverableGuestSession,
+    userProfile
+  ]);
+
+  useEffect(() => {
+    const buildPersistentRecoverySnapshot = () => {
+      if (recoverableGuestSession?.wasActiveGame && isRecoveryPromptOpen) {
+        return recoverableGuestSession;
+      }
+
+      const currentProfile = isAuthenticated ? userProfile : guestProfile;
+      if (!roomId || !inLobby || !gameStarted || gameFinished || !currentProfile?.userId) {
+        return null;
+      }
+
+      return {
+        roomId,
+        wasActiveGame: true,
+        displayName: getPlayerName(currentProfile) || '',
+        profile: isAuthenticated ? null : guestProfile
+      };
+    };
+
+    const persistRecoverySnapshot = () => {
+      persistRecoverableSessionForReopen(buildPersistentRecoverySnapshot());
+    };
+
+    window.addEventListener('pagehide', persistRecoverySnapshot);
+    window.addEventListener('beforeunload', persistRecoverySnapshot);
+
+    return () => {
+      window.removeEventListener('pagehide', persistRecoverySnapshot);
+      window.removeEventListener('beforeunload', persistRecoverySnapshot);
+    };
+  }, [
+    gameFinished,
+    gameStarted,
+    guestProfile,
+    inLobby,
+    isAuthenticated,
+    isRecoveryPromptOpen,
+    recoverableGuestSession,
+    roomId,
+    userProfile
+  ]);
+
   useEffect(() => () => {
     reactionTimeoutsRef.current.forEach((timeoutId) => {
       window.clearTimeout(timeoutId);
@@ -4320,6 +4817,48 @@ function App() {
     }, 1200);
 
     topPromptTimeoutsRef.current.set(promptId, timeoutId);
+  };
+
+  const beginLifecyclePromptGuard = (mode) => {
+    lifecyclePromptGuardRef.current = {
+      mode: String(mode || ''),
+      roomId: String(roomIdRef.current || '').trim().toUpperCase(),
+      expiresAt: Date.now() + 5000
+    };
+  };
+
+  const clearLifecyclePromptGuard = () => {
+    lifecyclePromptGuardRef.current = null;
+  };
+
+  const shouldSuppressLifecyclePrompt = ({ roomId: targetRoomId = '', message = '', reason = '' } = {}) => {
+    const guard = lifecyclePromptGuardRef.current;
+    const now = Date.now();
+    if (!guard || guard.expiresAt <= now) {
+      if (guard && guard.expiresAt <= now) {
+        clearLifecyclePromptGuard();
+      }
+      return false;
+    }
+
+    const normalizedRoomId = String(targetRoomId || '').trim().toUpperCase();
+    if (normalizedRoomId && guard.roomId && normalizedRoomId !== guard.roomId) {
+      return false;
+    }
+
+    const combinedText = `${message} ${reason}`.toLowerCase();
+    if (guard.mode === 'save_and_quit' && (
+      combinedText.includes('saved the game and closed the live table')
+      || combinedText.includes('saved this game and closed the live table')
+    )) {
+      return true;
+    }
+
+    if ((guard.mode === 'end_game' || guard.mode === 'host_end_room') && combinedText.includes('host ended')) {
+      return true;
+    }
+
+    return false;
   };
 
   const applyPlayerPoints = (playerPoints) => {
@@ -4427,6 +4966,9 @@ function App() {
 
   const recoverableGuestProfile = recoverableGuestSession?.profile || null;
   const recoverableGuestRoomId = recoverableGuestSession?.roomId || null;
+  const recoverableSessionDisplayName = recoverableGuestProfile?.name
+    || recoverableGuestSession?.displayName
+    || 'your previous session';
 
   const createSessionProfile = (name, guest = false) => ({
     userId: Math.random().toString(36).slice(2, 10),
@@ -4442,6 +4984,7 @@ function App() {
 
     const profile = createSessionProfile(trimmedName, true);
     storeGuestProfile(profile);
+    persistRecoverableSessionForReopen(null);
     socket.emit('authenticate', profile);
     setGuestProfile(profile);
     setRecoverableGuestSession(null);
@@ -4450,50 +4993,122 @@ function App() {
   };
 
   const handleRejoinRecoverableSession = () => {
-    if (!recoverableGuestProfile?.userId) {
-      setIsRecoveryPromptOpen(false);
+    if (recoveryActionBusy) {
       return;
     }
 
-    storeGuestProfile(recoverableGuestProfile, { roomId: recoverableGuestRoomId });
-    setGuestProfile(recoverableGuestProfile);
-    setGuestNameInput(recoverableGuestProfile.name || '');
-    setRecoverableGuestSession(null);
-    setIsRecoveryPromptOpen(false);
-    setActiveTab('play');
+    const finalizeUnavailableRejoin = () => {
+      storeRecoverableSessionPrompt(null);
+      persistRecoverableSessionForReopen(null);
+      setRecoverableGuestSession(null);
+      setIsRecoveryPromptOpen(false);
+      setRecoveryActionBusy('');
+      recoveryValidationKeyRef.current = '';
+      showTopPrompt('That session is no longer available.', 'error');
+    };
 
-    socket.emit('authenticate', recoverableGuestProfile);
-    socket.emit('restore_session', {}, (response) => {
-      if (response?.success && response.restoredRoom !== false && response.lobby) {
-        applyRestoredSession(response);
-        return;
-      }
+    setRecoveryActionBusy('rejoin');
 
-      showTopPrompt(
-        recoverableGuestRoomId
-          ? 'Rejoined player session. Previous room is no longer available.'
-          : 'Rejoined player session.',
-        recoverableGuestRoomId ? 'error' : 'info'
-      );
-    });
-  };
+    const restoreSession = () => {
+      socket.emit('restore_session', {}, (response) => {
+        if (response?.success && response.restoredRoom !== false && response.lobby) {
+          applyRestoredSession(response);
+          setRecoverableGuestSession(null);
+          setIsRecoveryPromptOpen(false);
+          setRecoveryActionBusy('');
+          return;
+        }
 
-  const handleStartFreshSession = () => {
-    const nextName = recoverableGuestProfile?.name || guestNameInput.trim() || 'Player';
-    const profile = createSessionProfile(nextName, true);
+        finalizeUnavailableRejoin();
+      });
+    };
 
     if (recoverableGuestProfile?.userId) {
-      socket.emit('authenticate', recoverableGuestProfile);
-      socket.emit('abandon_session', {});
+      storeGuestProfile(recoverableGuestProfile, { roomId: recoverableGuestRoomId });
+      setGuestProfile(recoverableGuestProfile);
+      setGuestNameInput(recoverableGuestProfile.name || '');
+      setActiveTab('play');
+      socket.emit('authenticate', recoverableGuestProfile, restoreSession);
+      return;
     }
 
-    storeGuestProfile(profile);
-    setGuestProfile(profile);
-    setGuestNameInput(nextName);
-    setRecoverableGuestSession(null);
-    setIsRecoveryPromptOpen(false);
-    setActiveTab('play');
-    socket.emit('authenticate', profile);
+    if (isAuthenticated && userProfile?.userId) {
+      socket.emit('authenticate', userProfile, restoreSession);
+      return;
+    }
+
+    if (authLoading) {
+      setRecoveryActionBusy('');
+      showTopPrompt('Loading your account session...', 'info');
+      return;
+    }
+
+    restoreSession();
+  };
+
+  const handleAbandonRecoverableSession = () => {
+    if (recoveryActionBusy) {
+      return;
+    }
+
+    const finalizeAbandon = (message = '') => {
+      storeRecoverableSessionPrompt(null);
+      persistRecoverableSessionForReopen(null);
+      setRecoverableGuestSession(null);
+      setIsRecoveryPromptOpen(false);
+      setRecoveryActionBusy('');
+      recoveryValidationKeyRef.current = '';
+      setActiveTab('play');
+      resetActiveRoomState();
+      if (message) {
+        showTopPrompt(message, 'info');
+      }
+    };
+
+    setRecoveryActionBusy('abandon');
+
+    const abandonResolvedSession = () => {
+      socket.emit('restore_session', {}, (response) => {
+        if (!response?.success || response.restoredRoom === false || !response.roomId) {
+          finalizeAbandon('That session is no longer available.');
+          return;
+        }
+
+        const activeRoomId = response.roomId;
+        const leaveEvent = response.game?.gameStarted
+          ? (response.game?.isSpectator ? 'leave_spectating' : 'abandon_match')
+          : 'leave_lobby';
+        const leavePayload = { roomId: activeRoomId };
+
+        socket.emit(leaveEvent, leavePayload, (leaveResponse) => {
+          if (leaveResponse?.error) {
+            setRecoveryActionBusy('');
+            showTopPrompt(leaveResponse.error, 'error');
+            return;
+          }
+
+          finalizeAbandon(leaveResponse?.message || 'You left the session.');
+        });
+      });
+    };
+
+    if (recoverableGuestProfile?.userId) {
+      socket.emit('authenticate', recoverableGuestProfile, abandonResolvedSession);
+      return;
+    }
+
+    if (isAuthenticated && userProfile?.userId) {
+      socket.emit('authenticate', userProfile, abandonResolvedSession);
+      return;
+    }
+
+    if (authLoading) {
+      setRecoveryActionBusy('');
+      showTopPrompt('Loading your account session...', 'info');
+      return;
+    }
+
+    abandonResolvedSession();
   };
 
   const handleRegisterImageChange = (field, previewField, label, event) => {
@@ -5616,6 +6231,18 @@ function App() {
     await runForumSearch(forumSearchInput);
   };
 
+  const handleMobileSearchSubmit = async (event) => {
+    event?.preventDefault?.();
+    const trimmedQuery = String(forumSearchInput || '').trim();
+    if (!trimmedQuery) {
+      showTopPrompt('Type something into search first.', 'info');
+      return;
+    }
+
+    setIsMobileSearchOpen(false);
+    await runForumSearch(trimmedQuery);
+  };
+
   const handleLoginSubmit = async (event) => {
     event.preventDefault();
 
@@ -5896,6 +6523,7 @@ function App() {
   const handleJudgeRulesetWithAi = async () => {
     const rulesetPayload = getEditorRulesetPayload();
     const signature = buildEditorRulesetSignature(rulesetPayload);
+    const judgeFailureMessage = 'Could not judge this ruleset right now. Try again.';
 
     if (!rulesetPayload.code.trim()) {
       const message = 'Write a ruleset before asking the Editor Bot to judge it.';
@@ -5908,7 +6536,7 @@ function App() {
     try {
       setEditorJudgeBusy(true);
       setEditorJudgeError('');
-      setEditorStatus('Judging ruleset with Editor Bot...');
+      setEditorStatus('Judging ruleset...');
 
       const response = await fetch('/api/rulesets/judge', {
         method: 'POST',
@@ -5931,7 +6559,7 @@ function App() {
 
       const normalizedReview = normalizeEditorJudgeReview(data?.review);
       if (!normalizedReview) {
-        throw new Error('Editor Bot returned an unreadable review.');
+        throw new Error(judgeFailureMessage);
       }
 
       if (data?.compiler?.ast) {
@@ -5940,14 +6568,10 @@ function App() {
 
       setEditorJudgeReview(normalizedReview);
       setEditorJudgeSignature(signature);
-      setEditorStatus(
-        normalizedReview.reviewSource === 'ai'
-          ? 'Ruleset compiled and judged by the Editor Bot.'
-          : 'Ruleset compiled. The Editor Bot review is using the local fallback right now.'
-      );
+      setEditorStatus('Ruleset judgment ready.');
     } catch (error) {
-      setEditorJudgeError(error.message || 'Unable to judge this ruleset right now.');
-      setEditorStatus(error.message || 'Unable to judge this ruleset right now.');
+      setEditorJudgeError(judgeFailureMessage);
+      setEditorStatus(judgeFailureMessage);
     } finally {
       setEditorJudgeBusy(false);
     }
@@ -5965,7 +6589,7 @@ function App() {
     };
 
     setRuleDrafts((current) => [nextDraft, ...current.filter((draft) => draft.title !== nextDraft.title)].slice(0, 10));
-    setEditorStatus('Draft saved locally.');
+    setEditorStatus('Draft saved.');
   };
 
   const handleDownloadRentzRuleset = () => {
@@ -5984,12 +6608,25 @@ function App() {
     setEditorStatus('Ruleset downloaded as .rentz.');
   };
 
+  const handleOpenRoomRulesetSourcePicker = (mode) => {
+    if (mode === 'saved-rulesets' && isAuthenticated && !libraryState.loading && savedCustomRulesets.length === 0) {
+      void loadLibraryData({ suppressErrors: true });
+    }
+
+    setRoomRulesetSourcePicker(mode);
+  };
+
   const readRentzFileFromInput = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
 
     if (!file) {
       return null;
+    }
+
+    const normalizedFileName = String(file.name || '').trim().toLowerCase();
+    if (normalizedFileName && !normalizedFileName.endsWith('.rentz') && file.type && file.type !== 'text/plain') {
+      throw new Error('Choose a valid .rentz ruleset file');
     }
 
     const sourceText = await file.text();
@@ -6009,15 +6646,30 @@ function App() {
       }
 
       populateEditorFromRuleset(importedRuleset);
+      setEditorStatus('Imported .rentz ruleset into the editor.');
     } catch (error) {
       setEditorStatus(error.message);
       setEditorAst(null);
     }
   };
 
+  const handleImportSavedRulesetToRoom = (ruleset) => {
+    if (!ruleset) {
+      return;
+    }
+
+    saveRulesetToCurrentRoom({
+      longName: ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset',
+      shortName: ruleset.shortName || ruleset.abbreviation || buildRulesetShortNameFallback(ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset'),
+      type: ruleset.type,
+      code: ruleset.code
+    });
+    setRoomRulesetSourcePicker(null);
+  };
+
   const saveRulesetToCurrentRoom = (rulesetPayload, { updateEditorStatus = false, roomRulesetId = editorRoomRulesetId } = {}) => {
-    if (!activeProfile?.guest || !inLobby || !amIHost || gameStarted) {
-      const message = 'Only a guest host can manage room rulesets before the match starts.';
+    if (!inLobby || !amIHost || gameStarted) {
+      const message = 'Only the host can change room rulesets before the match starts.';
       if (updateEditorStatus) {
         setEditorStatus(message);
       }
@@ -6370,10 +7022,14 @@ function App() {
       return;
     }
 
+    if (mode === 'end_room') {
+      beginLifecyclePromptGuard('host_end_room');
+    }
     setTrainingReturnBusy(true);
     socket.emit('host_leave_match', { roomId, mode }, (response) => {
       setTrainingReturnBusy(false);
       if (response?.error) {
+        clearLifecyclePromptGuard();
         showErrorMessage(response.error);
         return;
       }
@@ -6382,15 +7038,8 @@ function App() {
       if (mode === 'transfer_and_leave') {
         resetActiveRoomState();
       }
-      if (response?.message) {
+      if (mode !== 'end_room' && response?.message) {
         showTopPrompt(response.message, 'info');
-      } else if (mode === 'end_room') {
-        showTopPrompt(
-          response?.eloApplied
-            ? 'Room closed. ELO was applied because the match ended between rounds.'
-            : 'Room closed without ELO because the match ended mid-round.',
-          'info'
-        );
       }
     });
   };
@@ -6439,22 +7088,29 @@ function App() {
   };
 
   const handleEndGame = () => {
+    beginLifecyclePromptGuard('end_game');
     setRoundActionBusy('end');
     socket.emit('end_game', { roomId }, (response) => {
       setRoundActionBusy('');
       if (response?.error) {
+        clearLifecyclePromptGuard();
         showErrorMessage(response.error);
       }
     });
   };
 
   const handleSaveAndQuit = () => {
+    beginLifecyclePromptGuard('save_and_quit');
     setRoundActionBusy('save');
     socket.emit('save_and_quit', { roomId }, (response) => {
       setRoundActionBusy('');
       if (response?.error) {
+        clearLifecyclePromptGuard();
         showErrorMessage(response.error);
+        return;
       }
+
+      showTopPrompt('Game saved to your Library.', 'success');
     });
   };
 
@@ -6634,8 +7290,7 @@ function App() {
   const myPlayer = players[myIndex] || activeLobbyPlayer || null;
   const amIHost = inLobby && lobbyHostId === activeProfile?.userId;
   const canInviteFriends = inLobby && !gameStarted && isAuthenticated && !activeProfile?.guest;
-  const currentRoomInvite = incomingRoomInvites[0] || null;
-  const canAddGuestRoomRulesets = Boolean(activeProfile?.guest && amIHost && !gameStarted);
+  const canManageRoomRulesets = Boolean(amIHost && !gameStarted);
   const isTrainingMatch = matchMode === MATCH_MODE_TRAINING;
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
@@ -6670,12 +7325,12 @@ function App() {
     || currentGameLabel;
   const trainerPlayer = players.find((player) => player?.isTrainer) || null;
   const hasActiveModal = Boolean(
-    (isRecoveryPromptOpen && recoverableGuestProfile) ||
+    (isRecoveryPromptOpen && recoverableGuestSession) ||
     isRoomSettingsOpen ||
     isTrainingSetupOpen ||
     trainingFinalReview ||
     playerProfileModal ||
-    currentRoomInvite ||
+    roomRulesetSourcePicker ||
     rankLeaderboardModal ||
     banNoticeModal ||
     leaveMatchConfirmModal ||
@@ -7056,7 +7711,7 @@ function App() {
                     <button
                       type="button"
                       onClick={() => handleAccountRulesetPreview(definition.selectionId)}
-                      className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
+                      className="aero-button aero-button-secondary aero-button-sm w-full"
                     >
                       <FileCode2 className="h-3.5 w-3.5" />
                       Code Preview
@@ -7067,7 +7722,7 @@ function App() {
                         setPlayerProfileModal(null);
                         handleAccountRulesetOpenInEditor(definition.selectionId);
                       }}
-                      className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
+                      className="aero-button aero-button-positive aero-button-sm w-full"
                     >
                       <Settings className="h-3.5 w-3.5" />
                       Open Editor
@@ -7127,7 +7782,7 @@ function App() {
           onClick={async () => {
             await runFriendAction('reject', currentProfileTargetId, 'Friend request rejected.', { updateProfileModal: true });
           }}
-          className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+          className={AERO_SECONDARY_BUTTON_CLASS}
         >
           Reject
         </button>
@@ -7139,7 +7794,7 @@ function App() {
           type="button"
           disabled={busy}
           onClick={() => void runFriendAction('cancel', currentProfileTargetId, 'Friend request canceled.', { updateProfileModal: true })}
-          className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+          className={AERO_SECONDARY_BUTTON_CLASS}
         >
           {busy ? 'Canceling...' : 'Cancel Request'}
         </button>
@@ -7151,7 +7806,7 @@ function App() {
           type="button"
           disabled={busy}
           onClick={() => void runFriendAction('remove', currentProfileTargetId, 'Friend removed.', { updateProfileModal: true })}
-          className="rounded-[1.3rem] border border-red-200/80 bg-red-100/80 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+          className={AERO_DESTRUCTIVE_BUTTON_CLASS}
         >
           {busy ? 'Removing...' : 'Remove Friend'}
         </button>
@@ -7192,7 +7847,7 @@ function App() {
         key="close"
         type="button"
         onClick={() => setPlayerProfileModal(null)}
-        className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+        className={AERO_SECONDARY_BUTTON_CLASS}
       >
         Close
       </button>
@@ -7417,8 +8072,8 @@ function App() {
     }
 
     return (
-      <div className="absolute right-0 top-full z-[95] mt-3 w-[min(24rem,calc(100vw-2rem))] max-w-[24rem]">
-        <section className="flex max-h-[28rem] flex-col overflow-hidden rounded-[1.7rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[0_26px_64px_rgba(15,23,42,0.24)] backdrop-blur-2xl">
+      <div className="absolute right-0 top-full z-[95] mt-3 w-[min(30rem,calc(100vw-1.5rem))] max-w-[30rem]">
+        <section className="flex max-h-[min(34rem,calc(100vh-6rem))] flex-col overflow-hidden rounded-[1.7rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[0_26px_64px_rgba(15,23,42,0.24)] backdrop-blur-2xl">
           <div className="flex items-start justify-between gap-3 border-b border-[var(--glass-border)] px-4 py-4 sm:px-5">
             <div className="min-w-0">
               <div className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
@@ -7474,7 +8129,7 @@ function App() {
                         <button
                           type="button"
                           onClick={() => void openPlayerProfileModal(friend)}
-                          className="flex min-w-0 items-center gap-3 text-left"
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
                         >
                           <AvatarFace
                             player={friend}
@@ -7511,7 +8166,7 @@ function App() {
                           disabled={!friend.canInvite || isBusy}
                           onClick={() => handleSendRoomInvite(friend.userId)}
                           className={clsx(
-                            'rounded-[1.2rem] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] transition',
+                            'w-full rounded-[1.2rem] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] transition sm:w-auto sm:min-w-[8.75rem]',
                             friend.canInvite
                               ? 'border border-sky-200/80 bg-sky-100/85 text-sky-900 hover:bg-sky-200/80'
                               : 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-secondary)] opacity-80'
@@ -7531,66 +8186,63 @@ function App() {
     );
   };
 
-  const renderIncomingRoomInviteModal = () => {
-    if (!currentRoomInvite) {
+  const renderRoomRulesetSourcePickerModal = () => {
+    if (!roomRulesetSourcePicker) {
       return null;
     }
 
-    const busy = roomInviteDecisionBusyId === currentRoomInvite.inviteId;
-    const inviter = currentRoomInvite.sender || {};
-    const inviterName = inviter.displayName || inviter.username || 'A friend';
-
     return (
       <ModalShell
-        title="Room Invite"
-        eyebrow="Join room"
-        onClose={() => handleDeclineRoomInvite(currentRoomInvite.inviteId, { silent: true })}
-        footer={(
-          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => handleDeclineRoomInvite(currentRoomInvite.inviteId)}
-              className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              Decline
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => handleAcceptRoomInvite(currentRoomInvite.inviteId)}
-              className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {busy ? 'Joining...' : 'Accept'}
-            </button>
-          </div>
-        )}
+        title="Import from Saved Rulesets"
+        eyebrow="Room rulesets"
+        onClose={() => setRoomRulesetSourcePicker(null)}
       >
         <div className="space-y-4">
-          <div className="flex items-center gap-4 rounded-[1.5rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
-            <AvatarFace
-              player={inviter}
-              alt={`${inviterName} avatar`}
-              wrapperClassName="seat-avatar h-16 w-16 text-base shrink-0"
-              imageClassName="h-full w-full rounded-full object-cover"
-              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-            />
-            <div className="min-w-0">
-              <div className="text-lg font-black text-[var(--text-primary)]">{inviterName}</div>
-              <p className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                invited you to join <span className="font-black text-[var(--text-primary)]">{currentRoomInvite.roomName || currentRoomInvite.roomId || 'a room'}</span>.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <div className="status-pill px-4 py-2">{currentRoomInvite.roomId}</div>
-            {currentRoomInvite.expiresAt ? (
-              <div className="status-pill px-4 py-2">
-                Expires {new Date(currentRoomInvite.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {!isAuthenticated ? (
+              <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                Log in to import saved rulesets into the room.
               </div>
-            ) : null}
-          </div>
+            ) : libraryState.loading && savedCustomRulesets.length === 0 ? (
+              <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                Loading saved rulesets...
+              </div>
+            ) : savedCustomRulesets.length === 0 ? (
+              <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+                No saved rulesets yet.
+              </div>
+            ) : (
+              <div className="max-h-[30rem] space-y-3 overflow-y-auto pr-1" data-rentz-modal-scroll="y">
+                {savedCustomRulesets.map((ruleset) => (
+                  <button
+                    key={`editor-source-saved-${ruleset.id}`}
+                    type="button"
+                    onClick={() => handleImportSavedRulesetToRoom(ruleset)}
+                    className="w-full rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-left transition hover:bg-[var(--surface-medium)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-base font-black text-[var(--text-primary)]">
+                          {ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset'}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
+                          <span>{ruleset.shortName || ruleset.abbreviation || buildRulesetShortNameFallback(ruleset.longName || ruleset.label || ruleset.title || 'Saved Ruleset')}</span>
+                          <span>{ruleset.type === 'end_game' ? 'End Game' : 'Per Round'}</span>
+                          <span>Saved ruleset</span>
+                        </div>
+                        {ruleset.originalCreator ? (
+                          <div className="mt-2 text-sm font-semibold text-[var(--text-secondary)]">
+                            Creator: {getPlayerName(ruleset.originalCreator)}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                        Import
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
         </div>
       </ModalShell>
     );
@@ -8833,10 +9485,7 @@ function App() {
 
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="glass-panel p-5 sm:p-8">
-          <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Host Table</h3>
-          <p className="mb-6 text-base font-semibold text-[var(--text-secondary)] sm:text-sm">
-            Create a named room. Public rooms appear in the browser; private rooms still work by code.
-          </p>
+          <h3 className="mb-6 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Create Room</h3>
           <div className="mb-4 grid gap-3">
             <input
               value={newRoomName}
@@ -8871,10 +9520,7 @@ function App() {
           </button>
         </div>
         <div className="glass-panel p-5 sm:p-8">
-          <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Join Room</h3>
-          <p className="mb-6 text-base font-semibold text-[var(--text-secondary)] sm:text-sm">
-            Paste a private room code or browse currently open public rooms.
-          </p>
+          <h3 className="mb-6 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Join Room</h3>
           <div className="flex flex-col gap-3 sm:grid sm:grid-cols-[minmax(0,1fr)_auto]">
             <input
               value={joinInput}
@@ -8891,30 +9537,22 @@ function App() {
           <button
             type="button"
             onClick={openPublicRoomBrowser}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-4 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            className="mt-4 flex w-full items-center justify-center gap-2 rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-6 py-4 text-[0.95rem] font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
           >
             <Users className="h-4 w-4" />
-            Browse public rooms
+            Browse Rooms
           </button>
         </div>
       </div>
 
       <div className="glass-panel overflow-hidden p-5 sm:p-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="max-w-2xl">
+          <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200/80 bg-emerald-100/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-950">
               <Sparkles className="h-3.5 w-3.5" />
               Training
             </div>
-            <h3 className="mt-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Play with Trainer</h3>
-            <p className="mt-3 max-w-2xl text-base font-semibold leading-7 text-[var(--text-secondary)] sm:text-sm">
-              Launch an unranked coaching match with one Trainer bot, adjustable Trainer ELO, optional move commentary, your chosen ruleset, and extra filler bots when you want a fuller table.
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
-              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">Unranked</span>
-              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">Default + saved rulesets</span>
-              <span className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-2">2 to 6 players</span>
-            </div>
+            <h3 className="mt-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Training</h3>
           </div>
 
           <div className="flex w-full flex-col gap-3 lg:w-auto lg:min-w-[16rem]">
@@ -8924,13 +9562,8 @@ function App() {
               className="inline-flex items-center justify-center gap-3 rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(245,255,240,0.98)_0%,rgba(181,245,138,0.96)_48%,rgba(46,124,69,0.98)_100%)] px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.92),0_18px_36px_rgba(52,148,73,0.28)] transition hover:-translate-y-0.5 hover:brightness-[1.03] sm:text-base"
             >
               <Bot className="h-5 w-5" />
-              Open Training Setup
+              Training
             </button>
-            <div className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-              {isAuthenticated
-                ? 'Your saved library rulesets appear alongside the default training rules.'
-                : 'Guest training uses the default rulesets and starts Trainer ELO at 500.'}
-            </div>
           </div>
         </div>
       </div>
@@ -8942,15 +9575,12 @@ function App() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Public Rooms</h3>
-          <p className="mt-2 text-sm font-semibold text-[var(--text-secondary)]">
-            Join one open room at a time. Private rooms still require their code.
-          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={refreshPublicRooms}
-            className="inline-flex items-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            className={AERO_SECONDARY_BUTTON_CLASS}
           >
             <RefreshCw className="h-4 w-4" />
             Refresh
@@ -8958,8 +9588,9 @@ function App() {
           <button
             type="button"
             onClick={() => setIsPublicBrowserOpen(false)}
-            className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+            className={AERO_BACK_BUTTON_CLASS}
           >
+            <ArrowLeft className="h-4 w-4" />
             Back
           </button>
         </div>
@@ -9042,29 +9673,31 @@ function App() {
                       </div>
                     )}
 
-                    <button
-                      type="button"
-                      disabled={inLobby || gameStarted}
-                      onClick={() => {
-                        if (room.isInGame) {
-                          setPendingSpectatorJoin({
-                            roomId: room.roomId,
-                            roomName: room.roomName
-                          });
-                          return;
-                        }
+                    <div className="flex justify-center pt-1">
+                      <button
+                        type="button"
+                        disabled={inLobby || gameStarted}
+                        onClick={() => {
+                          if (room.isInGame) {
+                            setPendingSpectatorJoin({
+                              roomId: room.roomId,
+                              roomName: room.roomName
+                            });
+                            return;
+                          }
 
-                        joinPublicRoom(room.roomId);
-                      }}
-                      className={clsx(
-                        'w-full rounded-[1.3rem] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] transition',
-                        inLobby || gameStarted
-                          ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
-                          : 'frutiger-button'
-                      )}
-                    >
-                      {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
-                    </button>
+                          joinPublicRoom(room.roomId);
+                        }}
+                        className={clsx(
+                          'w-full max-w-[18rem] rounded-[1.35rem] px-6 py-4 text-[0.95rem] font-black uppercase tracking-[0.16em] transition',
+                          inLobby || gameStarted
+                            ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
+                            : 'frutiger-button'
+                        )}
+                      >
+                        {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
+                      </button>
+                    </div>
                   </article>
                 ))}
               </div>
@@ -9113,29 +9746,31 @@ function App() {
                   })
                 ))}
               </div>
-              <button
-                type="button"
-                disabled={inLobby || gameStarted}
-                onClick={() => {
-                  if (room.isInGame) {
-                    setPendingSpectatorJoin({
-                      roomId: room.roomId,
-                      roomName: room.roomName
-                    });
-                    return;
-                  }
+              <div className="flex justify-center pt-1">
+                <button
+                  type="button"
+                  disabled={inLobby || gameStarted}
+                  onClick={() => {
+                    if (room.isInGame) {
+                      setPendingSpectatorJoin({
+                        roomId: room.roomId,
+                        roomName: room.roomName
+                      });
+                      return;
+                    }
 
-                  joinPublicRoom(room.roomId);
-                }}
-                className={clsx(
-                  'w-full rounded-[1.3rem] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] transition',
-                  inLobby || gameStarted
-                    ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
-                    : 'frutiger-button'
-                )}
-              >
-                {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
-              </button>
+                    joinPublicRoom(room.roomId);
+                  }}
+                  className={clsx(
+                    'w-full max-w-[18rem] rounded-[1.35rem] px-6 py-4 text-[0.95rem] font-black uppercase tracking-[0.16em] transition',
+                    inLobby || gameStarted
+                      ? 'cursor-not-allowed border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-[var(--text-secondary)] opacity-70'
+                      : 'frutiger-button'
+                  )}
+                >
+                  {inLobby || gameStarted ? 'Already in a room' : room.isInGame ? 'Spectate active room' : 'Join public room'}
+                </button>
+              </div>
             </article>
               ))}
             </div>
@@ -9162,8 +9797,9 @@ function App() {
               </div>
               <button
                 onClick={() => setPlayView('table')}
-                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.18em] transition hover:bg-[var(--surface-hover)]"
+                className={AERO_BACK_BUTTON_CLASS}
               >
+                <ArrowLeft className="h-4 w-4" />
                 Back to Lobby
               </button>
             </div>
@@ -9228,8 +9864,9 @@ function App() {
               </div>
               <button
                 onClick={() => setPlayView('table')}
-                className="frutiger-button px-5 py-3 text-sm font-black uppercase tracking-[0.16em]"
+                className={AERO_BACK_BUTTON_CLASS}
               >
+                <ArrowLeft className="h-4 w-4" />
                 Back to table
               </button>
             </div>
@@ -9635,9 +10272,6 @@ function App() {
       playContent = (
         <div className="relative z-10 m-auto flex w-full max-w-md flex-col gap-4 px-1 text-center">
           <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Play as Guest</h3>
-          <p className="text-base font-semibold text-[var(--text-secondary)] sm:text-sm">
-            Pick a guest display name for this device. Account login lives separately from guest play.
-          </p>
           <input
             value={guestNameInput}
             onChange={(event) => setGuestNameInput(event.target.value)}
@@ -10034,227 +10668,231 @@ function App() {
     </ModalShell>
   );
 
-  const renderEditorContent = () => (
-    <div className="grid items-start gap-5 xl:grid-cols-[1.15fr_0.85fr]">
-      <section className="glass-panel self-start p-5 sm:p-6">
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Editor</h3>
-            <p className="text-base font-semibold text-[var(--text-secondary)] sm:text-sm">
-              Create, edit, and validate custom Rentz rules before you bring them into a match.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {isViewingEditableRoomRuleset && <div className="status-pill px-4 py-2">linked to room</div>}
-            <div className="status-pill px-4 py-2">{editorType.replace('_', ' ')}</div>
-          </div>
-        </div>
+  const renderEditorContent = () => {
+    const currentEditorJudgeSignature = buildEditorRulesetSignature();
+    const isJudgeReviewStale = Boolean(editorJudgeReview) && editorJudgeSignature !== currentEditorJudgeSignature;
 
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(8rem,12rem)_auto]">
-          <label>
-            <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Long name</span>
-            <input
-              value={editorTitle}
-              onChange={(event) => setEditorTitle(event.target.value)}
-              className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
-              placeholder="King of Hearts"
-            />
-          </label>
-          <label>
-            <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Short name</span>
-            <input
-              value={editorShortName}
-              onChange={(event) => setEditorShortName(event.target.value)}
-              className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
-              placeholder="K♥"
-            />
-          </label>
-          <label>
-            <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Type</span>
-            <select
-              value={editorType}
-              onChange={(event) => setEditorType(event.target.value)}
-              className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-4 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none"
-            >
-              <option value="per_round">per_round</option>
-              <option value="end_game">end_game</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="rentz-code-editor-shell mt-4">
-          <textarea
-            value={editorCode}
-            onChange={(event) => setEditorCode(event.target.value)}
-            className="rentz-code-editor-textarea"
-            spellCheck={false}
-          />
-        </div>
-
-        <input
-          ref={editorImportInputRef}
-          type="file"
-          accept=".rentz,text/plain"
-          onChange={handleImportRentzToEditor}
-          className="hidden"
-        />
-
-        <div className="rentz-editor-actions mt-4">
-          <button onClick={handleCompileRules} className="rentz-editor-action is-primary">
-            <span className="rentz-editor-action-icon">
-              <FileCode2 className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">Compile Ruleset</span>
-              <span className="rentz-editor-action-meta">Validate syntax and refresh the preview.</span>
-            </span>
-          </button>
-          <button onClick={handleSaveDraft} className="rentz-editor-action is-positive">
-            <span className="rentz-editor-action-icon">
-              <Check className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">Save Draft</span>
-              <span className="rentz-editor-action-meta">Keep this ruleset in your local draft list.</span>
-            </span>
-          </button>
-          <button onClick={handleSaveEditorRulesetToProfile} disabled={editorSaveBusy} className="rentz-editor-action is-positive disabled:cursor-not-allowed disabled:opacity-70">
-            <span className="rentz-editor-action-icon">
-              <Library className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">{editorSaveBusy ? 'Saving...' : 'Save Ruleset to Profile'}</span>
-              <span className="rentz-editor-action-meta">Store this custom ruleset in your profile library without duplicating repeats.</span>
-            </span>
-          </button>
-          <button onClick={handleDownloadRentzRuleset} className="rentz-editor-action">
-            <span className="rentz-editor-action-icon">
-              <Download className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">Download .rentz</span>
-              <span className="rentz-editor-action-meta">Export the current ruleset as a shareable file.</span>
-            </span>
-          </button>
-          <button onClick={() => editorImportInputRef.current?.click()} className="rentz-editor-action">
-            <span className="rentz-editor-action-icon">
-              <Upload className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">Import .rentz</span>
-              <span className="rentz-editor-action-meta">Load a saved ruleset into the editor.</span>
-            </span>
-          </button>
-          {canAddGuestRoomRulesets && (
-            <button onClick={handleApplyEditorRulesetToRoom} className="rentz-editor-action is-room">
-              <span className="rentz-editor-action-icon">
-                <Sparkles className="h-5 w-5" />
-              </span>
-              <span className="rentz-editor-action-copy">
-                <span className="rentz-editor-action-title">{isViewingEditableRoomRuleset ? 'Update Room Ruleset' : 'Apply to Room'}</span>
-                <span className="rentz-editor-action-meta">{isViewingEditableRoomRuleset ? 'Save these edits back into the linked room ruleset.' : 'Push this ruleset straight into the current room.'}</span>
-              </span>
-            </button>
-          )}
-          <button onClick={() => setActiveTab('guide')} className="rentz-editor-action is-guide">
-            <span className="rentz-editor-action-icon">
-              <Info className="h-5 w-5" />
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">View Guide</span>
-              <span className="rentz-editor-action-meta">Open the syntax guide and rule-writing help.</span>
-            </span>
-          </button>
-        </div>
-
-      </section>
-
-      <section className="space-y-5 self-start">
-        {(() => {
-          const currentEditorJudgeSignature = buildEditorRulesetSignature();
-          const isJudgeReviewStale = Boolean(editorJudgeReview) && editorJudgeSignature !== currentEditorJudgeSignature;
-
-          return (
-            <>
-        <div>
-          <div
-            className="flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
-            role="status"
-            aria-live="polite"
-          >
-            {editorStatus || 'Compiler messages will appear here after compile, save, import, and related editor actions.'}
-          </div>
-        </div>
-
-        <div className="glass-panel p-5 sm:p-6">
-          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
-          {editorAst ? (
-            <pre className="max-h-[24rem] overflow-auto rounded-[1.3rem] bg-slate-950/80 p-4 text-xs text-lime-100">
-              {JSON.stringify(editorAst, null, 2)}
-            </pre>
-          ) : (
-            <p className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
-              No compiled preview yet.
-            </p>
-          )}
-        </div>
-
-        <div className="glass-panel p-5 sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">Editor Bot</h4>
-              <p className="mt-2 text-sm font-semibold text-[var(--text-secondary)]">
-                Ask for a gameplay-focused review of fairness, pacing, balance, clarity, and strategic depth.
-              </p>
-            </div>
-            {editorJudgeReview && (
-              <div className="status-pill px-4 py-2">
-                {editorJudgeReview.reviewSource === 'ai' ? 'AI review ready' : 'fallback review'}
+    return (
+      <div className="space-y-5">
+        <div className="grid items-stretch gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+          <section className="glass-panel self-start p-5 sm:p-6">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Editor</h3>
               </div>
-            )}
-          </div>
+              <div className="flex flex-wrap gap-2">
+                {isViewingEditableRoomRuleset && <div className="status-pill px-4 py-2">linked to room</div>}
+                <div className="status-pill px-4 py-2">{editorType.replace('_', ' ')}</div>
+              </div>
+            </div>
 
-          <button
-            type="button"
-            onClick={handleJudgeRulesetWithAi}
-            disabled={editorJudgeBusy}
-            className="rentz-editor-action is-guide mt-4 w-full disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <span className="rentz-editor-action-icon">
-              {editorJudgeBusy ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Bot className="h-5 w-5" />}
-            </span>
-            <span className="rentz-editor-action-copy">
-              <span className="rentz-editor-action-title">{editorJudgeBusy ? 'Judging Ruleset...' : 'Judge Ruleset with AI...'}</span>
-              <span className="rentz-editor-action-meta">Run a design review without replacing the compiler preview.</span>
-            </span>
-          </button>
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(8rem,12rem)_auto]">
+              <label>
+                <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Long name</span>
+                <input
+                  value={editorTitle}
+                  onChange={(event) => setEditorTitle(event.target.value)}
+                  className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+                  placeholder="King of Hearts"
+                />
+              </label>
+              <label>
+                <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Short name</span>
+                <input
+                  value={editorShortName}
+                  onChange={(event) => setEditorShortName(event.target.value)}
+                  className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+                  placeholder="K♥"
+                />
+              </label>
+              <label>
+                <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Type</span>
+                <select
+                  value={editorType}
+                  onChange={(event) => setEditorType(event.target.value)}
+                  className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-4 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none"
+                >
+                  <option value="per_round">per_round</option>
+                  <option value="end_game">end_game</option>
+                </select>
+              </label>
+            </div>
 
-          <div className="mt-4 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
-            {editorJudgeError
-              ? editorJudgeError
-              : editorJudgeBusy
-                ? 'Editor Bot is reviewing gameplay quality now. This can fall back cleanly if Ollama is unavailable.'
-                : 'Compile status still matters. If the ruleset does not compile, the judge will stop and ask you to fix those errors first.'}
-          </div>
+            <div className="rentz-code-editor-shell mt-4">
+              <textarea
+                value={editorCode}
+                onChange={(event) => setEditorCode(event.target.value)}
+                className="rentz-code-editor-textarea"
+                spellCheck={false}
+              />
+            </div>
+
+            <input
+              ref={editorImportInputRef}
+              type="file"
+              accept=".rentz,text/plain"
+              onChange={handleImportRentzToEditor}
+              className="hidden"
+            />
+
+            <div className="rentz-editor-actions mt-4">
+              <button onClick={handleCompileRules} className="rentz-editor-action is-primary">
+                <span className="rentz-editor-action-icon">
+                  <FileCode2 className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Compile</span>
+                </span>
+              </button>
+              <button onClick={handleSaveDraft} className="rentz-editor-action is-positive">
+                <span className="rentz-editor-action-icon">
+                  <Check className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Save Draft</span>
+                </span>
+              </button>
+              <button onClick={handleSaveEditorRulesetToProfile} disabled={editorSaveBusy} className="rentz-editor-action is-positive disabled:cursor-not-allowed disabled:opacity-70">
+                <span className="rentz-editor-action-icon">
+                  <Library className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">{editorSaveBusy ? 'Saving...' : 'Save to Profile'}</span>
+                </span>
+              </button>
+              <button onClick={handleDownloadRentzRuleset} className="rentz-editor-action">
+                <span className="rentz-editor-action-icon">
+                  <Download className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Download .rentz</span>
+                </span>
+              </button>
+              <button onClick={() => editorImportInputRef.current?.click()} className="rentz-editor-action">
+                <span className="rentz-editor-action-icon">
+                  <Upload className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Import .rentz</span>
+                </span>
+              </button>
+              {canManageRoomRulesets && (
+                <button onClick={handleApplyEditorRulesetToRoom} className="rentz-editor-action is-room">
+                  <span className="rentz-editor-action-icon">
+                    <Sparkles className="h-5 w-5" />
+                  </span>
+                  <span className="rentz-editor-action-copy">
+                    <span className="rentz-editor-action-title">{isViewingEditableRoomRuleset ? 'Update Room Ruleset' : 'Apply to Room'}</span>
+                  </span>
+                </button>
+              )}
+              <button onClick={() => setActiveTab('guide')} className="rentz-editor-action is-guide">
+                <span className="rentz-editor-action-icon">
+                  <Info className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Guide</span>
+                </span>
+              </button>
+            </div>
+          </section>
+
+          <section className="flex h-full w-full max-w-[44rem] flex-col gap-5 self-stretch">
+            <div
+              className="flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
+              role="status"
+              aria-live="polite"
+            >
+              {editorStatus || 'Ready.'}
+            </div>
+
+            <div className="glass-panel p-5 sm:p-6">
+              <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
+              {editorAst ? (
+                <pre className="max-h-[24rem] overflow-auto rounded-[1.3rem] bg-slate-950/80 p-4 text-xs text-lime-100">
+                  {JSON.stringify(editorAst, null, 2)}
+                </pre>
+              ) : (
+                <p className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+                  No compiled preview yet.
+                </p>
+              )}
+            </div>
+
+            <div className="glass-panel p-5 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">Saved Drafts</h4>
+                <div className="status-pill px-4 py-2">{ruleDrafts.length} saved</div>
+              </div>
+              <div className="space-y-3">
+                {ruleDrafts.length === 0 ? (
+                  <p className="text-sm font-semibold text-[var(--text-secondary)]">
+                    No drafts saved yet.
+                  </p>
+                ) : (
+                  ruleDrafts.map((draft) => (
+                    <button
+                      key={draft.id}
+                      onClick={() => {
+                        populateEditorFromRuleset({
+                          longName: draft.title,
+                          shortName: draft.shortName,
+                          type: draft.type,
+                          code: draft.code
+                        }, {
+                          linkedRoomRulesetId: null,
+                          switchToEditor: true
+                        });
+                      }}
+                      className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3 text-left transition hover:bg-[var(--surface-soft)]"
+                    >
+                      <div className="text-base font-black text-[var(--text-primary)]">{draft.title}</div>
+                      <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                        {draft.type} • {new Date(draft.updatedAt).toLocaleString()}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel mt-auto p-5 sm:p-6">
+              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">AI Judgment</h4>
+
+              <button
+                type="button"
+                onClick={handleJudgeRulesetWithAi}
+                disabled={editorJudgeBusy}
+                className="rentz-editor-action is-guide mt-4 w-full disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                <span className="rentz-editor-action-icon">
+                  {editorJudgeBusy ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Bot className="h-5 w-5" />}
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">{editorJudgeBusy ? 'Judging...' : 'Judge Ruleset with AI'}</span>
+                </span>
+              </button>
+
+              <div className="mt-4 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
+                {editorJudgeError
+                  ? editorJudgeError
+                  : editorJudgeBusy
+                    ? 'Judging ruleset...'
+                    : 'Compile before judging.'}
+              </div>
+            </div>
+          </section>
         </div>
 
         {editorJudgeReview && (
-          <div className="glass-panel max-h-[calc(100vh-8rem)] overflow-y-auto p-5 sm:p-6">
+          <section className="glass-panel p-5 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Editor Bot review</div>
-                <h4 className="mt-2 text-2xl font-display font-black text-[var(--text-primary)]">Ruleset Judgment</h4>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <div className="status-pill px-4 py-2">
-                  {editorJudgeReview.reviewSource === 'ai' ? 'Ollama review' : 'Local fallback'}
-                </div>
-                {isJudgeReviewStale && <div className="status-pill px-4 py-2">review is for an earlier draft</div>}
-              </div>
+              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">AI Ruleset Judgment</h4>
+              {isJudgeReviewStale && <div className="status-pill px-4 py-2">Earlier draft</div>}
             </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-              <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
+            <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+              <div className="min-w-0 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Overall score</div>
@@ -10270,7 +10908,7 @@ function App() {
                 <p className="mt-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.rulesetSummary}</p>
               </div>
 
-              <div className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
+              <div className="min-w-0 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
                 <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Constructive review</div>
                 <p className="mt-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.constructiveReview}</p>
                 {editorJudgeReview.recommendations.length > 0 && (
@@ -10291,14 +10929,14 @@ function App() {
               </div>
             </div>
 
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {EDITOR_BOT_CATEGORY_DEFINITIONS.map((category) => {
                 const categoryEntry = editorJudgeReview.categoryRatings[category.key];
 
                 return (
                   <div
                     key={category.key}
-                    className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.06)]"
+                    className="min-w-0 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.06)]"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-black text-[var(--text-primary)]">{category.label}</div>
@@ -10316,7 +10954,7 @@ function App() {
               <div className="mt-4 rounded-[1.35rem] border border-amber-200/60 bg-amber-50/80 p-4 text-sm font-semibold text-amber-950">
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-amber-900">
                   <Ban className="h-4 w-4" />
-                  Warnings and concerns
+                  Warnings
                 </div>
                 <div className="mt-3 space-y-2">
                   {editorJudgeReview.warnings.map((warning, index) => (
@@ -10325,75 +10963,11 @@ function App() {
                 </div>
               </div>
             )}
-
-            {editorJudgeReview.diagnostics.length > 0 && (
-              <div className="mt-4 rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
-                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Editor Bot diagnostics</div>
-                <div className="mt-3 space-y-3">
-                  {editorJudgeReview.diagnostics.map((entry, index) => (
-                    <div
-                      key={`editor-judge-diagnostic-${index}`}
-                      className="rounded-[1.1rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-3"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)]">
-                        <span>{entry.attempt}</span>
-                        <span>{entry.success ? 'success' : 'failed'}</span>
-                        <span>{entry.stage}</span>
-                        <span>{entry.elapsedMs}ms</span>
-                      </div>
-                      {entry.error && <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{entry.error}</p>}
-                      {entry.rawPreview && (
-                        <p className="mt-2 rounded-[0.9rem] bg-slate-950/85 px-3 py-2 font-mono text-xs text-lime-100">
-                          {entry.rawPreview}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          </section>
         )}
-
-        <div className="glass-panel p-5 sm:p-6">
-          <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Saved Drafts</h4>
-          <div className="space-y-3">
-            {ruleDrafts.length === 0 ? (
-              <p className="text-sm font-semibold text-[var(--text-secondary)]">
-                Drafts you save here stay on this device for quick iteration.
-              </p>
-            ) : (
-              ruleDrafts.map((draft) => (
-                <button
-                  key={draft.id}
-                  onClick={() => {
-                    populateEditorFromRuleset({
-                      longName: draft.title,
-                      shortName: draft.shortName,
-                      type: draft.type,
-                      code: draft.code
-                    }, {
-                      linkedRoomRulesetId: null,
-                      switchToEditor: true
-                    });
-                  }}
-                  className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3 text-left transition hover:bg-[var(--surface-soft)]"
-                >
-                  <div className="text-base font-black text-[var(--text-primary)]">{draft.title}</div>
-                  <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                    {draft.type} • {new Date(draft.updatedAt).toLocaleString()}
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-            </>
-          );
-        })()}
-      </section>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderAccountRulesetDeck = ({ title, fieldName, limit, emptyLabel }) => {
     const indexes = Array.isArray(userProfile?.[fieldName]) ? userProfile[fieldName] : [];
@@ -10482,7 +11056,7 @@ function App() {
                   <button
                     type="button"
                     onClick={() => handleAccountRulesetPreview(definition.selectionId)}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-slate-300 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100"
+                    className="aero-button aero-button-secondary aero-button-sm w-full"
                   >
                     <FileCode2 className="h-3.5 w-3.5" />
                     Code Preview
@@ -10490,7 +11064,7 @@ function App() {
                   <button
                     type="button"
                     onClick={() => handleAccountRulesetOpenInEditor(definition.selectionId)}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-[0.95rem] border border-emerald-300 bg-emerald-100/85 px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200/80"
+                    className="aero-button aero-button-positive aero-button-sm w-full"
                   >
                     <Settings className="h-3.5 w-3.5" />
                     Open Editor
@@ -10510,9 +11084,7 @@ function App() {
     }
 
     const isBusy = notificationActionBusyId === notification.id;
-    const buttonClassName = compact
-      ? 'rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70'
-      : 'rounded-[1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70';
+    const sizeClassName = compact ? 'aero-button-xs' : 'aero-button-sm';
 
     if (notification.type === 'friend_request' || notification.type === 'game_invite' || notification.type === 'resume_rejoin') {
       return (
@@ -10524,7 +11096,7 @@ function App() {
               event.stopPropagation();
               void handleNotificationAction(notification, 'accept');
             }}
-            className={clsx(buttonClassName, 'border-emerald-200 bg-emerald-100/85 text-emerald-950')}
+            className={clsx(AERO_POSITIVE_BUTTON_CLASS, sizeClassName)}
           >
             {isBusy ? 'Working...' : (notification.type === 'resume_rejoin' ? 'Rejoin' : 'Accept')}
           </button>
@@ -10535,7 +11107,7 @@ function App() {
               event.stopPropagation();
               void handleNotificationAction(notification, 'decline');
             }}
-            className={clsx(buttonClassName, 'border-rose-200 bg-rose-100/85 text-rose-950')}
+            className={clsx(AERO_DESTRUCTIVE_BUTTON_CLASS, sizeClassName)}
           >
             {notification.type === 'resume_rejoin' ? 'Abandon' : 'Decline'}
           </button>
@@ -10606,12 +11178,6 @@ function App() {
           {notification.display?.body || 'No additional details are available for this notification.'}
         </p>
 
-        {!compact && notification.category === 'forum' && (
-          <div className="mt-3 text-xs font-bold text-[var(--text-secondary)]">
-            Opens the related Rentz Forum thread.
-          </div>
-        )}
-
         <div className="mt-3">
           {renderNotificationActionRow(notification, { compact })}
         </div>
@@ -10640,23 +11206,20 @@ function App() {
           <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Notifications</h3>
-              <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                Hover the bell for quick actions, or use this feed for the full grouped history.
-              </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => void loadNotifications()}
                 disabled={notificationsState.loading}
-                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                className="aero-button aero-button-secondary aero-button-sm"
               >
                 {notificationsState.loading ? 'Refreshing...' : 'Refresh'}
               </button>
               <button
                 type="button"
                 onClick={() => void markAllNotificationsRead()}
-                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className="aero-button aero-button-secondary aero-button-sm"
               >
                 Mark all read
               </button>
@@ -10845,7 +11408,7 @@ function App() {
                         type="button"
                         onClick={handleCancelAccountEdits}
                         disabled={isSavingAccount}
-                        className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                        className={AERO_SECONDARY_BUTTON_CLASS}
                       >
                         Cancel
                       </button>
@@ -10854,7 +11417,7 @@ function App() {
                     <button
                       type="button"
                       onClick={openAccountEditMode}
-                      className="flex w-full items-center justify-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                      className={AERO_SECONDARY_BUTTON_CLASS}
                     >
                       <PencilLine className="h-4 w-4" />
                       Edit
@@ -10865,7 +11428,7 @@ function App() {
                     type="button"
                     onClick={handleLogout}
                     disabled={authBusyAction === 'logout' || isSavingAccount}
-                    className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                    className={AERO_SECONDARY_BUTTON_CLASS}
                   >
                     {authBusyAction === 'logout' ? 'Signing out...' : 'Log Out'}
                   </button>
@@ -10920,7 +11483,7 @@ function App() {
                     fallbackRankName: userProfile?.rankName || 'Current Rank',
                     sourceLabel: 'account'
                   })}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                  className={clsx(AERO_SECONDARY_BUTTON_CLASS, 'mt-3 w-full')}
                 >
                   <Trophy className="h-4 w-4" />
                   View Your Rank
@@ -10930,7 +11493,7 @@ function App() {
           </section>
 
           <section className="glass-panel p-5 sm:p-6">
-            <div className="mb-6 grid gap-4 lg:grid-cols-3">
+            <div className="mb-6 max-w-xs">
               <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
                 <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
                   Friends
@@ -10939,128 +11502,6 @@ function App() {
                   {friendState.friends.length}
                 </div>
               </div>
-              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                  Incoming Requests
-                </div>
-                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
-                  {friendState.incomingRequests.length}
-                </div>
-              </div>
-              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                  Outgoing Requests
-                </div>
-                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
-                  {friendState.outgoingRequests.length}
-                </div>
-              </div>
-            </div>
-
-            <div className="mb-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-              <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Incoming Requests</h4>
-                  <div className="status-pill px-3 py-2">{friendState.incomingRequests.length}</div>
-                </div>
-
-                <div className="space-y-3">
-                  {friendState.incomingRequests.length === 0 ? (
-                    <div className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
-                      No incoming friend requests right now.
-                    </div>
-                  ) : friendState.incomingRequests.map((requester) => (
-                    <div key={requester.userId} className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <button
-                          type="button"
-                          onClick={() => void openPlayerProfileModal(requester)}
-                          className="flex min-w-0 items-center gap-3 text-left"
-                        >
-                          <AvatarFace
-                            player={requester}
-                            alt={`${getPlayerName(requester)} avatar`}
-                            wrapperClassName="seat-avatar h-12 w-12 text-sm"
-                            imageClassName="h-full w-full rounded-full object-cover"
-                            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                          />
-                          <div className="min-w-0">
-                            <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(requester)}</div>
-                            <div className="text-xs font-bold text-[var(--text-secondary)]">Wants to add you as a friend</div>
-                          </div>
-                        </button>
-
-                        <div className="flex shrink-0 gap-2">
-                          <button
-                            type="button"
-                            disabled={friendActionBusyTargetId === requester.userId}
-                            onClick={() => void runFriendAction('accept', requester.userId, 'Friend request accepted.')}
-                            className="rounded-full bg-emerald-100/85 p-2 text-emerald-900 transition hover:bg-emerald-200/80 disabled:cursor-not-allowed disabled:opacity-70"
-                            title="Accept request"
-                          >
-                            <Check className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={friendActionBusyTargetId === requester.userId}
-                            onClick={() => void runFriendAction('reject', requester.userId, 'Friend request rejected.')}
-                            className="rounded-full bg-rose-100/85 p-2 text-rose-900 transition hover:bg-rose-200/80 disabled:cursor-not-allowed disabled:opacity-70"
-                            title="Reject request"
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Outgoing Requests</h4>
-                  <div className="status-pill px-3 py-2">{friendState.outgoingRequests.length}</div>
-                </div>
-
-                <div className="space-y-3">
-                  {friendState.outgoingRequests.length === 0 ? (
-                    <div className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
-                      No outgoing friend requests right now.
-                    </div>
-                  ) : friendState.outgoingRequests.map((requester) => (
-                    <div key={requester.userId} className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <button
-                          type="button"
-                          onClick={() => void openPlayerProfileModal(requester)}
-                          className="flex min-w-0 items-center gap-3 text-left"
-                        >
-                          <AvatarFace
-                            player={requester}
-                            alt={`${getPlayerName(requester)} avatar`}
-                            wrapperClassName="seat-avatar h-12 w-12 text-sm"
-                            imageClassName="h-full w-full rounded-full object-cover"
-                            fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                          />
-                          <div className="min-w-0">
-                            <div className="truncate text-base font-black text-[var(--text-primary)]">{getPlayerName(requester)}</div>
-                            <div className="text-xs font-bold text-[var(--text-secondary)]">Request sent</div>
-                          </div>
-                        </button>
-
-                        <button
-                          type="button"
-                          disabled={friendActionBusyTargetId === requester.userId}
-                          onClick={() => void runFriendAction('cancel', requester.userId, 'Friend request canceled.')}
-                          className="rounded-[1rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
             </div>
 
             <section className="mb-6 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
@@ -11099,7 +11540,7 @@ function App() {
                         type="button"
                         disabled={friendActionBusyTargetId === friend.userId}
                         onClick={() => void runFriendAction('remove', friend.userId, 'Friend removed.')}
-                        className="rounded-[1rem] border border-red-200/75 bg-red-100/80 px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-red-900 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+                        className={AERO_DESTRUCTIVE_BUTTON_CLASS}
                       >
                         Remove
                       </button>
@@ -11133,9 +11574,6 @@ function App() {
         <h3 className="mb-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
           Account Access
         </h3>
-        <p className="mb-6 text-base font-semibold text-[var(--text-secondary)] sm:text-sm">
-          Sign in with a real Rentz account, create a new one with profile details, or leave a placeholder password-reset request for future email integration.
-        </p>
 
         {authFeedback && (
           <div className="mb-5 rounded-[1.5rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]">
@@ -11200,7 +11638,7 @@ function App() {
             {authView === 'forgot-password' && (
               <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
                 <div className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                  The email reset pipeline is not built yet. This placeholder records the request cleanly so mail delivery can be added later.
+                  Password reset email is not available yet.
                 </div>
                 <div className="mt-4 space-y-3">
                   <label className="block">
@@ -11216,8 +11654,9 @@ function App() {
                     <button
                       type="button"
                       onClick={() => setAuthView('login')}
-                      className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                      className={AERO_BACK_BUTTON_CLASS}
                     >
+                      <ArrowLeft className="h-4 w-4" />
                       Back to login
                     </button>
                     <button
@@ -11338,11 +11777,12 @@ function App() {
 
   const renderGuideContent = () => (
     <div className="flex max-h-[85vh] flex-col gap-4">
-      <div className="flex shrink-0 items-center justify-between px-2">
-        <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Definition Guide</h3>
-        <button onClick={() => setActiveTab('editor')} className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-2 text-sm font-black uppercase tracking-[0.18em] text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]">
-          Back to Editor
-        </button>
+        <div className="flex shrink-0 items-center justify-between px-2">
+          <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Definition Guide</h3>
+          <button onClick={() => setActiveTab('editor')} className={AERO_BACK_BUTTON_CLASS}>
+            <ArrowLeft className="h-4 w-4" />
+            Back to Editor
+          </button>
       </div>
 
       <div className="glass-panel flex-1 overflow-y-auto p-5 sm:p-8">
@@ -11462,7 +11902,9 @@ endif`}
     compact = false,
     onCancel = null,
     title = 'Share with Rentz Forum',
-    description = 'Every post is public. Friend posts stay pinned above the broader community feed.'
+    description = '',
+    framed = true,
+    showHeading = true
   }) => {
     const attachmentOptions = Array.isArray(savedCustomRulesets) ? savedCustomRulesets : [];
     const attachedRuleset = attachmentOptions.find((option) => String(option.id) === String(draft.attachedRulesetIndex));
@@ -11471,26 +11913,23 @@ endif`}
       <form
         onSubmit={onSubmit}
         className={clsx(
-          'rounded-[1.8rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] shadow-[0_18px_36px_rgba(15,23,42,0.08)]',
-          compact ? 'p-4 sm:p-5' : 'glass-panel p-5 sm:p-7'
+          framed && 'rounded-[1.8rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] shadow-[0_18px_36px_rgba(15,23,42,0.08)]',
+          compact
+            ? 'p-4 sm:p-5'
+            : (framed ? 'glass-panel p-5 sm:p-7' : 'p-1 sm:p-2')
         )}
       >
         <div className={clsx('space-y-5', compact ? 'space-y-4' : 'space-y-6')}>
-          {!compact && (
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">Public thread post</div>
-                <h3 className="mt-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">{title}</h3>
-                <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-[var(--text-secondary)]">{description}</p>
-              </div>
-              <div className="status-pill px-3 py-2">Public</div>
+          {!compact && showHeading && (
+            <div>
+              <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">{title}</h3>
+              {description ? (
+                <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{description}</p>
+              ) : null}
             </div>
           )}
 
-          <div className={clsx(
-            'grid gap-4 rounded-[1.55rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 sm:p-5',
-            compact ? 'grid-cols-1' : 'sm:grid-cols-[auto_minmax(0,1fr)]'
-          )}>
+          <div className={clsx('grid gap-4', compact ? 'grid-cols-1' : 'sm:grid-cols-[auto_minmax(0,1fr)]')}>
             <div className="flex justify-center sm:justify-start">
               <AvatarFace
                 player={userProfile || { avatarUrl: DEFAULT_REGISTER_PROFILE_PREVIEW, name: 'You' }}
@@ -11503,7 +11942,7 @@ endif`}
 
             <div className="min-w-0 space-y-4">
               <label className="block">
-                <span className="mb-2 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                <span className="sr-only">
                   {submitLabel === 'Reply' ? 'Reply text' : 'Post text'}
                 </span>
                 <textarea
@@ -11519,13 +11958,13 @@ endif`}
                 <div className="overflow-hidden rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-medium)]">
                   <img src={draft.mediaPreview} alt="" className="max-h-[22rem] w-full object-cover" />
                   <div className="flex items-center justify-between gap-3 border-t border-[var(--glass-border)] p-3">
-                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-secondary)]">Attached image / gif</div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-secondary)]">Attached media</div>
                     <button
                       type="button"
                       onClick={onClearMedia}
-                      className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-soft)] px-3 py-1.5 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                      className={AERO_SECONDARY_BUTTON_CLASS}
                     >
-                      Remove media
+                      Remove
                     </button>
                   </div>
                 </div>
@@ -11547,24 +11986,21 @@ endif`}
                       </option>
                     ))}
                   </select>
-                  <div className="mt-2 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
-                    {attachmentOptions.length === 0
-                      ? 'Save a custom ruleset from the editor or forum to attach it here. Built-in rulesets are not attachable.'
-                      : attachedRuleset
-                        ? `Selected: ${attachedRuleset.label || attachedRuleset.title || 'Untitled Ruleset'}`
-                        : 'Only custom rulesets can be attached to forum posts and replies.'}
-                  </div>
+                  {attachedRuleset && (
+                    <div className="mt-2 text-xs font-semibold leading-6 text-[var(--text-secondary)]">
+                      {attachedRuleset.label || attachedRuleset.title || 'Untitled Ruleset'}
+                    </div>
+                  )}
                 </label>
 
                 <div className="rounded-[1.25rem] border border-[var(--glass-border)] bg-[var(--surface-input)] p-4">
-                  <div className="text-[10px] font-extrabold uppercase tracking-[0.2em] text-[var(--text-secondary)]">Media upload</div>
-                  <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                      PNG, JPEG, WebP, or GIF up to 4 MB.
+                      Images up to 4 MB.
                     </div>
-                    <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]">
+                    <label className={clsx(AERO_SECONDARY_BUTTON_CLASS, 'cursor-pointer')}>
                       <ImagePlus className="h-4 w-4" />
-                      {draft.mediaPreview ? 'Replace media' : 'Add image / gif'}
+                      {draft.mediaPreview ? 'Replace Media' : 'Add Media'}
                       <input type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/gif" onChange={onMediaChange} className="hidden" />
                     </label>
                   </div>
@@ -11576,7 +12012,7 @@ endif`}
                   <button
                     type="button"
                     onClick={onCancel}
-                    className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    className={AERO_SECONDARY_BUTTON_CLASS}
                   >
                     Cancel
                   </button>
@@ -11587,7 +12023,7 @@ endif`}
                   className="frutiger-button inline-flex min-w-[10rem] items-center justify-center gap-2 px-5 py-3 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   <SendHorizontal className="h-4 w-4" />
-                  {busy ? 'Posting...' : submitLabel}
+                  {busy ? (submitLabel === 'Reply' ? 'Replying...' : 'Posting...') : submitLabel}
                 </button>
               </div>
             </div>
@@ -11658,24 +12094,7 @@ endif`}
 
             return (
               <div key={`${entry.id}-star-${index}`} className="relative h-9 w-9">
-                <svg viewBox="0 0 24 24" className="absolute inset-0 h-9 w-9 text-slate-300" aria-hidden="true">
-                  <path
-                    fill="currentColor"
-                    d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
-                  />
-                </svg>
-                <div
-                  className="absolute inset-y-0 left-0 overflow-hidden"
-                  style={{ width: `${fill * 100}%` }}
-                  aria-hidden="true"
-                >
-                  <svg viewBox="0 0 24 24" className="h-9 w-9 text-amber-500">
-                    <path
-                      fill="currentColor"
-                      d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
-                    />
-                  </svg>
-                </div>
+                <RatingStarFill fill={fill} className="h-9 w-9" />
                 <button
                   type="button"
                   disabled={ratingBusy}
@@ -11729,9 +12148,9 @@ endif`}
             event.stopPropagation();
             void handleForumPreviewRuleset(entry.id);
           }}
-          className="rounded-[1rem] border border-slate-300 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+          className="aero-button aero-button-secondary aero-button-sm"
         >
-          {previewBusy ? 'Opening...' : 'Preview Ruleset'}
+          {previewBusy ? 'Opening...' : 'Preview'}
         </button>
         <button
           type="button"
@@ -11740,7 +12159,7 @@ endif`}
             event.stopPropagation();
             void handleForumCopyRulesetToEditor(entry.id);
           }}
-          className="rounded-[1rem] border border-slate-300 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-slate-900 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+          className="aero-button aero-button-secondary aero-button-sm"
         >
           {copyBusy ? 'Copying...' : 'Copy to Editor'}
         </button>
@@ -11751,7 +12170,7 @@ endif`}
             event.stopPropagation();
             openForumRulesetSaveChoice(entry);
           }}
-          className="rounded-[1rem] border border-emerald-300 bg-emerald-100 px-3 py-2 text-xs font-black uppercase tracking-[0.12em] text-emerald-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-70"
+          className="aero-button aero-button-positive aero-button-sm"
         >
           {saveBusy ? 'Saving...' : 'Save to Profile'}
         </button>
@@ -12140,8 +12559,7 @@ endif`}
 
     return (
       <ModalShell
-        title="A Player Is Not Ready"
-        eyebrow="Start blocked"
+        title="Players Not Ready"
         onClose={() => setRoomStartBlockedModal(null)}
         panelClassName="max-w-2xl"
         footer={(
@@ -12149,20 +12567,17 @@ endif`}
             <button
               type="button"
               onClick={() => setRoomStartBlockedModal(null)}
-              className="rounded-[1.3rem] border border-rose-200/80 bg-rose-100/90 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-rose-950 transition hover:bg-rose-200/85"
+              className={AERO_SECONDARY_BUTTON_CLASS}
             >
-              Dismiss
+              Close
             </button>
           </div>
         )}
       >
         <div className="space-y-4">
-          <div className="rounded-[1.5rem] border border-rose-200/80 bg-[linear-gradient(180deg,rgba(255,244,246,0.98)_0%,rgba(254,205,211,0.9)_100%)] p-5 shadow-[0_22px_44px_rgba(225,29,72,0.16)]">
-            <div className="text-[11px] font-black uppercase tracking-[0.22em] text-rose-800">Cannot start yet</div>
-            <p className="mt-3 text-base font-black leading-7 text-rose-950 sm:text-lg">
-              Everyone in the active player list must ready up before the host can start the match.
-            </p>
-          </div>
+          <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+            Waiting for everyone to ready up.
+          </p>
 
           <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
             <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
@@ -12203,7 +12618,7 @@ endif`}
             <button
               type="button"
               onClick={() => setLeaveMatchConfirmModal(null)}
-              className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+              className={AERO_SECONDARY_BUTTON_CLASS}
             >
               Cancel
             </button>
@@ -12211,7 +12626,7 @@ endif`}
               type="button"
               onClick={handleConfirmLeaveMatch}
               disabled={trainingReturnBusy}
-              className="rounded-[1.3rem] border border-red-200/80 bg-red-100/85 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-950 transition hover:bg-red-200/80 disabled:cursor-not-allowed disabled:opacity-70"
+              className={AERO_DESTRUCTIVE_BUTTON_CLASS}
             >
               {trainingReturnBusy
                 ? 'Working...'
@@ -12234,45 +12649,33 @@ endif`}
 
     return (
       <ModalShell
-        title="Host Leave Options"
-        eyebrow="Choose how to leave"
+        title="Host Leave"
         onClose={() => setHostLeaveChoiceModal(null)}
       >
         <div className="space-y-4">
-          <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-            You are the current host of <span className="font-black text-[var(--text-primary)]">{hostLeaveChoiceModal.roomName || 'this room'}</span>.
-            Ending the room will close the live match for everyone. Leaving and transferring host keeps the game running and replaces your seat with a bot if needed.
-          </div>
-
-          <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-xs font-bold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+          <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
             {hostLeaveChoiceModal.betweenRounds
-              ? 'The match is currently between rounds, so ending now still applies ELO.'
-              : 'The match is currently mid-round, so ending now closes the room without applying ELO.'}
-          </div>
+              ? 'End this game for everyone?'
+              : 'Leave and pass host to the next player?'}
+          </p>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <button
               type="button"
               disabled={trainingReturnBusy}
               onClick={() => handleHostLeaveMatchChoice('end_room')}
-              className="rounded-[1.3rem] border border-rose-200 bg-rose-100/90 p-4 text-left transition hover:bg-rose-200/85 disabled:cursor-not-allowed disabled:opacity-70"
+              className={clsx(AERO_DESTRUCTIVE_BUTTON_CLASS, 'w-full justify-center px-4 py-4')}
             >
-              <div className="text-sm font-black uppercase tracking-[0.14em] text-rose-950">End Game / Room</div>
-              <div className="mt-2 text-sm font-semibold leading-6 text-rose-900">
-                Close the live table for everyone now.
-              </div>
+              End Game
             </button>
 
             <button
               type="button"
               disabled={trainingReturnBusy}
               onClick={() => handleHostLeaveMatchChoice('transfer_and_leave')}
-              className="rounded-[1.3rem] border border-emerald-200 bg-emerald-100/90 p-4 text-left transition hover:bg-emerald-200/85 disabled:cursor-not-allowed disabled:opacity-70"
+              className="frutiger-button w-full px-4 py-4 text-sm uppercase tracking-[0.14em] disabled:cursor-not-allowed disabled:opacity-70"
             >
-              <div className="text-sm font-black uppercase tracking-[0.14em] text-emerald-950">Leave + Transfer Host</div>
-              <div className="mt-2 text-sm font-semibold leading-6 text-emerald-900">
-                Hand host control to the next real player and keep the game going.
-              </div>
+              Leave &amp; Transfer Host
             </button>
           </div>
         </div>
@@ -12315,22 +12718,13 @@ endif`}
                   const fill = clampNumber(trainingFinalReview.starRating - index, 0, 1);
 
                   return (
-                    <div key={`training-review-star-${starValue}`} className="relative h-9 w-9 shrink-0 sm:h-11 sm:w-11">
-                      <svg viewBox="0 0 24 24" className="absolute inset-0 h-full w-full text-white/35" aria-hidden="true">
-                        <path
-                          fill="currentColor"
-                          d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
-                        />
-                      </svg>
-                      <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${fill * 100}%` }}>
-                        <svg viewBox="0 0 24 24" className="h-full w-full text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]" aria-hidden="true">
-                          <path
-                            fill="currentColor"
-                            d="M12 2.25l2.92 5.92 6.53.95-4.72 4.6 1.12 6.51L12 17.16l-5.85 3.07 1.12-6.51-4.72-4.6 6.53-.95L12 2.25z"
-                          />
-                        </svg>
-                      </div>
-                    </div>
+                    <RatingStarFill
+                      key={`training-review-star-${starValue}`}
+                      fill={fill}
+                      className="h-9 w-9 shrink-0 sm:h-11 sm:w-11"
+                      baseClassName="text-white/35"
+                      fillClassName="text-amber-400 drop-shadow-[0_4px_12px_rgba(245,158,11,0.45)]"
+                    />
                   );
                 })}
               </div>
@@ -12620,7 +13014,7 @@ endif`}
     if (!isAuthenticated) {
       return renderPlaceholderModule(
         'Library',
-        'Log in to see saved custom rulesets, bookmarked Rentz Forum ruleset previews, saved matches, and your match history.'
+        'Log in to see your saved rulesets, saved matches, and match history.'
       );
     }
 
@@ -12631,7 +13025,7 @@ endif`}
             type="button"
             onClick={() => void loadLibraryData()}
             disabled={libraryState.loading}
-            className="inline-flex items-center gap-2 rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+            className={AERO_SECONDARY_BUTTON_CLASS}
             title="Refresh library"
           >
             <RefreshCw className={clsx('h-4 w-4', libraryState.loading && 'animate-spin')} />
@@ -12654,7 +13048,7 @@ endif`}
                 </div>
               ) : libraryState.savedRulesets.length === 0 ? (
                 <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                  Save a custom ruleset from the editor or from a forum attachment to see it here.
+                  Save a ruleset to see it here.
                 </div>
               ) : (
                 <div className="grid gap-4 md:grid-cols-2">
@@ -12677,7 +13071,7 @@ endif`}
                   </div>
                 ) : libraryState.matchHistory.length === 0 ? (
                   <div className="rounded-[1.35rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-                    Completed ranked matches will appear here with your finish, ELO movement, and rank changes.
+                    Finished ranked matches appear here.
                   </div>
                 ) : (
                   <div className="max-h-[30rem] space-y-4 overflow-y-auto pr-1">
@@ -12745,12 +13139,9 @@ endif`}
       {isForumComposerOpen && (
         <ModalShell
           title="Create Post"
-          eyebrow="Rentz Forum"
           onClose={() => setIsForumComposerOpen(false)}
           wide
-          headerless
-          panelClassName="max-w-4xl !border-0 !bg-transparent !p-0 !shadow-none sm:!p-0"
-          bodyClassName="!pr-0"
+          panelClassName="max-w-4xl"
         >
           {renderForumComposer({
             draft: forumComposerDraft,
@@ -12770,27 +13161,22 @@ endif`}
             submitLabel: 'Post',
             placeholder: 'What are you playing, testing, or arguing about in Rentz today?',
             onCancel: () => setIsForumComposerOpen(false),
-            title: 'Create a Rentz Forum post',
-            description: 'Write a public forum post, optionally add media, and attach one of your saved custom rulesets.'
+            title: 'Create Post',
+            framed: false,
+            showHeading: false
           })}
         </ModalShell>
       )}
 
       {forumReplyTarget && (
         <ModalShell
-          title="Add Comment"
-          eyebrow="Thread reply"
+          title="Reply"
+          eyebrow="Rentz Forum"
           onClose={() => setForumReplyTarget(null)}
           wide
           panelClassName="max-w-4xl"
         >
           <div className="space-y-5">
-            <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-3">
-              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Reply target</div>
-              <div className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                Replying to {getPlayerName(forumReplyTarget.author)} in this thread.
-              </div>
-            </div>
             {renderForumEntryCard(forumReplyTarget, { compact: true, interactive: false })}
             {renderForumComposer({
               draft: forumReplyDrafts[forumReplyTarget.id] || createForumDraft(),
@@ -12813,8 +13199,9 @@ endif`}
               submitLabel: 'Reply',
               placeholder: 'Write a threaded reply...',
               onCancel: () => setForumReplyTarget(null),
-              title: 'Write your reply',
-              description: 'Replies behave like thread posts and can include media or one of your saved custom rulesets.'
+              title: `Reply to ${getPlayerName(forumReplyTarget.author)}`,
+              framed: false,
+              showHeading: false
             })}
           </div>
         </ModalShell>
@@ -12822,7 +13209,7 @@ endif`}
 
       {!isAuthenticated && (
         <div className="rounded-[1.5rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-          You can browse every public post without signing in. Logging in is required for posting, likes, replies, bookmarks, rating attached rulesets, and saving custom rulesets to your profile library.
+          Log in to post, reply, bookmark, rate rulesets, and save rulesets to your library.
         </div>
       )}
 
@@ -12830,13 +13217,8 @@ endif`}
         <div className="flex items-center justify-between gap-3 px-1">
           <div>
             <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
-              {forumView === 'thread' ? 'Thread View' : 'Public Feed'}
+              Rentz Forum
             </h3>
-            <p className="mt-1 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-              {forumView === 'thread'
-                ? 'Parent previews stay above the selected post, and replies continue below like a social thread.'
-                : 'Friend posts are shown first, then the rest of the community, with newest posts leading each group.'}
-            </p>
           </div>
           <div className="flex items-center gap-2">
             {forumView === 'thread' && (
@@ -12846,8 +13228,9 @@ endif`}
                   setForumView('feed');
                   setForumThread(null);
                 }}
-                className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className={AERO_BACK_BUTTON_CLASS}
               >
+                <ArrowLeft className="h-4 w-4" />
                 Back
               </button>
             )}
@@ -12862,7 +13245,7 @@ endif`}
                 void loadForumFeed();
               }}
               disabled={forumFeedLoading || forumThreadLoading}
-              className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-3 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+              className={AERO_ICON_BUTTON_CLASS}
               title={forumView === 'thread' ? 'Refresh thread' : 'Refresh forum feed'}
             >
               <RefreshCw className={clsx('h-4 w-4', (forumFeedLoading || forumThreadLoading) && 'animate-spin')} />
@@ -12875,7 +13258,7 @@ endif`}
             <div className="glass-panel p-6 text-sm font-semibold text-[var(--text-secondary)]">Loading thread...</div>
           ) : !forumThread?.selected ? (
             <div className="glass-panel p-6 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-              This post no longer exists. Use Back to return to the feed.
+              This post is gone.
             </div>
           ) : (
             <div className="mx-auto w-full space-y-4 lg:w-1/2">
@@ -12934,13 +13317,9 @@ endif`}
         <section className="glass-panel p-5 sm:p-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">Search preview</div>
               <div className="mt-2 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
                 “{forumSearchState.query || 'No search yet'}”
               </div>
-              <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                Posts match public post text only. Users and Friends match account usernames and open the existing profile preview.
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -13023,16 +13402,10 @@ endif`}
         <div className="space-y-5">
           <div className="glass-panel p-5 sm:p-6 lg:p-8">
             <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Settings</h3>
-            <p className="mb-6 text-base font-semibold leading-7 text-[var(--text-secondary)] sm:text-sm">
-              Theme, font size, and content zoom save locally on this device. Page zoom only affects the active subpage area, so the browser window and OS UI stay untouched.
-            </p>
 
             <div className="rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
               <div className="mb-4">
                 <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Theme Palette</h4>
-                <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)] sm:text-base">
-                  Each palette now uses stronger surface contrast so cards, chips, and secondary panels stay readable.
-                </p>
               </div>
               <ThemeTray themes={themes} theme={theme} onThemeChange={applyTheme} />
             </div>
@@ -13043,9 +13416,7 @@ endif`}
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Notification Mute</h4>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">
-                    When this is enabled, new notifications are not created for your profile at all.
-                  </p>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-[var(--text-secondary)]">Pause new notifications for this profile.</p>
                 </div>
                 <button
                   type="button"
@@ -13078,7 +13449,6 @@ endif`}
 
           <SettingsSlider
             title="Font Size"
-            description="Scale the app typography in fixed 5% steps for easier reading across the interface."
             min={FONT_SCALE_RANGE.min}
             max={FONT_SCALE_RANGE.max}
             step={FONT_SCALE_RANGE.step}
@@ -13089,7 +13459,6 @@ endif`}
 
           <SettingsSlider
             title="Subpage Zoom"
-            description="Scale the current page content in fixed 5% steps without zooming the entire browser tab."
             min={PAGE_ZOOM_RANGE.min}
             max={PAGE_ZOOM_RANGE.max}
             step={PAGE_ZOOM_RANGE.step}
@@ -13123,14 +13492,14 @@ endif`}
   return (
     <div className="app-shell relative min-h-screen w-full overflow-hidden p-0 pt-2 font-sans transition-colors duration-700 sm:pt-4 md:p-3 md:pt-3 lg:p-4">
       <div className="app-window macos-window relative z-20 mx-auto flex h-[calc(100dvh-0.5rem)] w-full max-w-[1680px] flex-col border border-[var(--glass-border)] shadow-2xl transition-colors duration-500 sm:h-[calc(100dvh-1rem)] md:h-[96vh]">
-        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center gap-3 border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
+        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center gap-3.5 border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:gap-3 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
           <div className="flex w-auto shrink-0 gap-2.5 md:w-24">
             <div className="h-3.5 w-3.5 rounded-full border border-[#e0443e] bg-[#ff5f56] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             <div className="h-3.5 w-3.5 rounded-full border border-[#dea123] bg-[#ffbd2e] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             <div className="h-3.5 w-3.5 rounded-full border border-[#1aab29] bg-[#27c93f] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-3">
             <div className="flex shrink-0 items-center gap-2">
               <Droplet fill="currentColor" className="h-4 w-4 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
               <span className="font-display text-[10px] font-semibold uppercase tracking-widest text-[var(--text-primary)] opacity-60 sm:text-xs">
@@ -13138,7 +13507,7 @@ endif`}
               </span>
             </div>
 
-            <form onSubmit={handleForumSearchSubmit} className="ml-auto w-full max-w-[10.5rem] min-w-0 sm:max-w-[12rem] md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
+            <form onSubmit={handleForumSearchSubmit} className="ml-auto hidden w-full min-w-0 max-w-[12rem] sm:block md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
               <div className="flex items-center gap-1.5 rounded-full border border-[var(--glass-border)] bg-[var(--surface-input)] px-2.5 py-1.5 shadow-[inset_0_1px_2px_rgba(255,255,255,0.35)]">
                 <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
                 <input
@@ -13149,7 +13518,7 @@ endif`}
                 />
                 <button
                   type="submit"
-                  className="inline-flex shrink-0 items-center justify-center rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-1.5 text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                  className={clsx(AERO_ICON_BUTTON_CLASS, 'h-8 w-8 shrink-0')}
                   title="Search Rentz Arena"
                 >
                   <Search className="h-3.5 w-3.5" />
@@ -13158,17 +13527,29 @@ endif`}
             </form>
           </div>
 
-          <div className="flex w-auto shrink-0 items-center justify-end gap-2 md:w-auto">
+          <div className="flex w-auto shrink-0 items-center justify-end gap-3 sm:gap-2 md:w-auto">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center sm:hidden">
+              <button
+                type="button"
+                onClick={() => setIsMobileSearchOpen(true)}
+                className={AERO_ICON_BUTTON_CLASS}
+                title="Search Rentz Arena"
+              >
+                <Search className="h-4 w-4" />
+              </button>
+            </div>
+
             <div
               ref={notificationButtonRef}
-              className="relative"
+              className="relative flex h-11 w-11 shrink-0 items-center justify-center sm:h-10 sm:w-10"
               onMouseEnter={() => setIsNotificationDropdownOpen(true)}
               onMouseLeave={() => setIsNotificationDropdownOpen(false)}
             >
+              <div className="absolute inset-x-0 top-full h-3" aria-hidden="true" />
               <button
                 type="button"
                 onClick={handleOpenNotificationsFeed}
-                className="relative rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
+                className={clsx(AERO_ICON_BUTTON_CLASS, 'relative')}
                 title="Open notifications"
               >
                 <Bell className="h-4 w-4" />
@@ -13180,7 +13561,7 @@ endif`}
               </button>
 
               {isNotificationDropdownOpen && (
-                <div className="absolute right-0 top-[calc(100%+0.6rem)] z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3 shadow-[0_24px_54px_rgba(15,23,42,0.18)] backdrop-blur-2xl">
+                <div className="absolute right-[-0.4rem] top-[calc(100%-0.15rem)] z-50 w-[22rem] max-w-[calc(100vw-2rem)] rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--glass-bg)] p-3 shadow-[0_24px_54px_rgba(15,23,42,0.18)] backdrop-blur-2xl">
                   <div className="mb-3 flex items-center justify-between gap-3 px-1">
                     <div>
                       <div className="text-sm font-black text-[var(--text-primary)]">Recent notifications</div>
@@ -13191,7 +13572,7 @@ endif`}
                     <button
                       type="button"
                       onClick={() => void markAllNotificationsRead()}
-                      className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                      className="aero-button aero-button-secondary aero-button-xs"
                     >
                       Mark all read
                     </button>
@@ -13210,13 +13591,15 @@ endif`}
               )}
             </div>
 
-            <button
-              onClick={() => handleNavSelect('settings')}
-              className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-medium)] p-2 text-[var(--text-primary)] shadow-sm transition hover:bg-[var(--surface-hover)]"
-              title="Open settings"
-            >
-              <Settings className="h-4 w-4" />
-            </button>
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center sm:h-10 sm:w-10">
+              <button
+                onClick={() => handleNavSelect('settings')}
+                className={AERO_ICON_BUTTON_CLASS}
+                title="Open settings"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -13333,32 +13716,67 @@ endif`}
 
       {renderDesktopChatWindow()}
 
-      {isRecoveryPromptOpen && recoverableGuestProfile && (
+      {isMobileSearchOpen && (
         <ModalShell
-          title="Rejoin session?"
-          eyebrow="Refresh recovery"
+          title="Search"
+          eyebrow="Rentz Arena"
+          onClose={() => setIsMobileSearchOpen(false)}
+          panelClassName="max-w-md"
+          footer={(
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                form="mobile-search-form"
+                className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]"
+              >
+                Search
+              </button>
+            </div>
+          )}
+        >
+          <form id="mobile-search-form" onSubmit={handleMobileSearchSubmit} className="space-y-4">
+            <label className="block">
+              <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Search query</span>
+              <input
+                ref={mobileSearchInputRef}
+                value={forumSearchInput}
+                onChange={(event) => setForumSearchInput(event.target.value)}
+                placeholder="Search posts, users, or friends"
+                className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-5 py-4 font-semibold text-[var(--text-primary)] shadow-inner placeholder:text-[var(--text-secondary)] focus:outline-none focus:ring-4 focus:ring-[var(--accent-glow)]"
+              />
+            </label>
+          </form>
+        </ModalShell>
+      )}
+
+      {isRecoveryPromptOpen && recoverableGuestSession && (
+        <ModalShell
+          title="Rejoin Match?"
+          eyebrow="Active match found"
           footer={(
             <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
               <button
                 type="button"
-                onClick={handleStartFreshSession}
-                className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                onClick={handleAbandonRecoverableSession}
+                disabled={Boolean(recoveryActionBusy)}
+                className={AERO_SECONDARY_BUTTON_CLASS}
               >
-                Start new session
+                {recoveryActionBusy === 'abandon' ? 'Abandoning...' : 'Abandon'}
               </button>
               <button
                 type="button"
                 onClick={handleRejoinRecoverableSession}
+                disabled={Boolean(recoveryActionBusy)}
                 className="frutiger-button px-5 py-3 text-sm uppercase tracking-[0.14em]"
               >
-                Rejoin session
+                {recoveryActionBusy === 'rejoin' ? 'Rejoining...' : 'Rejoin'}
               </button>
             </div>
           )}
         >
           <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-6 text-[var(--text-secondary)] sm:text-base">
-            Do you want to rejoin the previous session of{' '}
-            <span className="font-black text-[var(--text-primary)]">{recoverableGuestProfile.name}</span>?
+            A live match is still available for{' '}
+            <span className="font-black text-[var(--text-primary)]">{recoverableSessionDisplayName}</span>. Rejoin to restore your seat, or abandon it now and let the table continue without you.
           </div>
         </ModalShell>
       )}
@@ -13375,7 +13793,7 @@ endif`}
                 type="button"
                 disabled={trainingStartBusy}
                 onClick={() => setIsTrainingSetupOpen(false)}
-                className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                className={AERO_SECONDARY_BUTTON_CLASS}
               >
                 Cancel
               </button>
@@ -13624,7 +14042,7 @@ endif`}
               <button
                 type="button"
                 onClick={() => setIsRoomSettingsOpen(false)}
-                className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className={AERO_SECONDARY_BUTTON_CLASS}
               >
                 Cancel
               </button>
@@ -13726,22 +14144,27 @@ endif`}
               </div>
             </section>
 
-            {canAddGuestRoomRulesets && (
+            {canManageRoomRulesets && (
               <section className="flex flex-col gap-3 rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h4 className="text-lg font-display font-black text-[var(--text-primary)]">Room Ruleset</h4>
-                  <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">
-                    Guest host
-                  </div>
+                  <h4 className="text-lg font-display font-black text-[var(--text-primary)]">Room Rulesets</h4>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
                   <button
                     type="button"
                     onClick={() => roomImportInputRef.current?.click()}
-                    className="inline-flex items-center justify-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    className={AERO_SECONDARY_BUTTON_CLASS}
                   >
                     <Upload className="h-4 w-4" />
-                    Import .rentz
+                    Import from .rentz
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenRoomRulesetSourcePicker('saved-rulesets')}
+                    className={AERO_SECONDARY_BUTTON_CLASS}
+                  >
+                    <Library className="h-4 w-4" />
+                    Import from Saved Rulesets
                   </button>
                   <button
                     type="button"
@@ -13750,7 +14173,7 @@ endif`}
                       setEditorRoomRulesetId(null);
                       setActiveTab('editor');
                     }}
-                    className="inline-flex items-center justify-center gap-2 rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                    className={AERO_SECONDARY_BUTTON_CLASS}
                   >
                     <FileCode2 className="h-4 w-4" />
                     Open Editor
@@ -13908,7 +14331,7 @@ endif`}
       {renderPlayerActionMenu()}
       {renderPlayerProfileModal()}
       {renderRankLeaderboardModal()}
-      {renderIncomingRoomInviteModal()}
+      {renderRoomRulesetSourcePickerModal()}
       {renderBanNoticeModal()}
       {renderRoomStartBlockedModal()}
       {renderLeaveMatchConfirmModal()}
@@ -13925,7 +14348,7 @@ endif`}
               <button
                 type="button"
                 onClick={() => setPendingSpectatorJoin(null)}
-                className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className={AERO_SECONDARY_BUTTON_CLASS}
               >
                 Cancel
               </button>
@@ -14018,26 +14441,20 @@ endif`}
 
       {forumRulesetSaveTarget && (
         <ModalShell
-          title="Save Attached Ruleset"
-          eyebrow="Profile library"
+          title="Save Ruleset"
           onClose={() => setForumRulesetSaveTarget(null)}
         >
-          <div className="space-y-3">
-            <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-              Save <span className="font-black text-[var(--text-primary)]">{forumRulesetSaveTarget.attachedRuleset?.label || 'this ruleset'}</span> into your profile library.
-              Saved rulesets appear in the Library tab and stay available for later previewing or copying into the editor.
-            </div>
-
+          <div className="space-y-4">
+            <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              Save <span className="font-black text-[var(--text-primary)]">{forumRulesetSaveTarget.attachedRuleset?.label || 'this ruleset'}</span> to your library?
+            </p>
             <button
               type="button"
               disabled={forumActionBusyKey === `${forumRulesetSaveTarget.id}:save-ruleset`}
               onClick={() => void handleForumSaveRulesetToProfile()}
-              className="w-full rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-left transition hover:bg-[var(--surface-medium)] disabled:cursor-not-allowed disabled:opacity-70"
+              className={clsx(AERO_POSITIVE_BUTTON_CLASS, 'w-full')}
             >
-              <div className="text-lg font-black text-[var(--text-primary)]">
-                {forumActionBusyKey === `${forumRulesetSaveTarget.id}:save-ruleset` ? 'Saving...' : 'Save to Library'}
-              </div>
-              <div className="mt-1 text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--text-secondary)]">Duplicate-safe profile save</div>
+              {forumActionBusyKey === `${forumRulesetSaveTarget.id}:save-ruleset` ? 'Saving...' : 'Save to Library'}
             </button>
           </div>
         </ModalShell>
@@ -14046,14 +14463,12 @@ endif`}
       {forumDeleteTarget && (
         <ModalShell
           title="Delete Post"
-          eyebrow="Rentz Forum"
           onClose={() => setForumDeleteTarget(null)}
         >
           <div className="space-y-4">
-            <div className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 text-sm font-semibold leading-7 text-[var(--text-secondary)]">
-              Delete this {forumDeleteTarget.parentPostId ? 'reply' : 'post'} from Rentz Forum?
-              It will be removed from public forum views, search results, thread previews, and library/forum references.
-            </div>
+            <p className="text-sm font-semibold leading-7 text-[var(--text-secondary)]">
+              Delete this {forumDeleteTarget.parentPostId ? 'reply' : 'post'}?
+            </p>
 
             {renderForumEntryCard(forumDeleteTarget, { compact: true, interactive: false })}
 
@@ -14061,7 +14476,7 @@ endif`}
               <button
                 type="button"
                 onClick={() => setForumDeleteTarget(null)}
-                className="rounded-[1.2rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)]"
+                className={AERO_SECONDARY_BUTTON_CLASS}
               >
                 Cancel
               </button>
@@ -14069,7 +14484,7 @@ endif`}
                 type="button"
                 disabled={forumActionBusyKey === `${forumDeleteTarget.id}:delete`}
                 onClick={() => void handleDeleteForumPost()}
-                className="rounded-[1.2rem] border border-red-200 bg-red-50 px-4 py-3 text-sm font-black uppercase tracking-[0.14em] text-red-900 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-70"
+                className={AERO_DESTRUCTIVE_BUTTON_CLASS}
               >
                 {forumActionBusyKey === `${forumDeleteTarget.id}:delete` ? 'Deleting...' : 'Delete Post'}
               </button>

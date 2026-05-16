@@ -1,54 +1,66 @@
-const DEFAULT_EDITOR_BOT_OLLAMA_MODEL = process.env.RENTZ_EDITOR_BOT_OLLAMA_MODEL
+const DEFAULT_EDITOR_BOT_OLLAMA_MODEL = process.env.OLLAMA_EDITOR_BOT_MODEL
+  || process.env.RENTZ_EDITOR_BOT_OLLAMA_MODEL
   || process.env.RENTZ_BOT_OLLAMA_MODEL
-  || 'llama3.1:8b';
-const DEFAULT_EDITOR_BOT_FULL_OLLAMA_MODEL = process.env.RENTZ_EDITOR_BOT_FULL_OLLAMA_MODEL
+  || 'llama3.2:3b';
+const DEFAULT_EDITOR_BOT_FULL_OLLAMA_MODEL = process.env.OLLAMA_EDITOR_BOT_FULL_MODEL
+  || process.env.RENTZ_EDITOR_BOT_FULL_OLLAMA_MODEL
   || DEFAULT_EDITOR_BOT_OLLAMA_MODEL;
-const DEFAULT_EDITOR_BOT_LEAN_OLLAMA_MODEL = process.env.RENTZ_EDITOR_BOT_LEAN_OLLAMA_MODEL
-  || '';
-const DEFAULT_EDITOR_BOT_OLLAMA_BASE_URL = process.env.RENTZ_EDITOR_BOT_OLLAMA_BASE_URL
+const DEFAULT_EDITOR_BOT_LEAN_OLLAMA_MODEL = process.env.OLLAMA_EDITOR_BOT_LEAN_MODEL
+  || process.env.RENTZ_EDITOR_BOT_LEAN_OLLAMA_MODEL
+  || DEFAULT_EDITOR_BOT_OLLAMA_MODEL;
+const DEFAULT_EDITOR_BOT_OLLAMA_BASE_URL = process.env.OLLAMA_EDITOR_BOT_BASE_URL
+  || process.env.RENTZ_EDITOR_BOT_OLLAMA_BASE_URL
   || process.env.RENTZ_BOT_OLLAMA_BASE_URL
   || 'http://127.0.0.1:11434';
-const EDITOR_BOT_TIMEOUT_MS = Math.max(1500, Number(process.env.RENTZ_EDITOR_BOT_TIMEOUT_MS || 6500));
-const EDITOR_BOT_NUM_PREDICT = Math.max(250, Number(process.env.RENTZ_EDITOR_BOT_NUM_PREDICT || 700));
-const EDITOR_BOT_KEEP_ALIVE = process.env.RENTZ_EDITOR_BOT_KEEP_ALIVE || '10m';
+const EDITOR_BOT_TIMEOUT_MS = Math.max(
+  1800,
+  Number(process.env.OLLAMA_EDITOR_BOT_TIMEOUT_MS || process.env.RENTZ_EDITOR_BOT_TIMEOUT_MS || 7000)
+);
+const EDITOR_BOT_NUM_PREDICT = Math.max(160, Number(process.env.RENTZ_EDITOR_BOT_NUM_PREDICT || 320));
+const LEAN_EDITOR_BOT_NUM_PREDICT = Math.max(120, Number(process.env.RENTZ_EDITOR_BOT_LEAN_NUM_PREDICT || 220));
+const EDITOR_BOT_KEEP_ALIVE = process.env.OLLAMA_EDITOR_BOT_KEEP_ALIVE
+  || process.env.RENTZ_EDITOR_BOT_KEEP_ALIVE
+  || '15m';
 const MAX_RULESET_SOURCE_LENGTH = 12000;
 const MAX_RULESET_NAME_LENGTH = 120;
 const MAX_RULESET_SHORT_NAME_LENGTH = 24;
-const FULL_PROMPT_CODE_LIMIT = 2200;
-const LEAN_PROMPT_CODE_LIMIT = 850;
-const FULL_PROMPT_IDENTIFIER_LIMIT = 10;
-const LEAN_PROMPT_IDENTIFIER_LIMIT = 5;
-const NARRATIVE_NUM_PREDICT = 96;
-const LEAN_NARRATIVE_NUM_PREDICT = 64;
-const CATEGORY_NUM_PREDICT = 120;
-const LEAN_CATEGORY_NUM_PREDICT = 80;
-const EDITOR_BOT_PREFLIGHT_TIMEOUT_MS = Math.max(600, Number(process.env.RENTZ_EDITOR_BOT_PREFLIGHT_TIMEOUT_MS || 1500));
-const ENABLE_EDITOR_BOT_CATEGORY_AI = String(process.env.RENTZ_EDITOR_BOT_ENABLE_CATEGORY_AI || '').trim().toLowerCase() === 'true';
-const FULL_NARRATIVE_TIMEOUT_CAP_MS = Math.max(4000, Number(process.env.RENTZ_EDITOR_BOT_FULL_TIMEOUT_CAP_MS || 20000));
-const LEAN_NARRATIVE_TIMEOUT_CAP_MS = Math.max(2500, Number(process.env.RENTZ_EDITOR_BOT_LEAN_TIMEOUT_CAP_MS || 12000));
-const EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS = Math.max(3000, Number(process.env.RENTZ_EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS || 25000));
-const EDITOR_BOT_MODEL_WARM_CACHE_MS = Math.max(60000, Number(process.env.RENTZ_EDITOR_BOT_MODEL_WARM_CACHE_MS || 480000));
+const FULL_PROMPT_CODE_LIMIT = 1500;
+const LEAN_PROMPT_CODE_LIMIT = 720;
+const SCORE_MAP_PROMPT_CODE_LIMIT = 140;
+const FULL_PROMPT_IDENTIFIER_LIMIT = 8;
+const LEAN_PROMPT_IDENTIFIER_LIMIT = 4;
+const SCORE_MAP_TIMEOUT_CAP_MS = Math.max(4000, Number(process.env.RENTZ_EDITOR_BOT_SCORE_MAP_TIMEOUT_CAP_MS || 25000));
+const SCORE_MAP_NUM_PREDICT = Math.max(16, Number(process.env.RENTZ_EDITOR_BOT_SCORE_MAP_NUM_PREDICT || 32));
+const SCORE_MAP_WARMUP_NUM_PREDICT = Math.max(16, Number(process.env.RENTZ_EDITOR_BOT_SCORE_MAP_WARMUP_NUM_PREDICT || 32));
+const EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS = Math.max(
+  3500,
+  Number(process.env.RENTZ_EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS || 25000)
+);
+const EDITOR_BOT_MODEL_WARM_CACHE_MS = Math.max(
+  60000,
+  Number(process.env.RENTZ_EDITOR_BOT_MODEL_WARM_CACHE_MS || 480000)
+);
 
 const CATEGORY_DEFINITIONS = Object.freeze([
-  { key: 'riskRewardBalance', label: 'Risk/reward balance' },
   { key: 'comebackPotential', label: 'Comeback potential' },
-  { key: 'claritySimplicity', label: 'Clarity / simplicity' },
-  { key: 'scoringBalance', label: 'Scoring balance' },
   { key: 'playerAgency', label: 'Player agency' },
-  { key: 'interactionQuality', label: 'Interaction quality' }
+  { key: 'claritySimplicity', label: 'Clarity / simplicity' },
+  { key: 'scoringBalance', label: 'Scoring balance' }
 ]);
-const CATEGORY_KEY_TO_SHORT_KEY = Object.freeze({
-  riskRewardBalance: 'rr',
-  comebackPotential: 'cp',
-  claritySimplicity: 'cs',
-  scoringBalance: 'sb',
-  playerAgency: 'pa',
-  interactionQuality: 'iq'
+const CATEGORY_KEYS = Object.freeze(CATEGORY_DEFINITIONS.map((entry) => entry.key));
+const EDITOR_BOT_CALIBRATION_GUIDANCE = Object.freeze([
+  'A Rentz match rotates through several short contracts, so judge this as one mini-game inside that rotation.',
+  'Simple focused contracts can score very high if they are clear, quick, and tactically useful.',
+  'Default anchors like King of Hearts, Diamonds, Queens, 10 of Clubs, and Whist are good because each creates one clean pressure point.',
+  'Total Plus and Total Minus can still score well when the swing is intentional and easy to understand.',
+  'Do not require a ruleset to solve comeback pacing, deep strategy, or whole-match balance by itself.'
+]);
+const EDITOR_BOT_CRITERIA_GUIDANCE = Object.freeze({
+  comebackPotential: 'Judge whether the contract keeps the overall match from feeling hopeless too early. Swingy rounds can still score well if the swings are understandable and fit Rentz rotation.',
+  playerAgency: 'Judge whether players can influence the outcome through timing, suit-following, taking or avoiding tricks, preserving cards, baiting, or reading the table. Deep strategy is not required.',
+  claritySimplicity: 'Judge how easy the contract is to explain, remember, and play quickly. Simple focused rules should usually score high here.',
+  scoringBalance: 'Judge whether the point values feel matched to the difficulty and importance of the objective. Swingy scoring is acceptable if it is readable and intentional.'
 });
-const CATEGORY_BATCHES = Object.freeze([
-  ['riskRewardBalance', 'comebackPotential', 'claritySimplicity'],
-  ['scoringBalance', 'playerAgency', 'interactionQuality']
-]);
 let cachedEditorBotRuntime = null;
 const warmedEditorBotModels = new Map();
 
@@ -82,15 +94,6 @@ function getEditorBotWarmModelCacheKey(modelName, baseUrl) {
   return `${normalizeEditorBotBaseUrl(baseUrl)}::${sanitizeText(modelName, DEFAULT_EDITOR_BOT_OLLAMA_MODEL, 120)}`;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs, errorMessage) {
-  const response = await withTimeout(fetch(url), timeoutMs, errorMessage);
-
-  return {
-    response,
-    data: await response.json().catch(() => null)
-  };
-}
-
 async function postJsonWithTimeout(url, payload, timeoutMs, errorMessage) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -121,35 +124,18 @@ async function postJsonWithTimeout(url, payload, timeoutMs, errorMessage) {
   } catch (error) {
     clearTimeout(timeoutId);
     throw error;
-  };
+  }
 }
 
-function extractModelText(response) {
-  if (!response) {
-    return '';
-  }
-
-  if (typeof response.content === 'string') {
-    return response.content;
-  }
-
-  if (Array.isArray(response.content)) {
-    return response.content
-      .map((part) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-
-        return part?.text || '';
-      })
-      .join('\n')
-      .trim();
-  }
-
-  return String(response.content || '').trim();
-}
-
-async function readEditorBotGenerateResponse({ response, controller, clearTimeout, schema, attemptLabel, errorMessage, salvageParser = null }) {
+async function readEditorBotGenerateResponse({
+  response,
+  controller,
+  clearTimeout,
+  schema,
+  attemptLabel,
+  errorMessage,
+  salvageParser = null
+}) {
   const finalize = () => {
     clearTimeout?.();
   };
@@ -251,7 +237,6 @@ async function readEditorBotGenerateResponse({ response, controller, clearTimeou
     }
 
     rawText += decoder.decode();
-
     const parsedJson = parseJsonObject(rawText);
     const parsed = schema.safeParse(parsedJson);
 
@@ -295,6 +280,156 @@ async function readEditorBotGenerateResponse({ response, controller, clearTimeou
   }
 }
 
+function normalizeEditorBotRawScore(value) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? clampEditorBotScore(numericValue, 0) : null;
+}
+
+function extractAlternativeCategoryScoresFromObject(rawObject) {
+  if (!rawObject || typeof rawObject !== 'object') {
+    return {};
+  }
+
+  const sources = [
+    rawObject,
+    rawObject.categories,
+    rawObject.categoryRatings
+  ].filter((value) => value && typeof value === 'object');
+  const extracted = {};
+
+  for (const source of sources) {
+    for (const categoryKey of CATEGORY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(extracted, categoryKey)) {
+        continue;
+      }
+
+      const entry = source[categoryKey];
+      if (entry == null) {
+        continue;
+      }
+
+      if (typeof entry === 'object') {
+        const score = normalizeEditorBotRawScore(entry.score ?? entry.s ?? entry.value);
+        if (score != null) {
+          extracted[categoryKey] = {
+            score,
+            explanation: sanitizeText(entry.explanation ?? entry.e, '', 220)
+          };
+        }
+        continue;
+      }
+
+      const score = normalizeEditorBotRawScore(entry);
+      if (score != null) {
+        extracted[categoryKey] = {
+          score,
+          explanation: ''
+        };
+      }
+    }
+  }
+
+  return extracted;
+}
+
+function extractSequentialCategoryScoresFromText(text) {
+  const rawText = String(text || '');
+  const categories = Array.from(
+    rawText.matchAll(/"category"\s*:\s*"(comebackPotential|playerAgency|claritySimplicity|scoringBalance)"/g)
+  ).map((match) => match[1]);
+  const uniqueCategories = Array.from(new Set(categories));
+  const sharedScore = normalizeEditorBotRawScore(rawText.match(/"score"\s*:\s*(-?\d+(?:\.\d+)?)/)?.[1]);
+
+  if (uniqueCategories.length < 3 || sharedScore == null) {
+    return {};
+  }
+
+  return uniqueCategories.reduce((acc, categoryKey) => {
+    acc[categoryKey] = {
+      score: sharedScore,
+      explanation: ''
+    };
+    return acc;
+  }, {});
+}
+
+function buildSalvagedEditorBotReview(rawText, fallbackReview, options = {}) {
+  const {
+    allowScoreOnly = false
+  } = options || {};
+  const parsedJson = parseJsonObject(rawText);
+  const extractedCategories = {
+    ...extractSequentialCategoryScoresFromText(rawText),
+    ...extractAlternativeCategoryScoresFromObject(parsedJson)
+  };
+  const extractedCategoryKeys = CATEGORY_KEYS.filter((categoryKey) => extractedCategories[categoryKey]);
+
+  if (extractedCategoryKeys.length < 3) {
+    return null;
+  }
+
+  const baseReview = fallbackReview && typeof fallbackReview === 'object'
+    ? fallbackReview
+    : buildFallbackEditorBotReview();
+  const categories = CATEGORY_KEYS.reduce((acc, categoryKey) => {
+    const fallbackCategory = baseReview.categoryRatings?.[categoryKey] || {
+      score: 7,
+      explanation: 'No extra detail was available for this category.'
+    };
+    const extractedCategory = extractedCategories[categoryKey];
+    acc[categoryKey] = {
+      score: clampEditorBotScore(extractedCategory?.score, fallbackCategory.score),
+      explanation: sanitizeText(extractedCategory?.explanation, fallbackCategory.explanation, 220)
+    };
+    return acc;
+  }, {});
+  const averageScore = CATEGORY_KEYS
+    .map((categoryKey) => categories[categoryKey].score)
+    .reduce((sum, score) => sum + score, 0) / CATEGORY_KEYS.length;
+  const hasCategoryExplanations = CATEGORY_KEYS.some((categoryKey) => {
+    const explanation = sanitizeText(extractedCategories[categoryKey]?.explanation, '', 220);
+    return explanation.length > 0;
+  });
+  const hasNarrativeText = Boolean(
+    sanitizeText(parsedJson?.rulesetSummary ?? parsedJson?.summary ?? parsedJson?.rs, '', 320)
+    || sanitizeText(parsedJson?.constructiveReview ?? parsedJson?.review ?? parsedJson?.cr, '', 360)
+  );
+
+  if (!allowScoreOnly && !hasCategoryExplanations && !hasNarrativeText) {
+    return null;
+  }
+
+  return {
+    overallScore: clampEditorBotScore(
+      parsedJson?.overallScore ?? parsedJson?.score ?? averageScore,
+      averageScore
+    ),
+    categories,
+    rulesetSummary: sanitizeText(
+      parsedJson?.rulesetSummary ?? parsedJson?.summary ?? parsedJson?.rs,
+      baseReview.rulesetSummary,
+      320
+    ),
+    constructiveReview: sanitizeText(
+      parsedJson?.constructiveReview ?? parsedJson?.review ?? parsedJson?.cr,
+      baseReview.constructiveReview,
+      360
+    ),
+    recommendations: sanitizeTextList(
+      parsedJson?.recommendations ?? parsedJson?.rec,
+      baseReview.recommendations,
+      160,
+      4
+    ),
+    warnings: sanitizeTextList(
+      parsedJson?.warnings ?? parsedJson?.w,
+      baseReview.warnings,
+      180,
+      4
+    )
+  };
+}
+
 function parseJsonObject(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed) {
@@ -315,62 +450,6 @@ function parseJsonObject(text) {
       return null;
     }
   }
-}
-
-function extractJsonStringField(text, key, maxLength = 320) {
-  const pattern = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`);
-  const match = String(text || '').match(pattern);
-  if (!match) {
-    return '';
-  }
-
-  try {
-    return sanitizeText(JSON.parse(`"${match[1]}"`), '', maxLength);
-  } catch {
-    return '';
-  }
-}
-
-function extractJsonStringArrayField(text, key, maxItems = 3, maxLength = 220) {
-  const pattern = new RegExp(`"${key}"\\s*:\\s*\\[((?:.|\\n|\\r)*?)\\]`);
-  const match = String(text || '').match(pattern);
-  if (!match) {
-    return [];
-  }
-
-  const items = [];
-  const itemPattern = /"((?:\\.|[^"\\])*)"/g;
-  let itemMatch = itemPattern.exec(match[1]);
-
-  while (itemMatch && items.length < maxItems) {
-    try {
-      const value = sanitizeText(JSON.parse(`"${itemMatch[1]}"`), '', maxLength);
-      if (value) {
-        items.push(value);
-      }
-    } catch {
-      // Skip malformed trailing items in truncated JSON.
-    }
-    itemMatch = itemPattern.exec(match[1]);
-  }
-
-  return items;
-}
-
-function salvageCompactNarrativeFromRawText(text) {
-  const rs = extractJsonStringField(text, 'rs', 280);
-  const cr = extractJsonStringField(text, 'cr', 320);
-
-  if (!rs || !cr) {
-    return null;
-  }
-
-  return {
-    rs,
-    cr,
-    rec: extractJsonStringArrayField(text, 'rec', 3, 140),
-    w: extractJsonStringArrayField(text, 'w', 3, 140)
-  };
 }
 
 function buildEditorBotDiagnosticPreview(value, maxLength = 260) {
@@ -398,17 +477,17 @@ function sanitizeText(value, fallback = '', maxLength = 320) {
   return text.slice(0, maxLength);
 }
 
-function sanitizeTextList(values, fallback = []) {
+function sanitizeTextList(values, fallback = [], maxLength = 160, maxItems = 4) {
   const list = Array.isArray(values)
     ? values
     : typeof values === 'string'
       ? [values]
       : [];
   const sanitized = list
-    .map((value) => sanitizeText(value, '', 220))
+    .map((value) => sanitizeText(value, '', maxLength))
     .filter(Boolean);
 
-  return sanitized.length > 0 ? sanitized.slice(0, 6) : fallback;
+  return sanitized.length > 0 ? sanitized.slice(0, maxItems) : fallback;
 }
 
 function buildSafeRulesetPayload(input = {}) {
@@ -484,7 +563,7 @@ function resolveEditorBotNumPredict(target) {
     return EDITOR_BOT_NUM_PREDICT;
   }
 
-  return Math.max(80, Math.min(Math.round(numericTarget), EDITOR_BOT_NUM_PREDICT));
+  return Math.max(80, Math.min(Math.round(numericTarget), 480));
 }
 
 function createEmptyMetrics(type = 'per_round') {
@@ -712,54 +791,47 @@ function buildObjectiveFragments(metrics) {
   if (hasIdentifier(metrics, /HEART/) && hasIdentifier(metrics, /(KING|_K$)/)) {
     fragments.push('avoid or contest the king of hearts');
   } else if (hasIdentifier(metrics, /HEART/)) {
-    fragments.push('manage heart captures carefully');
+    fragments.push('manage heart captures');
   }
 
   if (hasIdentifier(metrics, /DIAMOND/)) {
-    fragments.push('watch diamond captures');
+    fragments.push('avoid or pressure diamond tricks');
   }
 
   if (hasIdentifier(metrics, /(QUEEN|_Q$)/)) {
-    fragments.push('track queen danger');
+    fragments.push('track queen danger cards');
   }
 
   if (hasIdentifier(metrics, /CLUB/) && hasIdentifier(metrics, /(^10_|_10$|TEN)/)) {
     fragments.push('play around the ten of clubs');
   }
 
-  if (hasIdentifier(metrics, /POINTS|TOTAL_POINTS|INITIAL_POINTS/)) {
-    fragments.push('react to the current score state');
+  if (metrics.callCounts.game_end > 0 || metrics.callCounts.end > 0) {
+    fragments.push('watch the ending trigger');
   }
 
-  if (metrics.callCounts.game_end > 0 || metrics.callCounts.end > 0) {
-    fragments.push('time when the rule should stop or the match should end');
+  if (hasIdentifier(metrics, /POINTS|TOTAL_POINTS|INITIAL_POINTS/)) {
+    fragments.push('react to score-state checks');
   }
 
   return Array.from(new Set(fragments)).slice(0, 3);
 }
 
 function buildRulesetSummary({ title, type, metrics }) {
-  const direction = metrics.scoringDirections.negative > metrics.scoringDirections.positive
-    ? 'avoid risky captures that trigger penalties'
-    : metrics.scoringDirections.positive > 0 && metrics.scoringDirections.negative > 0
-      ? 'balance reward opportunities against punishments'
-      : metrics.scoringDirections.positive > 0
-        ? 'chase rewarding captures and timing windows'
-        : 'play around the scripted scoring triggers';
   const fragments = buildObjectiveFragments(metrics);
-  const triggerText = fragments.length > 0
-    ? `Players are mainly trying to ${fragments.join(', ')}.`
-    : 'Players are mainly trying to navigate the scripted card and score conditions.';
-  const scoreText = metrics.callCounts.set_to > 0 || metrics.callCounts.reset_to > 0
-    ? 'The rule can replace scores directly instead of only adding or subtracting points.'
-    : metrics.estimatedMaxSwing >= 90
-      ? 'Single outcomes can create large score swings.'
-      : 'Score changes look incremental enough to resolve quickly at the table.';
-  const behaviorText = type === 'end_game'
-    ? 'Because it is an end-game ruleset, it shapes how the overall standings close out.'
-    : 'Because it is a per-round ruleset, it mainly shapes trick-by-trick incentives during play.';
+  const objectiveText = fragments.length > 0
+    ? fragments.join(', ')
+    : 'play around the scripted scoring target';
+  const swingText = metrics.callCounts.set_to + metrics.callCounts.reset_to > 0
+    ? 'It uses direct score rewrites, so the payoff is dramatic but heavier to balance.'
+    : metrics.estimatedMaxSwing >= 140
+      ? 'It has a deliberately swingy payoff, so table clarity matters.'
+      : 'Its payoff looks readable enough for a quick table round.';
+  const typeText = type === 'end_game'
+    ? 'It behaves more like a closer that shapes the end of the full match.'
+    : 'It behaves like a rotating per-round contract rather than a whole game system.';
 
-  return `${triggerText} ${scoreText} ${behaviorText} It tends to encourage players to ${direction}.`;
+  return `${title} is a focused Rentz contract where players mainly try to ${objectiveText}. ${swingText} ${typeText}`;
 }
 
 function pushUnique(list, message) {
@@ -770,179 +842,141 @@ function pushUnique(list, message) {
 }
 
 function buildFallbackCategoryRatings(metrics) {
-  const complexityPenalty = metrics.nonEmptyLineCount > 14
-    ? 1.6
-    : metrics.nonEmptyLineCount > 8
-      ? 0.8
-      : 0;
-  const branchPenalty = metrics.ifCount > 3 ? 1 : metrics.ifCount > 1 ? 0.4 : 0;
-  const swingPenalty = metrics.estimatedMaxSwing >= 180
-    ? 2.4
-    : metrics.estimatedMaxSwing >= 110
-      ? 1.5
-      : metrics.estimatedMaxSwing >= 70
-        ? 0.8
+  const simpleStructureBonus = metrics.nonEmptyLineCount <= 6 ? 0.8 : metrics.nonEmptyLineCount <= 10 ? 0.4 : 0;
+  const focusedContractBonus = buildObjectiveFragments(metrics).length <= 2 ? 0.5 : 0.2;
+  const moderateChoiceBonus = metrics.ifCount >= 1 && metrics.ifCount <= 2 ? 0.5 : metrics.ifCount === 0 ? 0.1 : 0;
+  const mixedDirectionBonus = metrics.scoringDirections.negative > 0 && metrics.scoringDirections.positive > 0 ? 0.4 : 0;
+  const complexityPenalty = metrics.nonEmptyLineCount > 18
+    ? 1.9
+    : metrics.nonEmptyLineCount > 12
+      ? 1
+      : metrics.nonEmptyLineCount > 8
+        ? 0.4
         : 0;
-  const totalSwingPenalty = metrics.totalEstimatedSwing >= 240
+  const branchPenalty = metrics.ifCount > 4 ? 1.2 : metrics.ifCount > 2 ? 0.5 : 0;
+  const scoreRewritePenalty = metrics.callCounts.set_to + metrics.callCounts.reset_to > 0 ? 1.2 : 0;
+  const earlyEndPenalty = metrics.callCounts.game_end + metrics.callCounts.end > 0 ? 0.7 : 0;
+  const scoreStatePenalty = hasIdentifier(metrics, /POINTS|TOTAL_POINTS|INITIAL_POINTS/) ? 0.6 : 0;
+  const exactCardHeavyPenalty = metrics.identifiers.filter((identifier) => /_(A|K|Q|J|10|9|8|7|6|5|4|3|2)$/.test(identifier)).length >= 5 ? 0.6 : 0;
+  const swingPenalty = metrics.estimatedMaxSwing >= 220
+    ? 2
+    : metrics.estimatedMaxSwing >= 150
+      ? 1.1
+      : metrics.estimatedMaxSwing >= 110
+        ? 0.5
+        : 0;
+  const totalSwingPenalty = metrics.totalEstimatedSwing >= 320
     ? 1.2
-    : metrics.totalEstimatedSwing >= 140
+    : metrics.totalEstimatedSwing >= 220
       ? 0.6
       : 0;
-  const scoreRewritePenalty = metrics.callCounts.set_to + metrics.callCounts.reset_to > 0 ? 1.3 : 0;
-  const earlyEndPenalty = metrics.callCounts.game_end + metrics.callCounts.end > 0 ? 0.7 : 0;
-  const onlyNegativePenalty = metrics.scoringDirections.negative > 0 && metrics.scoringDirections.positive === 0 ? 0.8 : 0;
-  const mixedDirectionBonus = metrics.scoringDirections.negative > 0 && metrics.scoringDirections.positive > 0 ? 0.5 : 0;
-  const moderateComplexityBonus = metrics.ifCount >= 1 && metrics.ifCount <= 2 && metrics.nonEmptyLineCount <= 10 ? 0.6 : 0;
-  const exactCardHeavyPenalty = metrics.identifiers.filter((identifier) => /_(A|K|Q|J|10|9|8|7|6|5|4|3|2)$/.test(identifier)).length >= 5 ? 0.7 : 0;
-  const scoreStatePenalty = hasIdentifier(metrics, /POINTS|TOTAL_POINTS|INITIAL_POINTS/) ? 0.7 : 0;
+  const oneWayPenalty = metrics.scoringDirections.negative > 0 && metrics.scoringDirections.positive === 0 ? 0.2 : 0;
 
   const ratings = {
-    fairness: clampEditorBotScore(7.4 - swingPenalty - scoreRewritePenalty - scoreStatePenalty + moderateComplexityBonus, 6.5),
-    strategicDepth: clampEditorBotScore(5.6 + moderateComplexityBonus + mixedDirectionBonus - complexityPenalty * 0.6 - exactCardHeavyPenalty * 0.3, 5.8),
-    riskRewardBalance: clampEditorBotScore(5.8 + mixedDirectionBonus - swingPenalty - onlyNegativePenalty - scoreRewritePenalty * 0.5, 5.6),
-    comebackPotential: clampEditorBotScore(6.5 - swingPenalty - totalSwingPenalty - earlyEndPenalty - scoreRewritePenalty, 5.7),
-    claritySimplicity: clampEditorBotScore(8.2 - complexityPenalty - branchPenalty - exactCardHeavyPenalty, 6.5),
-    scoringBalance: clampEditorBotScore(6.8 - swingPenalty - totalSwingPenalty - scoreRewritePenalty + mixedDirectionBonus * 0.3, 5.9),
-    playerAgency: clampEditorBotScore(6.1 + moderateComplexityBonus - exactCardHeavyPenalty * 0.4 - onlyNegativePenalty * 0.4, 5.8),
-    interactionQuality: clampEditorBotScore(5.9 + moderateComplexityBonus + mixedDirectionBonus * 0.6 - exactCardHeavyPenalty * 0.4, 5.9),
-    robustness: clampEditorBotScore(6.8 - complexityPenalty * 0.5 - swingPenalty * 0.5 - scoreStatePenalty - earlyEndPenalty, 6),
-    exploitResistance: clampEditorBotScore(6.6 - scoreRewritePenalty - exactCardHeavyPenalty * 0.5 - onlyNegativePenalty * 0.4 - earlyEndPenalty * 0.5, 5.9)
+    comebackPotential: clampEditorBotScore(
+      7.5 + focusedContractBonus - swingPenalty - totalSwingPenalty - scoreRewritePenalty - earlyEndPenalty - scoreStatePenalty,
+      7.1
+    ),
+    playerAgency: clampEditorBotScore(
+      7.1 + simpleStructureBonus * 0.3 + moderateChoiceBonus + mixedDirectionBonus - exactCardHeavyPenalty - oneWayPenalty,
+      7
+    ),
+    claritySimplicity: clampEditorBotScore(
+      8.5 + simpleStructureBonus + focusedContractBonus - complexityPenalty - branchPenalty - scoreStatePenalty * 0.5 - scoreRewritePenalty * 0.3,
+      7.8
+    ),
+    scoringBalance: clampEditorBotScore(
+      7.8 + focusedContractBonus * 0.4 + mixedDirectionBonus - swingPenalty - totalSwingPenalty * 0.8 - scoreRewritePenalty * 0.8,
+      7.2
+    )
   };
 
   return {
-    fairness: {
-      score: ratings.fairness,
-      explanation: swingPenalty > 1
-        ? 'Large point jumps can make one mistake decide too much of the outcome.'
-        : 'Nothing in the script obviously hard-locks one player role, but score spikes still affect fairness.'
-    },
-    strategicDepth: {
-      score: ratings.strategicDepth,
-      explanation: moderateComplexityBonus > 0
-        ? 'There is enough branching to create decisions without overwhelming the table.'
-        : 'The decision space looks either very linear or a bit too scripted to stay fresh every round.'
-    },
-    riskRewardBalance: {
-      score: ratings.riskRewardBalance,
-      explanation: mixedDirectionBonus > 0
-        ? 'The rule offers both upside and punishment, which usually creates better tradeoffs.'
-        : 'The incentives lean heavily in one direction, so safe play may become too automatic.'
-    },
     comebackPotential: {
       score: ratings.comebackPotential,
-      explanation: swingPenalty > 1 || earlyEndPenalty > 0
-        ? 'Big swings or sudden endings can make it hard for trailing players to recover.'
-        : 'The score pace looks moderate enough that players should stay in contention longer.'
-    },
-    claritySimplicity: {
-      score: ratings.claritySimplicity,
-      explanation: complexityPenalty > 0
-        ? 'The script is readable, but the extra conditions will take a little table explanation.'
-        : 'The objective is compact enough that most players should understand it quickly.'
-    },
-    scoringBalance: {
-      score: ratings.scoringBalance,
-      explanation: scoreRewritePenalty > 0
-        ? 'Direct score resets are powerful and can feel harsher than ordinary add or subtract scoring.'
-        : 'The point values are closer to what players can usually reason about during a live round.'
+      explanation: swingPenalty >= 1.1 || earlyEndPenalty > 0 || scoreRewritePenalty > 0
+        ? 'The contract is exciting, but big resets or abrupt endings can make a round feel decided too early.'
+        : 'It is focused without obviously making the wider Rentz match feel hopeless too early.'
     },
     playerAgency: {
       score: ratings.playerAgency,
       explanation: exactCardHeavyPenalty > 0
-        ? 'A heavy focus on exact card hits can make outcomes feel a bit draw-dependent.'
-        : 'Players should usually feel that planning and timing still matter.'
+        ? 'Players still have choices, but exact-card dependence can make outcomes feel a bit draw-led.'
+        : 'Players should have readable choices around timing, suit pressure, and when to take or dodge tricks.'
     },
-    interactionQuality: {
-      score: ratings.interactionQuality,
-      explanation: moderateComplexityBonus > 0
-        ? 'The rule should create some reading, baiting, and denial moments.'
-        : 'The interaction may stay functional, but it does not obviously push strong counterplay.'
+    claritySimplicity: {
+      score: ratings.claritySimplicity,
+      explanation: complexityPenalty > 0 || branchPenalty > 0
+        ? 'The idea is understandable, but the extra conditions will slow teaching and table speed.'
+        : 'The objective is compact and easy to remember, which is a real strength for Rentz rotation.'
     },
-    robustness: {
-      score: ratings.robustness,
-      explanation: scoreStatePenalty > 0
-        ? 'Score-state logic can behave differently across groups and pacing expectations.'
-        : 'The rule should travel reasonably well across different tables if players know the core objective.'
-    },
-    exploitResistance: {
-      score: ratings.exploitResistance,
-      explanation: onlyNegativePenalty > 0 || earlyEndPenalty > 0
-        ? 'Players may discover a very defensive default line if the penalty structure is too one-sided.'
-        : 'There is no single dominant loophole jumping out from the script alone.'
+    scoringBalance: {
+      score: ratings.scoringBalance,
+      explanation: scoreRewritePenalty > 0
+        ? 'The scoring is dramatic enough to be interesting, but direct rewrites need extra care to stay readable.'
+        : swingPenalty >= 1.1
+          ? 'The swing is intentionally high-stakes, so it works best when players can see the danger clearly.'
+          : 'The point values look reasonably matched to the contract and easy to track at the table.'
     }
   };
 }
 
-function buildConstructiveReview({ title, metrics, ratings }) {
+function buildConstructiveReview({ title, type, metrics, ratings }) {
+  const roleText = type === 'end_game' ? 'match closer' : 'rotating mini-game';
   const strengths = [];
-  const risks = [];
+  const concerns = [];
 
-  if (ratings.claritySimplicity.score >= 7.5) {
-    strengths.push('The objective is easy to teach and should read quickly in a live room.');
+  if (ratings.claritySimplicity.score >= 8.3) {
+    strengths.push('It is easy to teach and should resolve quickly.');
   }
 
-  if (ratings.interactionQuality.score >= 6.4) {
-    strengths.push('There is enough counterplay here that players should care about what the rest of the table is telegraphing.');
+  if (ratings.playerAgency.score >= 7.4) {
+    strengths.push('Players should still feel they can influence the result with timing and table reads.');
   }
 
-  if (metrics.scoringDirections.positive > 0 && metrics.scoringDirections.negative > 0) {
-    strengths.push('Using both rewards and penalties helps the ruleset feel more strategically alive than a single-axis punishment rule.');
-  }
-
-  if (metrics.estimatedMaxSwing >= 110) {
-    risks.push('One result can swing the score very hard, so a single unlucky capture may overshadow several quieter good decisions.');
-  }
-
-  if (metrics.nonEmptyLineCount > 14 || metrics.ifCount > 3) {
-    risks.push('The amount of logic may slow the table down because players will keep re-checking what matters before each trick.');
+  if (ratings.scoringBalance.score >= 7.6) {
+    strengths.push('The payoff feels pointed without being needlessly messy.');
   }
 
   if (metrics.callCounts.set_to + metrics.callCounts.reset_to > 0) {
-    risks.push('Direct score rewrites are dramatic and may feel less fair than gradual scoring unless the setup is very clear.');
+    concerns.push('Direct score replacement is the main risk because it can overpower the rest of the round.');
   }
 
-  const opening = strengths.length > 0
-    ? `${title} has a solid core idea. ${strengths[0]}`
-    : `${title} has a workable foundation and the objective is understandable enough to review as a playable Rentz variant.`;
-  const middle = risks.length > 0
-    ? risks[0]
-    : 'The biggest opportunity is making sure the incentives stay interesting across repeated rounds instead of becoming routine.';
-  const closing = strengths.length > 1
-    ? strengths[1]
-    : 'With a little tuning, this could become a dependable custom ruleset rather than just a novelty script.';
+  if (metrics.estimatedMaxSwing >= 180) {
+    concerns.push('The biggest swing may be a little too decisive unless the danger is obvious from the start.');
+  }
 
-  return `${opening} ${middle} ${closing}`;
+  if (metrics.nonEmptyLineCount > 14 || metrics.ifCount > 3) {
+    concerns.push('The extra conditions may slow the table down more than the idea itself needs.');
+  }
+
+  const opening = `${title} reads like a solid ${roleText} rather than a ruleset trying to carry the whole match by itself.`;
+  const strengthText = strengths[0] || 'Its main value is that the contract has a clear tactical target.';
+  const concernText = concerns[0] || 'The main question is whether repeated playtests keep the pressure interesting without adding more text.';
+
+  return `${opening} ${strengthText} ${concernText}`;
 }
 
-function buildRecommendations(metrics) {
+function buildRecommendations(metrics, ratings) {
   const recommendations = [];
 
-  if (metrics.estimatedMaxSwing >= 110) {
-    pushUnique(recommendations, 'Reduce the largest point swing or split it into smaller triggers so one trick does not decide the whole rule.');
+  if (metrics.estimatedMaxSwing >= 180) {
+    pushUnique(recommendations, 'Consider trimming the largest swing a little so one trick does not erase too much of the round.');
   }
 
   if (metrics.nonEmptyLineCount > 14 || metrics.ifCount > 3) {
-    pushUnique(recommendations, 'Simplify one or two conditions so players can remember the objective without constantly re-reading the script.');
-  }
-
-  if (metrics.scoringDirections.negative > 0 && metrics.scoringDirections.positive === 0) {
-    pushUnique(recommendations, 'Consider adding a small positive incentive so the best strategy is not always just passive avoidance.');
+    pushUnique(recommendations, 'Collapse one or two conditions so players can remember the contract without re-reading it mid-round.');
   }
 
   if (metrics.callCounts.set_to + metrics.callCounts.reset_to > 0) {
-    pushUnique(recommendations, 'Use direct score replacement sparingly, or gate it behind a rarer condition with clear table drama.');
+    pushUnique(recommendations, 'Only keep score rewrites if the drama they create is worth the extra balance risk.');
   }
 
-  if (metrics.callCounts.game_end + metrics.callCounts.end > 0) {
-    pushUnique(recommendations, 'Double-check whether the ending trigger happens often enough to feel intentional rather than abrupt.');
+  if (ratings.playerAgency.score < 6.8) {
+    pushUnique(recommendations, 'Add one clearer timing or suit-pressure decision so players feel less locked into automatic play.');
   }
 
-  if (recommendations.length === 0) {
-    pushUnique(recommendations, 'Playtest it across a few tables and watch whether the intended objective stays obvious after the first round.');
-    pushUnique(recommendations, 'If you want a bit more depth, add one conditional twist that rewards reading the table instead of only counting cards.');
-  }
-
-  return recommendations.slice(0, 4);
+  return recommendations.slice(0, 3);
 }
 
 function buildWarnings(metrics, fallbackWarning = '') {
@@ -952,19 +986,19 @@ function buildWarnings(metrics, fallbackWarning = '') {
     pushUnique(warnings, fallbackWarning);
   }
 
-  if (metrics.estimatedMaxSwing >= 180) {
-    pushUnique(warnings, 'Very high point swings may create runaway leads or feel too punishing for one mistake.');
-  }
-
-  if (metrics.nonEmptyLineCount > 18) {
-    pushUnique(warnings, 'This ruleset is long enough that turn speed may suffer unless everyone already knows it well.');
+  if (metrics.estimatedMaxSwing >= 240) {
+    pushUnique(warnings, 'Very high single-event swings can overshadow the rest of the round.');
   }
 
   if (metrics.callCounts.set_to + metrics.callCounts.reset_to > 0) {
-    pushUnique(warnings, 'Direct score replacement effects need careful playtesting because they can bypass normal comeback pacing.');
+    pushUnique(warnings, 'Direct score replacement needs extra playtesting because it changes normal Rentz pacing.');
   }
 
-  return warnings.slice(0, 4);
+  if (metrics.nonEmptyLineCount > 18) {
+    pushUnique(warnings, 'This script is long enough that table speed may suffer unless the group already knows it well.');
+  }
+
+  return warnings.slice(0, 3);
 }
 
 function buildFallbackEditorBotReview({
@@ -976,20 +1010,22 @@ function buildFallbackEditorBotReview({
 } = {}) {
   const metrics = buildRulesetJudgeMetrics({ code, type, ast });
   const categoryRatings = buildFallbackCategoryRatings(metrics);
-  const overallAverage = CATEGORY_DEFINITIONS
-    .map(({ key }) => categoryRatings[key].score)
-    .reduce((sum, score) => sum + score, 0) / CATEGORY_DEFINITIONS.length;
-  const overallScore = clampEditorBotScore(overallAverage, 6);
+  const overallAverage = CATEGORY_KEYS
+    .map((key) => categoryRatings[key].score)
+    .reduce((sum, score) => sum + score, 0) / CATEGORY_KEYS.length;
+  const overallScore = clampEditorBotScore(overallAverage, 7.3);
   const constructiveReview = buildConstructiveReview({
     title,
+    type,
     metrics,
     ratings: categoryRatings
   });
-  const recommendations = buildRecommendations(metrics);
+  const recommendations = buildRecommendations(metrics, categoryRatings);
   const warnings = buildWarnings(metrics, fallbackWarning);
 
   return {
     overallScore,
+    categories: categoryRatings,
     categoryRatings,
     rulesetSummary: buildRulesetSummary({ title, type, metrics }),
     constructiveReview,
@@ -1006,7 +1042,7 @@ function buildReviewSchema(z) {
     }
 
     return value;
-  }, z.array(z.string().min(1).max(220)).max(6).optional());
+  }, z.array(z.string().min(1).max(160)).max(4).optional());
   const categorySchema = z.object({
     score: z.number().min(0).max(10),
     explanation: z.string().min(1).max(220)
@@ -1014,94 +1050,41 @@ function buildReviewSchema(z) {
 
   return z.object({
     overallScore: z.number().min(0).max(10),
-    categoryRatings: z.object(
+    categories: z.object(
       CATEGORY_DEFINITIONS.reduce((shape, entry) => {
         shape[entry.key] = categorySchema;
         return shape;
       }, {})
     ),
-    rulesetSummary: z.string().min(1).max(500),
-    constructiveReview: z.string().min(1).max(500),
+    rulesetSummary: z.string().min(1).max(320),
+    constructiveReview: z.string().min(1).max(360),
     recommendations: flexibleStringListSchema,
     warnings: flexibleStringListSchema
   });
 }
 
-function buildCompactReviewSchema(z) {
-  const flexibleStringListSchema = z.preprocess((value) => {
-    if (typeof value === 'string') {
-      return [value];
+function buildScoreMapSchema(z) {
+  const scoreSchema = z.preprocess((value) => {
+    if (typeof value === 'string' && value.trim()) {
+      return Number(value);
     }
 
     return value;
-  }, z.array(z.string().min(1).max(160)).max(4).optional());
+  }, z.number().min(0).max(10));
 
   return z.object({
-    o: z.number().min(0).max(10),
-    rs: z.string().min(1).max(360),
-    cr: z.string().min(1).max(360),
-    rec: flexibleStringListSchema,
-    w: flexibleStringListSchema
+    comebackPotential: scoreSchema,
+    playerAgency: scoreSchema,
+    claritySimplicity: scoreSchema,
+    scoringBalance: scoreSchema
   });
-}
-
-function buildCompactNarrativeSchema(z) {
-  const flexibleStringListSchema = z.preprocess((value) => {
-    if (typeof value === 'string') {
-      return [value];
-    }
-
-    return value;
-  }, z.array(z.string().min(1).max(140)).max(3).optional());
-
-  return z.object({
-    rs: z.string().min(1).max(280),
-    cr: z.string().min(1).max(320),
-    rec: flexibleStringListSchema,
-    w: flexibleStringListSchema
-  });
-}
-
-function buildCompactCategorySchema(z, categoryKeys = []) {
-  const compactCategorySchema = z.object({
-    s: z.number().min(0).max(10),
-    e: z.string().min(1).max(160)
-  });
-
-  return z.object({
-    c: z.object(
-      categoryKeys.reduce((shape, categoryKey) => {
-        shape[CATEGORY_KEY_TO_SHORT_KEY[categoryKey]] = compactCategorySchema;
-        return shape;
-      }, {})
-    )
-  });
-}
-
-function applyCompactCategoryBatchToRatings(baseRatings, batchData, categoryKeys = []) {
-  const nextRatings = { ...(baseRatings || {}) };
-
-  for (const categoryKey of categoryKeys) {
-    const shortKey = CATEGORY_KEY_TO_SHORT_KEY[categoryKey];
-    const batchEntry = batchData?.c?.[shortKey];
-    if (!batchEntry) {
-      continue;
-    }
-
-    nextRatings[categoryKey] = {
-      score: batchEntry.s,
-      explanation: batchEntry.e
-    };
-  }
-
-  return nextRatings;
 }
 
 function buildEditorBotRawPrompt(systemPrompt, humanPrompt) {
   return [
     systemPrompt,
     '',
-    'User payload:',
+    'Payload:',
     humanPrompt,
     '',
     'Return JSON only.'
@@ -1114,15 +1097,12 @@ async function invokeEditorBotModel({
   jsonMode = true,
   numPredict = EDITOR_BOT_NUM_PREDICT
 } = {}) {
-  const safeBaseUrl = normalizeEditorBotBaseUrl(baseUrl);
-  const payload = {
-    modelName,
-    baseUrl: safeBaseUrl,
+  return {
+    modelName: sanitizeText(modelName, DEFAULT_EDITOR_BOT_OLLAMA_MODEL, 120),
+    baseUrl: normalizeEditorBotBaseUrl(baseUrl),
     jsonMode,
     numPredict: resolveEditorBotNumPredict(numPredict)
   };
-
-  return payload;
 }
 
 async function queryStructuredEditorBotResponse({
@@ -1152,9 +1132,9 @@ async function queryStructuredEditorBotResponse({
       stream: true,
       keep_alive: EDITOR_BOT_KEEP_ALIVE,
       options: {
-        temperature: 0.2,
+        temperature: 0.1,
         num_predict: request.numPredict,
-        num_ctx: 2048
+        num_ctx: 1536
       },
       ...(request.jsonMode ? { format: 'json' } : {})
     },
@@ -1188,87 +1168,420 @@ function isRetryableEditorBotError(error) {
     || message.includes('socket');
 }
 
-function pickLeanEditorBotModel(preferredModelName, availableModelNames = []) {
+function buildPromptScoringProfile(metrics) {
+  if (metrics.scoringDirections.positive > 0 && metrics.scoringDirections.negative > 0) {
+    return 'mixed rewards and penalties';
+  }
+
+  if (metrics.scoringDirections.positive > 0) {
+    return 'reward-focused scoring';
+  }
+
+  if (metrics.scoringDirections.negative > 0) {
+    return 'penalty-focused scoring';
+  }
+
+  return 'special-condition scoring';
+}
+
+function buildPromptFocusSummary(metrics, type) {
+  const fragments = buildObjectiveFragments(metrics);
+  if (fragments.length > 0) {
+    return fragments.join(', ');
+  }
+
+  return type === 'end_game'
+    ? 'shape the final standings with a scripted trigger'
+    : 'create a compact trick-by-trick scoring target';
+}
+
+function buildEditorBotPromptPayload({ title, shortName, type, code, compiler, metrics, lean = false }) {
+  const codeExcerpt = buildPromptCodeExcerpt(
+    code,
+    lean ? LEAN_PROMPT_CODE_LIMIT : FULL_PROMPT_CODE_LIMIT
+  );
+  const identifierSample = samplePromptIdentifiers(
+    metrics.identifiers,
+    lean ? LEAN_PROMPT_IDENTIFIER_LIMIT : FULL_PROMPT_IDENTIFIER_LIMIT
+  );
+
+  return {
+    ruleset: {
+      title,
+      shortName,
+      type,
+      code: codeExcerpt.text,
+      codeTruncated: codeExcerpt.truncated
+    },
+    compiler: {
+      status: compiler?.status || 'compiled',
+      message: sanitizeText(compiler?.message, 'Ruleset compiled successfully.', 180),
+      errors: Array.isArray(compiler?.errors) ? compiler.errors.slice(0, lean ? 1 : 2) : [],
+      warnings: Array.isArray(compiler?.warnings) ? compiler.warnings.slice(0, lean ? 1 : 2) : []
+    },
+    parsedSummary: {
+      role: type === 'end_game' ? 'match closer' : 'rotating contract',
+      focus: buildPromptFocusSummary(metrics, type),
+      scoringProfile: buildPromptScoringProfile(metrics),
+      largestSingleSwing: metrics.estimatedMaxSwing,
+      totalDeclaredSwing: metrics.totalEstimatedSwing,
+      nonEmptyLines: metrics.nonEmptyLineCount,
+      branchCount: metrics.ifCount,
+      maxBranchDepth: metrics.maxBranchDepth,
+      identifiers: identifierSample.values,
+      identifiersTruncated: identifierSample.truncated
+    },
+    calibration: {
+      matchContext: 'Judge this as one ruleset inside a larger Rentz match rotation.',
+      anchors: lean
+        ? EDITOR_BOT_CALIBRATION_GUIDANCE.slice(0, 3)
+        : EDITOR_BOT_CALIBRATION_GUIDANCE
+    },
+    criteria: EDITOR_BOT_CRITERIA_GUIDANCE,
+    responseNotes: [
+      'Keep each category explanation short.',
+      'Keep the summary and review concise.',
+      'Only recommend changes that would materially help.',
+      'Return the exact nested categories object, not a flat score map.'
+    ]
+  };
+}
+
+function buildEditorBotSystemPrompt() {
+  return [
+    'You are Editor Bot for Rentz custom rulesets.',
+    'Judge each ruleset as one rotating Rentz mini-game or contract inside a larger match, not as the entire game.',
+    'Simple focused contracts can score very high.',
+    'Some swinginess is good when it is clear, readable, and intentional.',
+    'Default-style anchors like King of Hearts, Diamonds, Queens, 10 of Clubs, and Whist are good because they are clear, fast, and tactically focused.',
+    'Total Plus and Total Minus can still score well when their larger swings stay understandable.',
+    'Do not punish a ruleset just for being simple, narrow, or not carrying comeback mechanics by itself.',
+    'Use only these four categories: comebackPotential, playerAgency, claritySimplicity, scoringBalance.',
+    'Do not return category names at the top level by themselves.',
+    'Put every category inside categories.{categoryKey}.{score,explanation}.',
+    'Keep the feedback practical, brief, and not harsh.',
+    'Return JSON only using the requested schema.'
+  ].join(' ');
+}
+
+function buildEditorBotScoreMapPrompt() {
+  return [
+    'You are Editor Bot for Rentz custom rulesets.',
+    'Judge this as one rotating Rentz mini-game inside a larger match.',
+    'Return JSON only.',
+    'Use exactly this shape:',
+    '{"comebackPotential":number,"playerAgency":number,"claritySimplicity":number,"scoringBalance":number}',
+    'No explanations. No extra keys. One decimal allowed.',
+    'Simple focused default-style contracts can score high.',
+    'Judge only the four scores and stop.',
+    'Use the short summary below instead of doing a deep simulation.',
+    'Use the provided baseline scores as your starting point.',
+    'Only move a score far away from the baseline if the ruleset summary gives a strong reason.'
+  ].join(' ');
+}
+
+function buildEditorBotScoreMapPayload({ title, shortName, type, code, compiler, metrics, heuristicReview }) {
+  return {
+    t: sanitizeText(title, 'Untitled Ruleset', 80),
+    s: sanitizeText(shortName, '', 24),
+    y: type === 'end_game' ? 'end_game' : 'per_round',
+    role: type === 'end_game' ? 'match closer' : 'rotating contract',
+    focus: buildPromptFocusSummary(metrics, type),
+    scoring: buildPromptScoringProfile(metrics),
+    swing: Math.max(0, Number(metrics?.estimatedMaxSwing) || 0),
+    totalSwing: Math.max(0, Number(metrics?.totalEstimatedSwing) || 0),
+    lines: Math.max(0, Number(metrics?.nonEmptyLineCount) || 0),
+    branches: Math.max(0, Number(metrics?.ifCount) || 0),
+    compile: compiler?.status || 'compiled',
+    msg: sanitizeText(compiler?.message, 'Ruleset compiled successfully.', 120),
+    baseline: heuristicReview ? {
+      comebackPotential: clampEditorBotScore(heuristicReview.categoryRatings?.comebackPotential?.score, 7),
+      playerAgency: clampEditorBotScore(heuristicReview.categoryRatings?.playerAgency?.score, 7),
+      claritySimplicity: clampEditorBotScore(heuristicReview.categoryRatings?.claritySimplicity?.score, 8),
+      scoringBalance: clampEditorBotScore(heuristicReview.categoryRatings?.scoringBalance?.score, 7)
+    } : undefined,
+    anchors: [
+      'Simple focused contracts can score high.',
+      'Do not judge this like a whole standalone game.',
+      'Swingy scoring can be fine when it is clear.',
+      'King of Hearts style clarity should usually score high.'
+    ]
+  };
+}
+
+async function requestEditorBotAttempt({
+  schema,
+  systemPrompt,
+  humanPrompt,
+  modelName,
+  baseUrl,
+  timeoutMs,
+  attemptLabel,
+  numPredict,
+  jsonMode,
+  salvageParser
+} = {}) {
+  const startedAt = Date.now();
+
+  try {
+    const result = await queryStructuredEditorBotResponse({
+      schema,
+      systemPrompt,
+      humanPrompt,
+      modelName,
+      baseUrl,
+      timeoutMs,
+      attemptLabel,
+      numPredict,
+      jsonMode,
+      salvageParser
+    });
+
+    return {
+      ...result,
+      diagnostic: {
+        attempt: attemptLabel,
+        elapsedMs: Date.now() - startedAt,
+        success: result.success,
+        stage: result.success ? 'complete' : result.stage || 'unknown',
+        error: result.success ? '' : result.error || 'unknown-error',
+        rawPreview: buildEditorBotDiagnosticPreview(
+          [result.rawPreview, `model: ${modelName}`].filter(Boolean).join(' | ')
+        )
+      }
+    };
+  } catch (error) {
+    error.editorBotDiagnostic = {
+      attempt: attemptLabel,
+      elapsedMs: Date.now() - startedAt,
+      success: false,
+      stage: 'model',
+      error: sanitizeText(error.message, 'unknown-error', 220),
+      rawPreview: buildEditorBotDiagnosticPreview(`model: ${modelName}`)
+    };
+    throw error;
+  }
+}
+
+async function requestEditorBotReviewVariant({
+  safeRuleset,
+  compiler,
+  metrics,
+  fallbackReview,
+  schema,
+  modelName,
+  baseUrl,
+  timeoutMs,
+  lean = false
+} = {}) {
+  const systemPrompt = buildEditorBotSystemPrompt();
+  const humanPrompt = JSON.stringify(buildEditorBotPromptPayload({
+    ...safeRuleset,
+    compiler,
+    metrics,
+    lean
+  }));
+  const salvageParser = (rawText) => buildSalvagedEditorBotReview(rawText, fallbackReview, {
+    allowScoreOnly: false
+  });
+  const diagnostics = [];
+
+  try {
+    const jsonResult = await requestEditorBotAttempt({
+      schema,
+      systemPrompt,
+      humanPrompt,
+      modelName,
+      baseUrl,
+      timeoutMs,
+      attemptLabel: lean ? 'lean-json' : 'full-json',
+      numPredict: lean ? LEAN_EDITOR_BOT_NUM_PREDICT : EDITOR_BOT_NUM_PREDICT,
+      jsonMode: true,
+      salvageParser
+    });
+    diagnostics.push(jsonResult.diagnostic);
+
+    if (jsonResult.success) {
+      return {
+        success: true,
+        data: jsonResult.data,
+        diagnostics
+      };
+    }
+
+    if (jsonResult.error === 'invalid-structured-output' && jsonResult.stage === 'validation') {
+      return {
+        success: false,
+        error: jsonResult.error,
+        stage: jsonResult.stage,
+        diagnostics
+      };
+    }
+
+    const plainResult = await requestEditorBotAttempt({
+      schema,
+      systemPrompt,
+      humanPrompt,
+      modelName,
+      baseUrl,
+      timeoutMs: Math.max(2500, Math.round(timeoutMs * 0.9)),
+      attemptLabel: lean ? 'lean-plain' : 'full-plain',
+      numPredict: lean ? LEAN_EDITOR_BOT_NUM_PREDICT : EDITOR_BOT_NUM_PREDICT,
+      jsonMode: false,
+      salvageParser
+    });
+    diagnostics.push(plainResult.diagnostic);
+
+    if (plainResult.success) {
+      return {
+        success: true,
+        data: plainResult.data,
+        diagnostics
+      };
+    }
+
+    return {
+      success: false,
+      error: plainResult.error || jsonResult.error || 'invalid-structured-output',
+      stage: plainResult.stage || jsonResult.stage || 'validation',
+      diagnostics
+    };
+  } catch (error) {
+    if (error.editorBotDiagnostic) {
+      diagnostics.push(error.editorBotDiagnostic);
+    }
+    error.editorBotDiagnostics = diagnostics;
+    throw error;
+  }
+}
+
+async function requestEditorBotScoreMap({
+  safeRuleset,
+  compiler,
+  metrics,
+  heuristicReview,
+  schema,
+  modelName,
+  baseUrl,
+  timeoutMs
+} = {}) {
+  const systemPrompt = buildEditorBotScoreMapPrompt();
+  const humanPrompt = JSON.stringify(buildEditorBotScoreMapPayload({
+    ...safeRuleset,
+    compiler,
+    metrics,
+    heuristicReview
+  }));
+  const diagnostics = [];
+
+  try {
+    let jsonResult;
+
+    try {
+      jsonResult = await requestEditorBotAttempt({
+        schema,
+        systemPrompt,
+        humanPrompt,
+        modelName,
+        baseUrl,
+        timeoutMs,
+        attemptLabel: 'score-map-json',
+        numPredict: SCORE_MAP_NUM_PREDICT,
+        jsonMode: true
+      });
+      diagnostics.push(jsonResult.diagnostic);
+
+      if (jsonResult.success) {
+        return {
+          success: true,
+          data: jsonResult.data,
+          diagnostics
+        };
+      }
+    } catch (error) {
+      if (error.editorBotDiagnostic) {
+        diagnostics.push(error.editorBotDiagnostic);
+      }
+
+      if (!isRetryableEditorBotError(error)) {
+        error.editorBotDiagnostics = diagnostics;
+        throw error;
+      }
+    }
+
+    const plainResult = await requestEditorBotAttempt({
+      schema,
+      systemPrompt,
+      humanPrompt,
+      modelName,
+      baseUrl,
+      timeoutMs: Math.max(2500, Math.round(timeoutMs * 0.8)),
+      attemptLabel: 'score-map-plain',
+      numPredict: SCORE_MAP_NUM_PREDICT,
+      jsonMode: false
+    });
+    diagnostics.push(plainResult.diagnostic);
+
+    if (plainResult.success) {
+      return {
+        success: true,
+        data: plainResult.data,
+        diagnostics
+      };
+    }
+
+    return {
+      success: false,
+      error: plainResult.error || jsonResult?.error || 'invalid-structured-output',
+      stage: plainResult.stage || jsonResult?.stage || 'validation',
+      diagnostics
+    };
+  } catch (error) {
+    if (error.editorBotDiagnostic) {
+      diagnostics.push(error.editorBotDiagnostic);
+    }
+    error.editorBotDiagnostics = diagnostics;
+    throw error;
+  }
+}
+
+function pickLeanEditorBotModel(preferredModelName) {
   const explicitLeanModel = sanitizeText(DEFAULT_EDITOR_BOT_LEAN_OLLAMA_MODEL, '', 120);
   if (explicitLeanModel) {
     return explicitLeanModel;
   }
 
-  const safePreferred = sanitizeText(preferredModelName, DEFAULT_EDITOR_BOT_OLLAMA_MODEL, 120);
-  const available = Array.isArray(availableModelNames) ? availableModelNames.filter(Boolean) : [];
-
-  if (available.length === 0) {
-    return safePreferred;
-  }
-
-  const rankedCandidates = [
-    'llama3.2:1b',
-    'llama3.2:3b',
-    'qwen2.5:3b',
-    'phi3:mini',
-    safePreferred
-  ];
-
-  for (const candidate of rankedCandidates) {
-    if (available.includes(candidate)) {
-      return candidate;
-    }
-  }
-
-  return safePreferred;
+  return sanitizeText(preferredModelName, DEFAULT_EDITOR_BOT_OLLAMA_MODEL, 120);
 }
 
-async function probeEditorBotAvailability({
-  modelName = DEFAULT_EDITOR_BOT_OLLAMA_MODEL,
-  baseUrl = DEFAULT_EDITOR_BOT_OLLAMA_BASE_URL,
-  timeoutMs = EDITOR_BOT_PREFLIGHT_TIMEOUT_MS
-} = {}) {
-  const startedAt = Date.now();
-  const safeBaseUrl = normalizeEditorBotBaseUrl(baseUrl);
-
-  try {
-    const { response, data } = await fetchJsonWithTimeout(
-      `${safeBaseUrl}/api/tags`,
-      timeoutMs,
-      `Editor Bot could not reach Ollama within ${timeoutMs}ms`
-    );
-
-    if (!response.ok) {
-      throw new Error(`Ollama availability check failed with HTTP ${response.status}`);
-    }
-
-    const availableModelNames = Array.isArray(data?.models)
-      ? data.models
-        .map((entry) => sanitizeText(entry?.model || entry?.name, '', 120))
-        .filter(Boolean)
-      : [];
-
-    if (availableModelNames.length > 0 && !availableModelNames.includes(modelName)) {
-      throw new Error(`Ollama is reachable, but model '${modelName}' is not installed.`);
-    }
-
-    return {
-      attempt: 'availability-probe',
-      elapsedMs: Date.now() - startedAt,
-      success: true,
-      stage: 'complete',
-      error: '',
-      availableModelNames,
-      rawPreview: availableModelNames.length > 0
-        ? buildEditorBotDiagnosticPreview(`models: ${availableModelNames.slice(0, 6).join(', ')}`)
-        : ''
-    };
-  } catch (error) {
-    error.editorBotDiagnostic = {
-      attempt: 'availability-probe',
-      elapsedMs: Date.now() - startedAt,
-      success: false,
-      stage: 'preflight',
-      error: sanitizeText(error.message, 'unavailable', 220),
-      rawPreview: ''
-    };
-    throw error;
-  }
+function buildWarmupPayload() {
+  return {
+    ruleset: {
+      title: 'Warmup Contract',
+      shortName: 'WU',
+      type: 'per_round',
+      code: 'if(DIAMOND_NR > 0)\n  add(-15 * DIAMOND_NR)\nendif'
+    },
+    compiler: {
+      status: 'compiled',
+      message: 'Warmup sample compiled successfully.'
+    },
+    parsedSummary: {
+      role: 'rotating contract',
+      focus: 'avoid or pressure diamond tricks',
+      scoringProfile: 'penalty-focused scoring',
+      largestSingleSwing: 15,
+      totalDeclaredSwing: 15,
+      nonEmptyLines: 3,
+      branchCount: 1,
+      identifiers: ['DIAMOND_NR']
+    },
+    anchors: [
+      'Readiness check only.',
+      'Return only the four score keys.',
+      'Simple focused contracts can score high.'
+    ]
+  };
 }
 
 async function warmEditorBotModel({
@@ -1292,32 +1605,23 @@ async function warmEditorBotModel({
   }
 
   try {
-    const { response, controller, clearTimeout } = await postJsonWithTimeout(
-      `${normalizeEditorBotBaseUrl(baseUrl)}/api/generate`,
-      {
-        model: modelName,
-        prompt: 'Return {}',
-        stream: false,
-        keep_alive: EDITOR_BOT_KEEP_ALIVE,
-        format: 'json',
-        options: {
-          temperature: 0,
-          num_predict: 8,
-          num_ctx: 512
-        }
-      },
+    const { z } = await loadEditorBotRuntime();
+    const result = await queryStructuredEditorBotResponse({
+      schema: buildScoreMapSchema(z),
+      systemPrompt: buildEditorBotScoreMapPrompt(),
+      humanPrompt: JSON.stringify(buildWarmupPayload()),
+      modelName,
+      baseUrl,
       timeoutMs,
-      `Editor Bot model warm-up timed out after ${timeoutMs}ms`
-    );
+      attemptLabel: 'model-warmup',
+      numPredict: SCORE_MAP_WARMUP_NUM_PREDICT,
+      jsonMode: true
+    });
 
-    clearTimeout?.();
-    controller?.abort?.();
-
-    if (!response.ok) {
-      throw new Error(`Editor Bot model warm-up failed with HTTP ${response.status}`);
+    if (!result.success) {
+      throw new Error(`Editor Bot warm-up returned ${result.error || 'invalid output'}`);
     }
 
-    await response.json().catch(() => null);
     warmedEditorBotModels.set(cacheKey, Date.now());
 
     return {
@@ -1374,204 +1678,46 @@ async function warmEditorBotOnStartup({
   return results;
 }
 
-async function requestEditorBotReviewVariant({
-  schema,
-  systemPrompt,
-  humanPrompt,
-  modelName,
-  baseUrl,
-  timeoutMs,
-  attemptLabel,
-  numPredict,
-  jsonMode = true,
-  salvageParser = null
-} = {}) {
-  const startedAt = Date.now();
-
-  try {
-    const result = await queryStructuredEditorBotResponse({
-      schema,
-      systemPrompt,
-      humanPrompt,
-      modelName,
-      baseUrl,
-      timeoutMs,
-      attemptLabel,
-      numPredict,
-      jsonMode,
-      salvageParser
-    });
-
-    return {
-      ...result,
-      diagnostic: {
-        attempt: attemptLabel,
-        elapsedMs: Date.now() - startedAt,
-        success: result.success,
-        stage: result.success ? 'complete' : result.stage || 'unknown',
-        error: result.success ? '' : result.error || 'unknown-error',
-        rawPreview: buildEditorBotDiagnosticPreview(
-          [result.rawPreview, `model: ${modelName}`].filter(Boolean).join(' | ')
-        )
-      }
-    };
-  } catch (error) {
-    error.editorBotDiagnostic = {
-      attempt: attemptLabel,
-      elapsedMs: Date.now() - startedAt,
-      success: false,
-      stage: 'model',
-      error: sanitizeText(error.message, 'unknown-error', 220),
-      rawPreview: buildEditorBotDiagnosticPreview(`model: ${modelName}`)
-    };
-    throw error;
+function normalizeRawCategories(rawReview = {}) {
+  if (rawReview.categories && typeof rawReview.categories === 'object') {
+    return rawReview.categories;
   }
-}
 
-async function requestEditorBotReview({
-  safeRuleset,
-  metrics,
-  heuristicReview,
-  schema,
-  modelName,
-  baseUrl,
-  timeoutMs,
-  lean = false
-} = {}) {
-  const systemPrompt = [
-    'You are Editor Bot for Rentz custom rulesets.',
-    'Polish the provided gameplay review, do not analyze syntax.',
-    'Be brief, specific, positive, and honest.',
-    'Return JSON only.',
-    'Use this exact compact shape:',
-    '{"rs":string,"cr":string,"rec":[string],"w":[string]}',
-    'Use the heuristic summary as the source of truth and keep recommendations short.'
-  ].join(' ');
-  const promptPayload = buildEditorBotNarrativePayload({
-    title: safeRuleset?.title,
-    shortName: safeRuleset?.shortName,
-    type: safeRuleset?.type,
-    metrics,
-    heuristicReview,
-    lean
-  });
-  const humanPrompt = JSON.stringify(promptPayload);
-
-  return requestEditorBotReviewVariant({
-    schema,
-    systemPrompt,
-    humanPrompt,
-    modelName,
-    baseUrl,
-    timeoutMs,
-    attemptLabel: lean ? 'lean-plain' : 'full-plain',
-    numPredict: lean ? LEAN_NARRATIVE_NUM_PREDICT : NARRATIVE_NUM_PREDICT,
-    jsonMode: false,
-    salvageParser: salvageCompactNarrativeFromRawText
-  });
-}
-
-async function requestEditorBotCategoryBatch({
-  safeRuleset,
-  compiler,
-  metrics,
-  schema,
-  categoryKeys,
-  batchIndex,
-  modelName,
-  baseUrl,
-  timeoutMs,
-  lean = false
-} = {}) {
-  const labels = categoryKeys
-    .map((categoryKey) => CATEGORY_DEFINITIONS.find((entry) => entry.key === categoryKey)?.label || categoryKey)
-    .join(', ');
-  const systemPrompt = [
-    'You are Editor Bot for Rentz custom rulesets.',
-    'Judge design quality, not syntax.',
-    'Return JSON only.',
-    `Rate only these categories: ${labels}.`,
-    'Use this exact compact shape:',
-    JSON.stringify({
-      c: categoryKeys.reduce((shape, categoryKey) => {
-        shape[CATEGORY_KEY_TO_SHORT_KEY[categoryKey]] = { s: 'number', e: 'string' };
-        return shape;
-      }, {})
-    }),
-    'Clamp scores to 0-10 with one decimal and keep each explanation short.'
-  ].join(' ');
-  const promptPayload = buildEditorBotPromptPayload({
-    ...safeRuleset,
-    compiler,
-    metrics,
-    lean
-  });
-  const humanPrompt = JSON.stringify({
-    r: promptPayload.ruleset,
-    co: promptPayload.compiler,
-    h: promptPayload.heuristics,
-    g: promptPayload.guidance,
-    focus: {
-      categories: categoryKeys.map((categoryKey) => ({
-        key: categoryKey,
-        shortKey: CATEGORY_KEY_TO_SHORT_KEY[categoryKey],
-        label: CATEGORY_DEFINITIONS.find((entry) => entry.key === categoryKey)?.label || categoryKey
-      }))
-    }
-  });
-
-  try {
-    return await requestEditorBotReviewVariant({
-      schema,
-      systemPrompt,
-      humanPrompt,
-      modelName,
-      baseUrl,
-      timeoutMs,
-      attemptLabel: `${lean ? 'lean' : 'full'}-categories-${batchIndex + 1}`,
-      numPredict: lean ? LEAN_CATEGORY_NUM_PREDICT : CATEGORY_NUM_PREDICT,
-      jsonMode: true
-    });
-  } catch (error) {
-    if (!isRetryableEditorBotError(error)) {
-      throw error;
-    }
-
-    return requestEditorBotReviewVariant({
-      schema,
-      systemPrompt,
-      humanPrompt,
-      modelName,
-      baseUrl,
-      timeoutMs: Math.max(3000, Math.round(timeoutMs * 0.85)),
-      attemptLabel: `${lean ? 'lean' : 'full'}-categories-${batchIndex + 1}-plain-retry`,
-      numPredict: lean ? LEAN_CATEGORY_NUM_PREDICT : CATEGORY_NUM_PREDICT,
-      jsonMode: false
-    });
+  if (rawReview.categoryRatings && typeof rawReview.categoryRatings === 'object') {
+    return rawReview.categoryRatings;
   }
+
+  return {};
 }
 
 function sanitizeEditorBotReview(rawReview, fallbackReview) {
   const safeReview = rawReview && typeof rawReview === 'object' ? rawReview : {};
-  const categoryRatings = CATEGORY_DEFINITIONS.reduce((acc, entry) => {
+  const rawCategories = normalizeRawCategories(safeReview);
+  const categories = CATEGORY_DEFINITIONS.reduce((acc, entry) => {
     const fallbackCategory = fallbackReview.categoryRatings[entry.key];
-    const rawCategory = safeReview.categoryRatings?.[entry.key] || {};
+    const rawCategory = rawCategories[entry.key] || {};
     acc[entry.key] = {
       score: clampEditorBotScore(rawCategory.score, fallbackCategory.score),
       explanation: sanitizeText(rawCategory.explanation, fallbackCategory.explanation, 220)
     };
     return acc;
   }, {});
+  const categoryAverage = CATEGORY_KEYS
+    .map((key) => categories[key].score)
+    .reduce((sum, score) => sum + score, 0) / CATEGORY_KEYS.length;
 
   return {
-    overallScore: clampEditorBotScore(safeReview.overallScore, fallbackReview.overallScore),
-    categoryRatings,
-    rulesetSummary: sanitizeText(safeReview.rulesetSummary, fallbackReview.rulesetSummary, 500),
-    constructiveReview: sanitizeText(safeReview.constructiveReview, fallbackReview.constructiveReview, 500),
-    recommendations: sanitizeTextList(safeReview.recommendations, fallbackReview.recommendations),
-    warnings: sanitizeTextList(safeReview.warnings, fallbackReview.warnings),
+    overallScore: clampEditorBotScore(safeReview.overallScore, categoryAverage),
+    categories,
+    categoryRatings: categories,
+    rulesetSummary: sanitizeText(safeReview.rulesetSummary, fallbackReview.rulesetSummary, 320),
+    constructiveReview: sanitizeText(safeReview.constructiveReview, fallbackReview.constructiveReview, 360),
+    recommendations: sanitizeTextList(safeReview.recommendations, fallbackReview.recommendations, 160, 4),
+    warnings: sanitizeTextList(safeReview.warnings, fallbackReview.warnings, 180, 4),
     reviewSource: safeReview.reviewSource === 'fallback'
       ? 'fallback'
+      : safeReview.reviewSource === 'hybrid'
+        ? 'hybrid'
       : safeReview.reviewSource === 'heuristic'
         ? 'heuristic'
         : fallbackReview.reviewSource === 'fallback'
@@ -1590,90 +1736,69 @@ function sanitizeEditorBotReview(rawReview, fallbackReview) {
   };
 }
 
-function buildEditorBotPromptPayload({ title, shortName, type, code, compiler, metrics, lean = false }) {
-  const codeExcerpt = buildPromptCodeExcerpt(
-    code,
-    lean ? LEAN_PROMPT_CODE_LIMIT : FULL_PROMPT_CODE_LIMIT
-  );
-  const identifierSample = samplePromptIdentifiers(
-    metrics.identifiers,
-    lean ? LEAN_PROMPT_IDENTIFIER_LIMIT : FULL_PROMPT_IDENTIFIER_LIMIT
-  );
+function dedupeEditorBotDiagnostics(entries = []) {
+  const seen = new Set();
+  const deduped = [];
 
-  return {
-    ruleset: {
-      title,
-      shortName,
-      type,
-      code: codeExcerpt.text,
-      codeTruncated: codeExcerpt.truncated
-    },
-    compiler: lean ? {
-      status: compiler?.status || 'compiled',
-      message: compiler?.message || 'Ruleset compiled successfully.'
-    } : {
-      status: compiler?.status || 'compiled',
-      message: compiler?.message || 'Ruleset compiled successfully.',
-      errors: Array.isArray(compiler?.errors) ? compiler.errors.slice(0, 3) : [],
-      warnings: Array.isArray(compiler?.warnings) ? compiler.warnings.slice(0, 3) : []
-    },
-    heuristics: {
-      lineCount: metrics.lineCount,
-      nonEmptyLineCount: metrics.nonEmptyLineCount,
-      statementCount: metrics.statementCount,
-      ifCount: metrics.ifCount,
-      conditionCount: metrics.conditionCount,
-      maxBranchDepth: metrics.maxBranchDepth,
-      callCounts: metrics.callCounts,
-      identifiers: identifierSample.values,
-      identifiersTruncated: identifierSample.truncated,
-      estimatedMaxSwing: metrics.estimatedMaxSwing,
-      totalEstimatedSwing: metrics.totalEstimatedSwing
-    },
-    guidance: lean ? {
-      note: 'Lean retry after a timeout. Prioritize a fast, compact answer from the code excerpt and heuristics only.'
-    } : {
-      note: 'Use the source code and heuristics to judge gameplay quality, not syntax.'
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const key = JSON.stringify([
+      sanitizeText(entry?.attempt, 'unknown', 80),
+      Math.max(0, Math.round(Number(entry?.elapsedMs) || 0)),
+      entry?.success === true,
+      sanitizeText(entry?.stage, 'unknown', 80),
+      sanitizeText(entry?.error, '', 220),
+      sanitizeText(entry?.rawPreview, '', 280)
+    ]);
+
+    if (seen.has(key)) {
+      continue;
     }
-  };
+
+    seen.add(key);
+    deduped.push(entry);
+  }
+
+  return deduped;
 }
 
-function buildEditorBotNarrativePayload({
-  title,
-  shortName,
-  type,
-  metrics,
-  heuristicReview,
-  lean = false
-} = {}) {
-  const identifierSample = samplePromptIdentifiers(
-    metrics?.identifiers,
-    lean ? 3 : 5
+function blendHybridEditorBotCategoryScore(categoryKey, aiScore, fallbackScore) {
+  const safeFallback = clampEditorBotScore(fallbackScore, 7);
+  const safeAi = clampEditorBotScore(aiScore, safeFallback);
+  const maxDeviation = categoryKey === 'claritySimplicity' ? 2.5 : 2.2;
+  const boundedAi = safeFallback + Math.max(-maxDeviation, Math.min(maxDeviation, safeAi - safeFallback));
+  const blended = (safeFallback * 0.65) + (boundedAi * 0.35);
+  return clampEditorBotScore(blended, safeFallback);
+}
+
+function buildHybridEditorBotReviewFromScoreMap(scoreMap = {}, fallbackReview) {
+  const baseReview = fallbackReview && typeof fallbackReview === 'object'
+    ? fallbackReview
+    : buildFallbackEditorBotReview();
+  const categories = CATEGORY_KEYS.reduce((acc, categoryKey) => {
+    const fallbackCategory = baseReview.categoryRatings?.[categoryKey] || {
+      score: 7,
+      explanation: 'No extra detail was available for this category.'
+    };
+    const rawAiScore = clampEditorBotScore(scoreMap?.[categoryKey], fallbackCategory.score);
+    acc[categoryKey] = {
+      score: blendHybridEditorBotCategoryScore(categoryKey, rawAiScore, fallbackCategory.score),
+      explanation: fallbackCategory.explanation
+    };
+    return acc;
+  }, {});
+  const overallScore = clampEditorBotScore(
+    CATEGORY_KEYS.map((categoryKey) => categories[categoryKey].score).reduce((sum, score) => sum + score, 0) / CATEGORY_KEYS.length,
+    baseReview.overallScore
   );
 
   return {
-    t: sanitizeText(title, 'Untitled Ruleset', 80),
-    s: sanitizeText(shortName, '', 24),
-    y: type === 'end_game' ? 'end_game' : 'per_round',
-    base: {
-      score: clampEditorBotScore(heuristicReview?.overallScore, 6),
-      summary: sanitizeText(heuristicReview?.rulesetSummary, '', 220),
-      review: sanitizeText(heuristicReview?.constructiveReview, '', 240)
-    },
-    m: {
-      lines: Math.max(0, Number(metrics?.nonEmptyLineCount) || 0),
-      branches: Math.max(0, Number(metrics?.ifCount) || 0),
-      maxDepth: Math.max(0, Number(metrics?.maxBranchDepth) || 0),
-      swing: Math.max(0, Number(metrics?.estimatedMaxSwing) || 0),
-      totalSwing: Math.max(0, Number(metrics?.totalEstimatedSwing) || 0),
-      calls: metrics?.callCounts || {},
-      ids: identifierSample.values
-    },
-    rec: sanitizeTextList(heuristicReview?.recommendations, []).slice(0, 2),
-    warn: sanitizeTextList(heuristicReview?.warnings, []).slice(0, 2),
-    note: lean
-      ? 'Keep the answer very short and fast.'
-      : 'Rewrite the base review into a cleaner, more helpful editor note.'
+    overallScore,
+    categories,
+    rulesetSummary: baseReview.rulesetSummary,
+    constructiveReview: baseReview.constructiveReview,
+    recommendations: baseReview.recommendations,
+    warnings: [],
+    reviewSource: 'hybrid'
   };
 }
 
@@ -1686,33 +1811,26 @@ async function reviewRulesetWithEditorBot({
   timeoutMs = EDITOR_BOT_TIMEOUT_MS
 } = {}) {
   const safeRuleset = buildSafeRulesetPayload(ruleset);
-  const diagnostics = [];
+  const metrics = buildRulesetJudgeMetrics({
+    code: safeRuleset.code,
+    type: safeRuleset.type,
+    ast
+  });
   const heuristicReview = buildFallbackEditorBotReview({
     title: safeRuleset.title,
     type: safeRuleset.type,
     code: safeRuleset.code,
     ast
   });
+  const diagnostics = [];
+  const scoreMapTimeoutMs = Math.min(timeoutMs, SCORE_MAP_TIMEOUT_CAP_MS);
 
   try {
-    const availabilityDiagnostic = await probeEditorBotAvailability({
-      modelName,
-      baseUrl,
-      timeoutMs: Math.min(
-        EDITOR_BOT_PREFLIGHT_TIMEOUT_MS,
-        Math.max(600, Math.round(timeoutMs * 0.18))
-      )
-    });
-    diagnostics.push(availabilityDiagnostic);
-    const availableModelNames = Array.isArray(availabilityDiagnostic.availableModelNames)
-      ? availabilityDiagnostic.availableModelNames
-      : [];
-
     try {
       const warmupDiagnostic = await warmEditorBotModel({
         modelName,
         baseUrl,
-        timeoutMs: Math.min(timeoutMs + EDITOR_BOT_PREFLIGHT_TIMEOUT_MS, EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS)
+        timeoutMs: Math.min(timeoutMs + 2500, EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS)
       });
       diagnostics.push(warmupDiagnostic);
     } catch (error) {
@@ -1722,156 +1840,53 @@ async function reviewRulesetWithEditorBot({
     }
 
     const { z } = await loadEditorBotRuntime();
-    const metrics = buildRulesetJudgeMetrics({
-      code: safeRuleset.code,
-      type: safeRuleset.type,
-      ast
-    });
-    const narrativeSchema = buildCompactNarrativeSchema(z);
-    let narrativeResponse;
-    const fullNarrativeTimeoutMs = Math.min(timeoutMs, FULL_NARRATIVE_TIMEOUT_CAP_MS);
-    const leanNarrativeTimeoutMs = Math.min(
-      Math.max(2500, Math.round(timeoutMs * 0.6)),
-      LEAN_NARRATIVE_TIMEOUT_CAP_MS
-    );
+    const leanModelName = pickLeanEditorBotModel(modelName);
 
-    try {
-      narrativeResponse = await requestEditorBotReview({
-        safeRuleset,
-        metrics,
-        heuristicReview,
-        schema: narrativeSchema,
-        modelName,
-        baseUrl,
-        timeoutMs: fullNarrativeTimeoutMs,
-        lean: false
-      });
-      diagnostics.push(narrativeResponse.diagnostic);
-    } catch (error) {
-      if (error.editorBotDiagnostic) {
-        diagnostics.push(error.editorBotDiagnostic);
-      }
-
-      if (!isRetryableEditorBotError(error)) {
-        throw error;
-      }
-
-      const leanModelName = pickLeanEditorBotModel(modelName, availableModelNames);
-
+    if (leanModelName !== modelName) {
       try {
         const leanWarmupDiagnostic = await warmEditorBotModel({
           modelName: leanModelName,
           baseUrl,
-          timeoutMs: Math.min(leanNarrativeTimeoutMs + EDITOR_BOT_PREFLIGHT_TIMEOUT_MS, EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS)
+          timeoutMs: Math.min(Math.max(3000, Math.round(scoreMapTimeoutMs * 0.8)), EDITOR_BOT_MODEL_WARMUP_TIMEOUT_MS)
         });
         diagnostics.push(leanWarmupDiagnostic);
-      } catch (warmupError) {
-        if (warmupError.editorBotDiagnostic) {
-          diagnostics.push(warmupError.editorBotDiagnostic);
+      } catch (error) {
+        if (error.editorBotDiagnostic) {
+          diagnostics.push(error.editorBotDiagnostic);
         }
       }
-
-      narrativeResponse = await requestEditorBotReview({
-        safeRuleset,
-        metrics,
-        heuristicReview,
-        schema: narrativeSchema,
-        modelName: leanModelName,
-        baseUrl,
-        timeoutMs: leanNarrativeTimeoutMs,
-        lean: true
-      });
-      diagnostics.push(narrativeResponse.diagnostic);
     }
 
-    let categoryRatings = heuristicReview.categoryRatings;
+    const scoreMapResponse = await requestEditorBotScoreMap({
+      safeRuleset,
+      compiler,
+      metrics,
+      heuristicReview,
+      schema: buildScoreMapSchema(z),
+      modelName: leanModelName,
+      baseUrl,
+      timeoutMs: scoreMapTimeoutMs
+    });
+    diagnostics.push(...(scoreMapResponse.diagnostics || []));
 
-    if (!ENABLE_EDITOR_BOT_CATEGORY_AI) {
+    if (scoreMapResponse.success) {
       return sanitizeEditorBotReview({
-        overallScore: heuristicReview.overallScore,
-        categoryRatings,
-        rulesetSummary: narrativeResponse?.success ? narrativeResponse.data.rs : heuristicReview.rulesetSummary,
-        constructiveReview: narrativeResponse?.success ? narrativeResponse.data.cr : heuristicReview.constructiveReview,
-        recommendations: narrativeResponse?.success ? narrativeResponse.data.rec : heuristicReview.recommendations,
-        warnings: narrativeResponse?.success ? narrativeResponse.data.w : heuristicReview.warnings,
-        reviewSource: narrativeResponse?.success ? 'ai' : 'heuristic',
-        diagnostics
+        ...buildHybridEditorBotReviewFromScoreMap(scoreMapResponse.data, heuristicReview),
+        diagnostics: dedupeEditorBotDiagnostics(diagnostics)
       }, heuristicReview);
     }
 
-    for (const [batchIndex, categoryKeys] of CATEGORY_BATCHES.entries()) {
-      const categorySchema = buildCompactCategorySchema(z, categoryKeys);
-
-      try {
-        const categoryResponse = await requestEditorBotCategoryBatch({
-          safeRuleset,
-          compiler,
-          metrics,
-          schema: categorySchema,
-          categoryKeys,
-          batchIndex,
-          modelName,
-          baseUrl,
-          timeoutMs: Math.max(5000, Math.round(timeoutMs * 0.7)),
-          lean: false
-        });
-        diagnostics.push(categoryResponse.diagnostic);
-
-        if (categoryResponse.success) {
-          categoryRatings = applyCompactCategoryBatchToRatings(categoryRatings, categoryResponse.data, categoryKeys);
-          continue;
-        }
-      } catch (error) {
-        if (error.editorBotDiagnostic) {
-          diagnostics.push(error.editorBotDiagnostic);
-        }
-
-        if (!isRetryableEditorBotError(error)) {
-          throw error;
-        }
-      }
-
-      try {
-        const leanCategoryResponse = await requestEditorBotCategoryBatch({
-          safeRuleset,
-          compiler,
-          metrics,
-          schema: categorySchema,
-          categoryKeys,
-          batchIndex,
-          modelName,
-          baseUrl,
-          timeoutMs: Math.max(3500, Math.round(timeoutMs * 0.45)),
-          lean: true
-        });
-        diagnostics.push(leanCategoryResponse.diagnostic);
-
-        if (leanCategoryResponse.success) {
-          categoryRatings = applyCompactCategoryBatchToRatings(categoryRatings, leanCategoryResponse.data, categoryKeys);
-        }
-      } catch (error) {
-        if (error.editorBotDiagnostic) {
-          diagnostics.push(error.editorBotDiagnostic);
-        }
-
-        if (!isRetryableEditorBotError(error)) {
-          throw error;
-        }
-      }
-    }
-
-    return sanitizeEditorBotReview({
-      overallScore: heuristicReview.overallScore,
-      categoryRatings,
-      rulesetSummary: narrativeResponse?.success ? narrativeResponse.data.rs : heuristicReview.rulesetSummary,
-      constructiveReview: narrativeResponse?.success ? narrativeResponse.data.cr : heuristicReview.constructiveReview,
-      recommendations: narrativeResponse?.success ? narrativeResponse.data.rec : heuristicReview.recommendations,
-      warnings: narrativeResponse?.success ? narrativeResponse.data.w : heuristicReview.warnings,
-      reviewSource: narrativeResponse?.success ? 'ai' : 'heuristic',
-      diagnostics
-    }, heuristicReview);
+    const error = new Error(
+      scoreMapResponse.error === 'invalid-structured-output'
+        ? 'Editor Bot returned malformed structured output.'
+        : 'Editor Bot could not finish the review.'
+    );
+    error.editorBotDiagnostics = diagnostics;
+    throw error;
   } catch (error) {
-    if (error.editorBotDiagnostic) {
+    if (Array.isArray(error.editorBotDiagnostics) && error.editorBotDiagnostics !== diagnostics) {
+      diagnostics.push(...error.editorBotDiagnostics);
+    } else if (error.editorBotDiagnostic) {
       diagnostics.push(error.editorBotDiagnostic);
     }
 
@@ -1880,9 +1895,9 @@ async function reviewRulesetWithEditorBot({
       type: safeRuleset.type,
       code: safeRuleset.code,
       ast,
-      fallbackWarning: `Editor Bot could not reach Ollama just now (${sanitizeText(error.message, 'unavailable', 120)}), so this review uses the local design fallback instead.`
+      fallbackWarning: `Editor Bot could not finish the Ollama review (${sanitizeText(error.message, 'unavailable', 140)}). This is a local fallback review based on the compiled ruleset.`
     });
-    fallbackReview.diagnostics = diagnostics;
+    fallbackReview.diagnostics = dedupeEditorBotDiagnostics(diagnostics);
     return fallbackReview;
   }
 }
@@ -1894,6 +1909,8 @@ module.exports = {
   EDITOR_BOT_TIMEOUT_MS,
   MAX_RULESET_SOURCE_LENGTH,
   buildFallbackEditorBotReview,
+  buildHybridEditorBotReviewFromScoreMap,
+  buildSalvagedEditorBotReview,
   buildEditorBotPromptPayload,
   buildRulesetJudgeMetrics,
   buildSafeRulesetPayload,
