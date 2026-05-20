@@ -124,6 +124,24 @@ function buildPublicLeaderboardEntry(user, extra = {}) {
   };
 }
 
+function sanitizeLeaderboardPage(value, fallback = 1) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.round(numericValue));
+}
+
+function sanitizeLeaderboardLimit(value, fallback = 50) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  return Math.min(100, Math.max(10, Math.round(numericValue)));
+}
+
 function roundEloChangesWithZeroSum(results = []) {
   const rounded = results.map((result) => ({
     ...result,
@@ -344,6 +362,50 @@ async function getRankLeaderboardForUserId(userId, { viewer = null } = {}) {
   };
 }
 
+async function getGlobalLeaderboard({ viewer = null, page = 1, limit = 50 } = {}) {
+  const normalizedPage = sanitizeLeaderboardPage(page, 1);
+  const normalizedLimit = sanitizeLeaderboardLimit(limit, 50);
+  const skip = (normalizedPage - 1) * normalizedLimit;
+  const User = getUserModel();
+
+  const [totalEntries, users] = await Promise.all([
+    User.countDocuments({}),
+    User.find({})
+      .select('username usernameLower profilePicture elo')
+      .sort({ elo: -1, usernameLower: 1 })
+      .skip(skip)
+      .limit(normalizedLimit)
+      .lean()
+  ]);
+
+  const uniqueEloValues = [...new Set(users.map((user) => normalizeEloValue(user?.elo, 0)))];
+  const higherRatedCounts = new Map(
+    await Promise.all(
+      uniqueEloValues.map(async (elo) => [elo, await User.countDocuments({ elo: { $gt: elo } })])
+    )
+  );
+
+  const entries = normalizeLeaderboardUsers(users).map((user) => {
+    const elo = normalizeEloValue(user?.elo, 0);
+    const higherRatedCount = higherRatedCounts.get(elo) || 0;
+
+    return buildPublicLeaderboardEntry(user, {
+      currentUserId: viewer?._id ? String(viewer._id) : null,
+      placement: higherRatedCount + 1
+    });
+  });
+
+  return {
+    currentUserId: viewer?._id ? String(viewer._id) : null,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    totalEntries,
+    hasMore: skip + entries.length < totalEntries,
+    tiers: ELO_RANK_TIERS.map((tier) => ({ ...tier })),
+    entries
+  };
+}
+
 module.exports = {
   DEFAULT_ACCOUNT_ELO,
   ELO_K_FACTOR,
@@ -354,6 +416,7 @@ module.exports = {
   calculateExpectedScore,
   calculateMultiplayerEloChanges,
   compareStandingsForElo,
+  getGlobalLeaderboard,
   getGlobalPlacementForUser,
   getRankLeaderboardForUserId,
   getRankBoundsForElo,

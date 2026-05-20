@@ -870,6 +870,9 @@ function migrateGameSeatIdentity(game, fromUserId, toUserId) {
   if (game.chooserId === fromUserId) {
     game.chooserId = toUserId;
   }
+  if (game.currentPlayerId === fromUserId) {
+    game.currentPlayerId = toUserId;
+  }
 }
 
 function getAvatarSource(member) {
@@ -1917,7 +1920,7 @@ function buildSpectatorVisibleHandState(game) {
   }
 
   const currentPlayer = game.phase === 'playing_round'
-    ? (game.players?.[game.turnIndex] || null)
+    ? normalizeCurrentPlayerState(game)
     : (game.players?.find((player) => player.userId === game.chooserId) || null);
   if (!currentPlayer) {
     return {
@@ -1964,6 +1967,9 @@ function buildGameSessionSnapshot(roomId, game, userId, { isSpectator = false } 
     trickPending: Boolean(game.trickPending),
     currentTrick: game.currentTrick || [],
     turnIndex: game.turnIndex || 0,
+    currentPlayerId: game.phase === 'playing_round'
+      ? (normalizeCurrentPlayerState(game)?.userId || null)
+      : null,
     trickSuit: game.trickSuit || null,
     stateVersion: game.stateVersion || 0,
     cardCounts: buildCardCounts(game),
@@ -2271,7 +2277,7 @@ function buildLegalBotMoves(game, player) {
   }
 
   if (game.phase === 'playing_round' && !game.trickPending) {
-    const currentPlayer = game.players[game.turnIndex];
+    const currentPlayer = normalizeCurrentPlayerState(game);
     if (!currentPlayer || currentPlayer.userId !== player.userId) {
       return { kind: null, legalMoves: [], ruleset: null };
     }
@@ -2412,6 +2418,171 @@ function maybeSendTrainerMoveFeedback(io, roomId, game, {
     });
 }
 
+const PLAYER_TURN_FLAG_KEYS = ['isCurrent', 'current', 'isTurn'];
+
+function syncCurrentPlayerFlags(game, currentPlayerId) {
+  if (!game || !Array.isArray(game.players)) {
+    return;
+  }
+
+  game.players.forEach((player) => {
+    PLAYER_TURN_FLAG_KEYS.forEach((flagKey) => {
+      if (Object.prototype.hasOwnProperty.call(player, flagKey)) {
+        player[flagKey] = Boolean(currentPlayerId && player.userId === currentPlayerId);
+      }
+    });
+  });
+}
+
+function getNormalizedTurnIndex(game) {
+  const playerCount = game?.players?.length || 0;
+  if (playerCount === 0) {
+    return -1;
+  }
+
+  const rawIndex = Number(game.turnIndex || 0);
+  if (!Number.isFinite(rawIndex)) {
+    return 0;
+  }
+
+  const normalizedIndex = Math.trunc(rawIndex) % playerCount;
+  return normalizedIndex >= 0 ? normalizedIndex : normalizedIndex + playerCount;
+}
+
+function setCurrentPlayer(game, playerId, { allowDisconnected = false } = {}) {
+  if (!game || !playerId || !Array.isArray(game.players) || game.players.length === 0) {
+    return false;
+  }
+
+  const playerIndex = game.players.findIndex((player) => player.userId === playerId);
+  if (playerIndex === -1) {
+    return false;
+  }
+
+  const targetPlayer = game.players[playerIndex];
+  if (
+    !allowDisconnected
+    && targetPlayer?.connectionStatus === 'abandoned'
+    && !isBotPlayer(targetPlayer)
+  ) {
+    return false;
+  }
+
+  game.turnIndex = playerIndex;
+  game.currentPlayerId = targetPlayer.userId;
+  syncCurrentPlayerFlags(game, targetPlayer.userId);
+  return true;
+}
+
+function normalizeCurrentPlayerState(game, {
+  fallbackPlayerId = null,
+  allowDisconnected = false
+} = {}) {
+  if (!game || !Array.isArray(game.players) || game.players.length === 0) {
+    if (game) {
+      game.turnIndex = 0;
+      game.currentPlayerId = null;
+      syncCurrentPlayerFlags(game, null);
+    }
+    return null;
+  }
+
+  const currentByIdIndex = game.currentPlayerId
+    ? game.players.findIndex((player) => player.userId === game.currentPlayerId)
+    : -1;
+  if (currentByIdIndex !== -1) {
+    const currentById = game.players[currentByIdIndex];
+    if (
+      allowDisconnected
+      || currentById?.connectionStatus !== 'abandoned'
+      || isBotPlayer(currentById)
+    ) {
+      setCurrentPlayer(game, currentById.userId, { allowDisconnected });
+      return currentById;
+    }
+  }
+
+  if (fallbackPlayerId && setCurrentPlayer(game, fallbackPlayerId, { allowDisconnected })) {
+    return game.players[game.turnIndex] || null;
+  }
+
+  const normalizedIndex = getNormalizedTurnIndex(game);
+  const fallbackPlayer = game.players[normalizedIndex >= 0 ? normalizedIndex : 0] || game.players[0] || null;
+  if (!fallbackPlayer) {
+    game.currentPlayerId = null;
+    syncCurrentPlayerFlags(game, null);
+    return null;
+  }
+
+  setCurrentPlayer(game, fallbackPlayer.userId, { allowDisconnected: true });
+  return fallbackPlayer;
+}
+
+function warnInvalidTurnState(game, context, details) {
+  if (!game) {
+    return;
+  }
+
+  const warningKey = [
+    context,
+    game.phase,
+    game.roundNumber,
+    game.stateVersion,
+    game.turnIndex,
+    game.currentPlayerId,
+    game.currentTrick?.length || 0,
+    game.trickPending ? 'pending' : 'open'
+  ].join(':');
+
+  if (game.lastTurnValidationWarningKey === warningKey) {
+    return;
+  }
+
+  game.lastTurnValidationWarningKey = warningKey;
+  console.warn(`Turn state normalized for room ${game.roomId || 'unknown'} during ${context}: ${details}`);
+}
+
+function validateActiveTurnState(game, context, {
+  fallbackPlayerId = null,
+  allowDisconnected = false
+} = {}) {
+  if (!game || game.phase !== 'playing_round') {
+    return true;
+  }
+
+  const previousTurnIndex = Number(game.turnIndex || 0);
+  const previousCurrentPlayerId = game.currentPlayerId || null;
+  const currentPlayer = normalizeCurrentPlayerState(game, { fallbackPlayerId, allowDisconnected });
+  if (!currentPlayer) {
+    warnInvalidTurnState(game, context, 'no active player was available');
+    return false;
+  }
+
+  if (game.turnIndex !== previousTurnIndex || game.currentPlayerId !== previousCurrentPlayerId) {
+    warnInvalidTurnState(
+      game,
+      context,
+      `recovered current player ${previousCurrentPlayerId || previousTurnIndex} -> ${game.currentPlayerId}`
+    );
+  }
+
+  if (currentPlayer.connectionStatus === 'abandoned' && !isBotPlayer(currentPlayer) && !allowDisconnected) {
+    warnInvalidTurnState(game, context, `current player ${currentPlayer.userId} is abandoned`);
+    return false;
+  }
+
+  if (game.trickPending) {
+    return true;
+  }
+
+  const hand = game.handsReady?.[currentPlayer.userId] || [];
+  if (hand.length > 0 && getLegalCardsForPlayer(game, currentPlayer.userId).length === 0) {
+    warnInvalidTurnState(game, context, `current player ${currentPlayer.userId} has no legal move`);
+  }
+
+  return true;
+}
+
 function clearPendingBotAction(game) {
   if (!game) {
     return;
@@ -2423,6 +2594,28 @@ function clearPendingBotAction(game) {
   }
 
   game.pendingBotActionKey = null;
+  game.botActionGeneration = Number(game.botActionGeneration || 0) + 1;
+}
+
+function getCurrentBotActionPlayer(game) {
+  if (!game) {
+    return null;
+  }
+
+  if (game.phase === 'playing_round') {
+    return normalizeCurrentPlayerState(game);
+  }
+
+  return game.players.find((player) => player.userId === game.chooserId) || null;
+}
+
+function doesBotActionStillMatchTurn(game, actionKey, generation) {
+  return Boolean(
+    game
+    && actionKey
+    && Number(game.botActionGeneration || 0) === Number(generation)
+    && getPendingBotActionKey(game) === actionKey
+  );
 }
 
 function getPendingBotActionKey(game) {
@@ -2435,7 +2628,7 @@ function getPendingBotActionKey(game) {
   }
 
   if (game.phase === 'playing_round' && !game.trickPending) {
-    const currentPlayer = game.players[game.turnIndex];
+    const currentPlayer = normalizeCurrentPlayerState(game);
     return currentPlayer
       ? `${game.phase}:${currentPlayer.userId}:${game.turnIndex}:${game.currentTrick.length}:${game.stateVersion}`
       : null;
@@ -2467,6 +2660,10 @@ function emitCurrentGameplayState(io, roomId, game) {
     return;
   }
 
+  if (game.phase === 'playing_round' && !validateActiveTurnState(game, 'emitCurrentGameplayState')) {
+    return;
+  }
+
   const stateVersion = bumpGameStateVersion(game);
   const spectatorVisibleHandState = buildSpectatorVisibleHandState(game);
 
@@ -2474,6 +2671,7 @@ function emitCurrentGameplayState(io, roomId, game) {
     io.to(roomId).emit('game_update', {
       currentTrick: game.currentTrick,
       turnIndex: game.turnIndex,
+      currentPlayerId: game.currentPlayerId || null,
       trickSuit: game.trickSuit,
       stateVersion,
       cardCounts: buildCardCounts(game),
@@ -2555,6 +2753,12 @@ function replaceActivePlayerWithBot(io, roomId, game, userId) {
   game.players[playerIndex] = nextGamePlayer;
   migrateGameSeatIdentity(game, displacedPlayer.userId, botPlayer.userId);
   syncGameSeatIndexes(game);
+  if (game.phase === 'playing_round') {
+    validateActiveTurnState(game, 'replaceActivePlayerWithBot', {
+      fallbackPlayerId: nextGamePlayer.userId,
+      allowDisconnected: true
+    });
+  }
 
   const lobbyPlayerIndex = lobby.players.findIndex((player) => player.userId === displacedPlayer.userId);
   if (lobbyPlayerIndex !== -1) {
@@ -2673,62 +2877,106 @@ function scheduleGameAbandonment(io, roomId, lobby, member, gamePlayer) {
   pendingGameAbandonments.set(getPendingGameAbandonmentKey(roomId, member.userId), timeoutId);
 }
 
-async function executeBotAction(io, roomId, game, actionKey) {
+async function executeBotAction(io, roomId, game, actionKey, generation) {
   if (!game || game.pendingBotActionKey !== actionKey) {
     return;
   }
 
-  clearPendingBotAction(game);
+  if (Number(game.botActionGeneration || 0) !== Number(generation)) {
+    return;
+  }
 
-  const currentPlayer = game.phase === 'playing_round'
-    ? game.players[game.turnIndex]
-    : game.players.find((player) => player.userId === game.chooserId);
+  if (
+    game.botActionInFlightKey === actionKey
+    && Number(game.botActionInFlightGeneration || 0) === Number(generation)
+  ) {
+    return;
+  }
+
+  game.botActionTimeoutId = null;
+  game.pendingBotActionKey = null;
+
+  if (game.phase === 'playing_round' && !validateActiveTurnState(game, 'executeBotAction', { allowDisconnected: true })) {
+    return;
+  }
+
+  const currentPlayer = getCurrentBotActionPlayer(game);
   if (!currentPlayer || !isBotPlayer(currentPlayer)) {
+    void scheduleBotActionIfNeeded(io, roomId, game);
     return;
   }
 
-  const { kind, legalMoves, ruleset } = buildLegalBotMoves(game, currentPlayer);
-  if (!kind) {
-    return;
-  }
+  game.botActionInFlightKey = actionKey;
+  game.botActionInFlightGeneration = Number(generation);
 
-  const decision = await chooseBotMove({
-    roomId,
-    kind,
-    gameState: game,
-    botPlayer: currentPlayer,
-    legalMoves,
-    ruleset
-  });
-  const selectedMove = decision.selectedMove;
+  try {
+    if (!doesBotActionStillMatchTurn(game, actionKey, generation)) {
+      return;
+    }
 
-  if (!selectedMove) {
-    return;
-  }
+    const { kind, legalMoves, ruleset } = buildLegalBotMoves(game, currentPlayer);
+    if (!kind) {
+      return;
+    }
 
-  if (kind === 'choose_nv') {
-    setNvChoiceForRound(io, roomId, game, currentPlayer.userId, Boolean(selectedMove.value));
-    return;
-  }
-
-  if (kind === 'choose_ruleset') {
-    selectRulesetForRound(io, roomId, game, currentPlayer.userId, selectedMove.id);
-    return;
-  }
-
-  if (kind === 'play_card' && isTrainerBot(currentPlayer)) {
-    await maybeSendTrainerPreMoveComment(
-      io,
+    const decision = await chooseBotMove({
       roomId,
-      game,
-      currentPlayer,
-      selectedMove,
+      kind,
+      gameState: game,
+      botPlayer: currentPlayer,
       legalMoves,
       ruleset
-    );
-  }
+    });
+    const selectedMove = decision.selectedMove;
 
-  playCardForPlayer(io, roomId, currentPlayer.userId, selectedMove.card || selectedMove.id, { auto: true });
+    if (!selectedMove || !doesBotActionStillMatchTurn(game, actionKey, generation)) {
+      return;
+    }
+
+    const livePlayer = getCurrentBotActionPlayer(game);
+    if (!livePlayer || !isBotPlayer(livePlayer) || livePlayer.userId !== currentPlayer.userId) {
+      return;
+    }
+
+    if (kind === 'choose_nv') {
+      setNvChoiceForRound(io, roomId, game, livePlayer.userId, Boolean(selectedMove.value));
+      return;
+    }
+
+    if (kind === 'choose_ruleset') {
+      selectRulesetForRound(io, roomId, game, livePlayer.userId, selectedMove.id);
+      return;
+    }
+
+    if (kind === 'play_card' && isTrainerBot(livePlayer)) {
+      await maybeSendTrainerPreMoveComment(
+        io,
+        roomId,
+        game,
+        livePlayer,
+        selectedMove,
+        legalMoves,
+        ruleset
+      );
+
+      if (!doesBotActionStillMatchTurn(game, actionKey, generation)) {
+        return;
+      }
+    }
+
+    const result = playCardForPlayer(io, roomId, livePlayer.userId, selectedMove.card || selectedMove.id, { auto: true });
+    if (result?.error) {
+      void scheduleBotActionIfNeeded(io, roomId, game);
+    }
+  } finally {
+    if (
+      game.botActionInFlightKey === actionKey
+      && Number(game.botActionInFlightGeneration || 0) === Number(generation)
+    ) {
+      game.botActionInFlightKey = null;
+      game.botActionInFlightGeneration = null;
+    }
+  }
 }
 
 function scheduleBotActionIfNeeded(io, roomId, game) {
@@ -2737,9 +2985,12 @@ function scheduleBotActionIfNeeded(io, roomId, game) {
     return false;
   }
 
-  const currentPlayer = game.phase === 'playing_round'
-    ? game.players[game.turnIndex]
-    : game.players.find((player) => player.userId === game.chooserId);
+  if (game.phase === 'playing_round' && !validateActiveTurnState(game, 'scheduleBotActionIfNeeded', { allowDisconnected: true })) {
+    clearPendingBotAction(game);
+    return false;
+  }
+
+  const currentPlayer = getCurrentBotActionPlayer(game);
   if (!currentPlayer || !isBotPlayer(currentPlayer)) {
     clearPendingBotAction(game);
     return false;
@@ -2755,11 +3006,19 @@ function scheduleBotActionIfNeeded(io, roomId, game) {
     return true;
   }
 
+  if (
+    game.botActionInFlightKey === actionKey
+    && Number(game.botActionInFlightGeneration || 0) === Number(game.botActionGeneration || 0)
+  ) {
+    return true;
+  }
+
   clearPendingBotAction(game);
+  const generation = Number(game.botActionGeneration || 0);
   game.pendingBotActionKey = actionKey;
   game.botActionTimeoutId = setTimeout(() => {
     game.botActionTimeoutId = null;
-    void executeBotAction(io, roomId, game, actionKey);
+    void executeBotAction(io, roomId, game, actionKey, generation);
   }, BOT_ACTION_DELAY_MS);
   game.botActionTimeoutId.unref?.();
   return true;
@@ -2802,6 +3061,19 @@ function scheduleGameTimer(io, roomId, game, callback) {
     callback();
   }, timerMs);
   game.timerId.unref?.();
+}
+
+function autoplayCurrentTurn(io, roomId, game, context) {
+  const currentPlayer = normalizeCurrentPlayerState(game, { allowDisconnected: true });
+  if (!currentPlayer) {
+    warnInvalidTurnState(game, context, 'autoplay found no current player');
+    return;
+  }
+
+  const fallbackCard = getLegalCardsForPlayer(game, currentPlayer.userId)[0];
+  if (fallbackCard) {
+    playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
+  }
 }
 
 function emitHands(io, roomId, game) {
@@ -2915,6 +3187,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
     }, {}),
     stateVersion: 0,
     turnIndex: 0,
+    currentPlayerId: null,
     trickPending: false,
     currentTrick: [],
     trickSuit: null,
@@ -2941,6 +3214,9 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
     gameFinishedEventSent: false,
     botActionTimeoutId: null,
     pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
     roundContinueTimeoutId: null,
     abandonedPlayers: {},
     timerId: null,
@@ -2962,6 +3238,7 @@ function emitGameStartedToMembers(io, roomId, lobby, gameState) {
       playerIndex: index,
       isSpectator: false,
       turnIndex: 0,
+      currentPlayerId: gameState.currentPlayerId || null,
       trickSuit: null,
       stateVersion: gameStartedVersion,
       cardCounts: buildCardCounts(gameState),
@@ -2984,6 +3261,7 @@ function emitGameStartedToMembers(io, roomId, lobby, gameState) {
       playerIndex: -1,
       isSpectator: true,
       turnIndex: 0,
+      currentPlayerId: gameState.currentPlayerId || null,
       trickSuit: null,
       stateVersion: gameStartedVersion,
       cardCounts: buildCardCounts(gameState),
@@ -3052,16 +3330,17 @@ function startTrainingRoundGameplay(io, roomId, game, {
   game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
   game.activeRulesetId = game.training.selectedRulesetId;
   game.nvSelected = Boolean(nvSelected);
-  game.turnIndex = Math.max(0, Number(game.turnIndex || 0) % Math.max(game.players.length, 1));
+  setCurrentPlayer(
+    game,
+    game.players[getNormalizedTurnIndex(game)]?.userId || game.players[0]?.userId || null,
+    { allowDisconnected: true }
+  );
   game.roundNumber += 1;
   createRoundStats(game);
+  validateActiveTurnState(game, 'startTrainingRoundGameplay', { allowDisconnected: true });
 
   scheduleGameTimer(io, roomId, game, () => {
-    const currentPlayer = game.players[game.turnIndex];
-    const fallbackCard = getLegalCardsForPlayer(game, currentPlayer?.userId)[0];
-    if (currentPlayer && fallbackCard) {
-      playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
-    }
+    autoplayCurrentTurn(io, roomId, game, 'training_round_timer');
   });
 
   const message = announce
@@ -3075,6 +3354,7 @@ function startTrainingRoundGameplay(io, roomId, game, {
     choiceState: serializeChoiceState(game),
     currentTrick: game.currentTrick,
     turnIndex: game.turnIndex,
+    currentPlayerId: game.currentPlayerId || null,
     trickSuit: game.trickSuit,
     stateVersion,
     cardCounts: buildCardCounts(game),
@@ -3099,6 +3379,8 @@ function startTrainingRound(io, roomId, game, { announce = true } = {}) {
   clearRoundAutoContinue(game);
 
   game.phase = 'choosing_nv';
+  game.currentPlayerId = null;
+  syncCurrentPlayerFlags(game, null);
   game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
   game.activeRulesetId = game.training.selectedRulesetId;
   game.nvSelected = false;
@@ -3537,6 +3819,8 @@ async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
     });
     game.status = 'finished';
     game.phase = 'finished';
+    game.currentPlayerId = null;
+    syncCurrentPlayerFlags(game, null);
 
     if (isTrainingMatch(game)) {
       game.training.finalReview = await generateTrainerFinalReview({
@@ -3616,6 +3900,8 @@ function beginChooserTurn(io, roomId, game) {
   game.chooserId = nextChooser.playerId;
   game.activeRulesetId = null;
   game.nvSelected = false;
+  game.currentPlayerId = null;
+  syncCurrentPlayerFlags(game, null);
   game.currentTrick = [];
   game.trickSuit = null;
   game.trickPending = false;
@@ -3695,16 +3981,13 @@ function selectRulesetForRound(io, roomId, game, playerId, rulesetId) {
   };
   game.activeRulesetId = rulesetId;
   game.phase = 'playing_round';
-  game.turnIndex = Math.max(0, game.players.findIndex((player) => player.userId === playerId));
+  setCurrentPlayer(game, playerId, { allowDisconnected: true });
   game.roundNumber += 1;
   createRoundStats(game);
+  validateActiveTurnState(game, 'selectRulesetForRound', { fallbackPlayerId: playerId, allowDisconnected: true });
 
   scheduleGameTimer(io, roomId, game, () => {
-    const currentPlayer = game.players[game.turnIndex];
-    const fallbackCard = getLegalCardsForPlayer(game, currentPlayer?.userId)[0];
-    if (currentPlayer && fallbackCard) {
-      playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
-    }
+    autoplayCurrentTurn(io, roomId, game, 'ruleset_round_timer');
   });
 
   const stateVersion = bumpGameStateVersion(game);
@@ -3714,6 +3997,7 @@ function selectRulesetForRound(io, roomId, game, playerId, rulesetId) {
     choiceState: serializeChoiceState(game),
     currentTrick: game.currentTrick,
     turnIndex: game.turnIndex,
+    currentPlayerId: game.currentPlayerId || null,
     trickSuit: game.trickSuit,
     stateVersion,
     cardCounts: buildCardCounts(game),
@@ -3734,6 +4018,8 @@ function finishSmallGameRound(io, roomId, game) {
   clearGameTimer(game);
   clearRoundAutoContinue(game);
   game.phase = 'round_stats';
+  game.currentPlayerId = null;
+  syncCurrentPlayerFlags(game, null);
   const roundStats = finalizeRoundStats(game);
   game.lastRoundStats = roundStats;
   if (isTrainingMatch(game)) {
@@ -4060,6 +4346,7 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     handsReady: cloneStateSnapshot(snapshot.handsReady || {}) || {},
     stateVersion: Number(snapshot.stateVersion || 0),
     turnIndex: Number(snapshot.turnIndex || 0),
+    currentPlayerId: snapshot.currentPlayerId || null,
     trickPending: Boolean(snapshot.trickPending),
     currentTrick: cloneStateSnapshot(snapshot.currentTrick || []) || [],
     trickSuit: snapshot.trickSuit || null,
@@ -4079,6 +4366,9 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     gameFinishedEventSent: false,
     botActionTimeoutId: null,
     pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
     roundContinueTimeoutId: null,
     abandonedPlayers: cloneStateSnapshot(snapshot.abandonedPlayers || {}) || {},
     timerId: null,
@@ -4127,6 +4417,9 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     0,
     ...game.players.map((player) => (game.handsReady[player.userId] || []).length)
   );
+  if (game.phase === 'playing_round') {
+    validateActiveTurnState(game, 'resumeSavedGame', { allowDisconnected: true });
+  }
 
   lobbies.set(roomId, lobby);
   activeGames.set(roomId, game);
@@ -4667,7 +4960,11 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     return { error: 'Spectators cannot play cards' };
   }
 
-  if (pIndex !== game.turnIndex) {
+  if (!validateActiveTurnState(game, 'playCardForPlayer:precheck', { fallbackPlayerId: playerId })) {
+    return { error: 'Current player state is invalid' };
+  }
+
+  if (playerId !== game.currentPlayerId || pIndex !== game.turnIndex) {
     return { error: 'It is not your turn!' };
   }
 
@@ -4717,16 +5014,66 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     auto
   });
 
-  game.turnIndex = (game.turnIndex + 1) % game.players.length;
   const trickComplete = game.currentTrick.length === game.players.length;
-  if (!trickComplete) {
-    scheduleGameTimer(io, roomId, game, () => {
-      const currentPlayer = game.players[game.turnIndex];
-      const fallbackCard = getLegalCardsForPlayer(game, currentPlayer?.userId)[0];
-      if (currentPlayer && fallbackCard) {
-        playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
+  let ruleResolution = null;
+  let winningPlay = null;
+
+  if (trickComplete) {
+    game.trickPending = true;
+    const VALUES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+
+    let winnerIndex = 0;
+    let highestRank = -1;
+
+    game.currentTrick.forEach((play, index) => {
+      const [val, suit] = play.card.split('-');
+      if (suit === game.trickSuit) {
+        const rank = VALUES.indexOf(val);
+        if (rank > highestRank) {
+          highestRank = rank;
+          winnerIndex = index;
+        }
       }
     });
+
+    winningPlay = game.currentTrick[winnerIndex];
+    game.collectedHands.push(game.currentTrick);
+    game.collectedByPlayer[winningPlay.playedBy].push([...game.currentTrick]);
+    const collectedHandCards = game.currentTrick.map((play) => play.card);
+    ruleResolution = applyActiveRulesetToTrick({
+      game,
+      playerId: winningPlay.playedBy,
+      handCards: collectedHandCards
+    });
+
+    game.roundStats?.tricks.push({
+      index: game.collectedHands.length,
+      cards: [...game.currentTrick],
+      takenBy: winningPlay.playedBy,
+      takenByName: winningPlay.playerName,
+      scoreDelta: ruleResolution.scoreDelta,
+      rawDelta: ruleResolution.rawDelta,
+      componentDeltas: ruleResolution.componentDeltas
+    });
+
+    setCurrentPlayer(game, winningPlay.playedBy, { allowDisconnected: true });
+  } else {
+    const nextTurnIndex = (pIndex + 1) % game.players.length;
+    setCurrentPlayer(game, game.players[nextTurnIndex]?.userId, { allowDisconnected: true });
+    validateActiveTurnState(game, 'playCardForPlayer:advance', { allowDisconnected: true });
+    scheduleGameTimer(io, roomId, game, () => {
+      autoplayCurrentTurn(io, roomId, game, 'round_turn_timer');
+    });
+  }
+
+  const gameUpdateIsValid = trickComplete
+    ? validateActiveTurnState(game, 'playCardForPlayer:trickComplete', {
+      fallbackPlayerId: winningPlay?.playedBy || null,
+      allowDisconnected: true
+    })
+    : true;
+  if (!gameUpdateIsValid) {
+    return { error: 'Current player state is invalid' };
   }
 
   const gameUpdateVersion = bumpGameStateVersion(game);
@@ -4735,6 +5082,7 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
   io.to(roomId).emit('game_update', {
     currentTrick: game.currentTrick,
     turnIndex: game.turnIndex,
+    currentPlayerId: game.currentPlayerId || null,
     trickSuit: game.trickSuit,
     stateVersion: gameUpdateVersion,
     cardCounts: buildCardCounts(game),
@@ -4756,50 +5104,14 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     return { success: true };
   }
 
-  game.trickPending = true;
-  const VALUES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
-
-  let winnerIndex = 0;
-  let highestRank = -1;
-
-  game.currentTrick.forEach((play, index) => {
-    const [val, suit] = play.card.split('-');
-    if (suit === game.trickSuit) {
-      const rank = VALUES.indexOf(val);
-      if (rank > highestRank) {
-        highestRank = rank;
-        winnerIndex = index;
-      }
-    }
-  });
-
-  const winningPlay = game.currentTrick[winnerIndex];
-  game.collectedHands.push(game.currentTrick);
-  game.collectedByPlayer[winningPlay.playedBy].push([...game.currentTrick]);
-  const collectedHandCards = game.currentTrick.map((play) => play.card);
-  const ruleResolution = applyActiveRulesetToTrick({
-    game,
-    playerId: winningPlay.playedBy,
-    handCards: collectedHandCards
-  });
-
-  game.roundStats?.tricks.push({
-    index: game.collectedHands.length,
-    cards: [...game.currentTrick],
-    takenBy: winningPlay.playedBy,
-    takenByName: winningPlay.playerName,
-    scoreDelta: ruleResolution.scoreDelta,
-    rawDelta: ruleResolution.rawDelta,
-    componentDeltas: ruleResolution.componentDeltas
-  });
-
-  game.turnIndex = game.players.findIndex((entry) => entry.userId === winningPlay.playedBy);
   const trickWonVersion = bumpGameStateVersion(game);
   const nextSpectatorVisibleHandState = buildSpectatorVisibleHandState(game);
 
   io.to(roomId).emit('trick_won', {
     winnerName: winningPlay.playerName,
     winnerId: winningPlay.playedBy,
+    nextTurnIndex: game.turnIndex,
+    currentPlayerId: game.currentPlayerId || null,
     trickSuit: game.trickSuit,
     scoreDelta: ruleResolution.scoreDelta,
     stateVersion: trickWonVersion,
@@ -4825,12 +5137,12 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     const gameShouldFinish = allHandsEmpty || ruleResolution.gameEnded;
 
     if (!gameShouldFinish) {
+      validateActiveTurnState(game, 'playCardForPlayer:nextTrick', {
+        fallbackPlayerId: winningPlay?.playedBy || null,
+        allowDisconnected: true
+      });
       scheduleGameTimer(io, roomId, game, () => {
-        const currentPlayer = game.players[game.turnIndex];
-        const fallbackCard = getLegalCardsForPlayer(game, currentPlayer?.userId)[0];
-        if (currentPlayer && fallbackCard) {
-          playCardForPlayer(io, roomId, currentPlayer.userId, fallbackCard, { auto: true });
-        }
+        autoplayCurrentTurn(io, roomId, game, 'next_trick_timer');
       });
     }
 
@@ -4839,6 +5151,7 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
 
     io.to(roomId).emit('trick_end', {
       nextTurnIndex: game.turnIndex,
+      currentPlayerId: game.currentPlayerId || null,
       collectedHandsCount: game.collectedHands.length,
       trickSuit: null,
       stateVersion: trickEndVersion,
@@ -6092,3 +6405,9 @@ module.exports.createTrainingMatchSession = createTrainingMatchSession;
 module.exports.persistCompletedMatchHistory = persistCompletedMatchHistory;
 module.exports.setNvChoiceForRound = setNvChoiceForRound;
 module.exports.validateTrainingSettings = validateTrainingSettings;
+module.exports.__testHelpers = {
+  activeGames,
+  playCardForPlayer,
+  setCurrentPlayer,
+  validateActiveTurnState
+};

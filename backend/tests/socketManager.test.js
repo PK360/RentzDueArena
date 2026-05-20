@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const {
   abandonActiveMatch,
+  __testHelpers,
   applyActiveRulesetAtRoundEnd,
   applyCompletedGameEloUpdates,
   buildPublicRoomSummary,
@@ -24,6 +25,7 @@ const {
   validateTrainingSettings
 } = require('../socketManager');
 const { compileRuleset } = require('../engine/evaluator');
+const { activeGames, playCardForPlayer, setCurrentPlayer, validateActiveTurnState } = __testHelpers;
 
 test('prevents starting a game when the lobby has only one player', () => {
   const error = getStartGameValidationError(
@@ -609,6 +611,135 @@ test('Trainer NV choice starts the locked training ruleset without ruleset selec
   assert.strictEqual(game.nvSelected, true);
   assert.ok(emitted.some((entry) => entry.event === 'small_game_started'));
   assert.ok(!emitted.some((entry) => entry.event === 'choice_state_update'));
+});
+
+test('setCurrentPlayer normalizes the authoritative turn state', () => {
+  const game = {
+    players: [
+      { userId: 'player-1', isCurrent: true },
+      { userId: 'player-2', isCurrent: false },
+      { userId: 'player-3', isCurrent: true }
+    ],
+    turnIndex: 0,
+    currentPlayerId: 'player-1'
+  };
+
+  const changed = setCurrentPlayer(game, 'player-2');
+
+  assert.strictEqual(changed, true);
+  assert.strictEqual(game.turnIndex, 1);
+  assert.strictEqual(game.currentPlayerId, 'player-2');
+  assert.deepStrictEqual(game.players.map((player) => Boolean(player.isCurrent)), [false, true, false]);
+  assert.strictEqual(validateActiveTurnState({
+    ...game,
+    roomId: 'TURNTEST',
+    phase: 'playing_round',
+    trickPending: false,
+    handsReady: {
+      'player-1': ['2-hearts'],
+      'player-2': ['3-hearts'],
+      'player-3': ['4-hearts']
+    },
+    currentTrick: [],
+    trickSuit: null
+  }, 'unit-test'), true);
+});
+
+test('playCardForPlayer keeps the trick winner as the only next current player', () => {
+  const emitted = [];
+  const io = {
+    to(target) {
+      return {
+        emit(event, payload) {
+          emitted.push({ target, event, payload });
+        }
+      };
+    }
+  };
+  const roomId = 'BOTTURN';
+  const game = {
+    roomId,
+    phase: 'playing_round',
+    status: 'playing',
+    players: [
+      { userId: 'bot-1', name: 'Bot 1', socketId: 'socket-1', isBot: true },
+      { userId: 'bot-2', name: 'Bot 2', socketId: 'socket-2', isBot: true },
+      { userId: 'bot-3', name: 'Bot 3', socketId: 'socket-3', isBot: true }
+    ],
+    turnIndex: 2,
+    currentPlayerId: 'bot-3',
+    trickPending: false,
+    trickSuit: 'hearts',
+    currentTrick: [
+      { playedBy: 'bot-1', playerName: 'Bot 1', card: '10-hearts', auto: true },
+      { playedBy: 'bot-2', playerName: 'Bot 2', card: 'K-hearts', auto: true }
+    ],
+    handsReady: {
+      'bot-1': ['2-clubs'],
+      'bot-2': ['3-clubs'],
+      'bot-3': ['A-hearts', '4-clubs']
+    },
+    collectedHands: [],
+    collectedByPlayer: {
+      'bot-1': [],
+      'bot-2': [],
+      'bot-3': []
+    },
+    pointsByPlayer: {
+      'bot-1': 0,
+      'bot-2': 0,
+      'bot-3': 0
+    },
+    roundStats: { tricks: [] },
+    stateVersion: 0,
+    customRulesets: [],
+    activeRulesetId: null,
+    choiceState: null,
+    botActionTimeoutId: null,
+    pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
+    useTurnTimer: false,
+    training: null
+  };
+
+  activeGames.set(roomId, game);
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay) => {
+    if (delay === 1500) {
+      callback();
+    }
+    return { unref() {} };
+  };
+
+  try {
+    const result = playCardForPlayer(io, roomId, 'bot-3', 'A-hearts', { auto: true });
+
+    assert.deepStrictEqual(result, { success: true });
+    assert.strictEqual(game.turnIndex, 2);
+    assert.strictEqual(game.currentPlayerId, 'bot-3');
+    assert.strictEqual(game.trickPending, false);
+    assert.deepStrictEqual(game.currentTrick, []);
+
+    const gameUpdate = emitted.find((entry) => entry.event === 'game_update');
+    assert.ok(gameUpdate);
+    assert.strictEqual(gameUpdate.payload.turnIndex, 2);
+    assert.strictEqual(gameUpdate.payload.currentPlayerId, 'bot-3');
+
+    const trickWon = emitted.find((entry) => entry.event === 'trick_won');
+    assert.ok(trickWon);
+    assert.strictEqual(trickWon.payload.nextTurnIndex, 2);
+    assert.strictEqual(trickWon.payload.currentPlayerId, 'bot-3');
+
+    const trickEnd = emitted.find((entry) => entry.event === 'trick_end');
+    assert.ok(trickEnd);
+    assert.strictEqual(trickEnd.payload.nextTurnIndex, 2);
+    assert.strictEqual(trickEnd.payload.currentPlayerId, 'bot-3');
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    activeGames.delete(roomId);
+  }
 });
 
 test('leaving a training match ends the live session instead of replacing the player', () => {

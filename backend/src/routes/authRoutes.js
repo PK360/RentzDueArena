@@ -23,6 +23,7 @@ const {
 } = require('../lib/friends');
 const {
   buildCompetitiveSummaryForUser,
+  getGlobalLeaderboard,
   getRankLeaderboardForUser,
   getRankLeaderboardForUserId
 } = require('../lib/elo');
@@ -75,6 +76,15 @@ function readTargetUserId(value) {
 
 function isValidTargetUserId(value) {
   return mongoose.isValidObjectId(value);
+}
+
+function readPositiveInteger(value, fallback) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.round(numericValue));
 }
 
 function addRelationshipId(user, fieldName, targetUserId) {
@@ -878,6 +888,21 @@ router.get('/leaderboard/rank/:userId', async (req, res, next) => {
     res.json({
       ok: true,
       leaderboard
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/leaderboard/global', async (req, res, next) => {
+  try {
+    const viewer = await getAuthenticatedUserFromRequest(req);
+    const page = readPositiveInteger(req.query.page, 1);
+    const limit = readPositiveInteger(req.query.limit, 50);
+
+    res.json({
+      ok: true,
+      leaderboard: await getGlobalLeaderboard({ viewer, page, limit })
     });
   } catch (error) {
     next(error);

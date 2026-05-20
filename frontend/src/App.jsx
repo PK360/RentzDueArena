@@ -696,6 +696,20 @@ function createEmptyLibraryState() {
   };
 }
 
+function mergeForumEntryPreservingReplies(currentEntry, nextEntry) {
+  if (!currentEntry) {
+    return nextEntry;
+  }
+
+  return {
+    ...currentEntry,
+    ...nextEntry,
+    replies: Array.isArray(nextEntry?.replies)
+      ? nextEntry.replies
+      : (currentEntry.replies || [])
+  };
+}
+
 function replaceForumEntryInTree(entries, nextEntry) {
   return entries.map((entry) => {
     if (entry.id === nextEntry.id) {
@@ -2754,6 +2768,7 @@ function App() {
   const [currentTrick, setCurrentTrick] = useState([]);
   const [trickSuit, setTrickSuit] = useState(null);
   const [turnIndex, setTurnIndex] = useState(0);
+  const [currentPlayerId, setCurrentPlayerId] = useState('');
   const [myIndex, setMyIndex] = useState(-1);
   const [animatingWinner, setAnimatingWinner] = useState(null);
   const [trickWinnerId, setTrickWinnerId] = useState(null);
@@ -2788,8 +2803,8 @@ function App() {
   const [roomInviteFriendsError, setRoomInviteFriendsError] = useState('');
   const [roomInviteFriends, setRoomInviteFriends] = useState([]);
   const [roomInviteBusyTargetId, setRoomInviteBusyTargetId] = useState('');
-  const [incomingRoomInvites, setIncomingRoomInvites] = useState([]);
-  const [roomInviteDecisionBusyId, setRoomInviteDecisionBusyId] = useState('');
+  const [, setIncomingRoomInvites] = useState([]);
+  const [, setRoomInviteDecisionBusyId] = useState('');
   const [chatMuteBusyTargetId, setChatMuteBusyTargetId] = useState('');
   const [pendingSpectatorJoin, setPendingSpectatorJoin] = useState(null);
   const [rulesetPreview, setRulesetPreview] = useState(null);
@@ -3778,6 +3793,7 @@ function App() {
       setGameFinished(false);
       setChoiceState(null);
       setHand([]);
+      setCurrentPlayerId('');
       applySpectatorVisibleHandState(null);
       setStartingHandSize(0);
       startingHandSizeRef.current = 0;
@@ -3800,6 +3816,7 @@ function App() {
     setStartingHandSize(restoredStartingHandSize);
     setMyIndex(typeof restoredGame.playerIndex === 'number' ? restoredGame.playerIndex : -1);
     setTurnIndex(restoredGame.turnIndex || 0);
+    setCurrentPlayerId(restoredGame.currentPlayerId || '');
     setTrickSuit(restoredGame.trickSuit || null);
     setCardCounts(restoredGame.cardCounts || {});
     setCollectedHandsByPlayer(restoredGame.collectedHandsByPlayer || {});
@@ -3849,6 +3866,7 @@ function App() {
     setDraftRoomSettings(defaultRoomSettings);
     setChoiceState(null);
     setHand([]);
+    setCurrentPlayerId('');
     applySpectatorVisibleHandState(null);
     setStartingHandSize(0);
     setMyIndex(-1);
@@ -4036,7 +4054,7 @@ function App() {
       setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
     });
 
-    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize }) => {
+    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
       applyMatchMetadata(nextChoiceState);
@@ -4059,6 +4077,7 @@ function App() {
       setStartingHandSize(resolvedStartingHandSize);
       setMyIndex(typeof playerIndex === 'number' ? playerIndex : -1);
       setTurnIndex(nextTurnIndex);
+      setCurrentPlayerId(nextCurrentPlayerId || '');
       setTrickSuit(nextTrickSuit || null);
       setCardCounts(nextCardCounts || {});
       setCollectedHandsByPlayer(nextCollectedHands || {});
@@ -4095,7 +4114,7 @@ function App() {
       applyPlayerPoints(nextPlayerPoints);
     });
 
-    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
       setChoiceState(nextChoiceState || null);
@@ -4108,6 +4127,7 @@ function App() {
       setMatchCompletePending(false);
       setCurrentTrick(nextTrick || []);
       setTurnIndex(nextTurnIndex || 0);
+      setCurrentPlayerId(nextCurrentPlayerId || '');
       setTrickSuit(nextTrickSuit || null);
       setTrickPending(false);
       setAnimatingWinner(null);
@@ -4125,11 +4145,12 @@ function App() {
       }
     });
 
-    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
       setCurrentTrick(nextTrick);
       setTurnIndex(nextTurnIndex);
+      setCurrentPlayerId(nextCurrentPlayerId || '');
       setTrickSuit(nextTrickSuit || null);
       setTrickPending(false);
       setAnimatingWinner(null);
@@ -4156,7 +4177,7 @@ function App() {
       setHand(resolvedHand);
     });
 
-    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, nextTurnIndex, currentPlayerId: nextCurrentPlayerId, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
       setAnimatingWinner(winnerName);
@@ -4171,6 +4192,10 @@ function App() {
         setChoiceState(nextChoiceState);
       }
       scheduleVersionedGameStateUpdate(stateVersion, () => {
+        if (typeof nextTurnIndex === 'number') {
+          setTurnIndex(nextTurnIndex);
+        }
+        setCurrentPlayerId(nextCurrentPlayerId || '');
         if (nextCollectedHands) {
           setCollectedHandsByPlayer(nextCollectedHands);
         }
@@ -4182,10 +4207,11 @@ function App() {
       });
     });
 
-    socket.on('trick_end', ({ nextTurnIndex, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('trick_end', ({ nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
       applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
         setTurnIndex(nextTurnIndex);
+        setCurrentPlayerId(nextCurrentPlayerId || '');
         setCurrentTrick([]);
         setAnimatingWinner(null);
         if (!finished) {
@@ -4223,6 +4249,7 @@ function App() {
         setIsStatsOpen(shouldShowTrainerFinalReview ? false : Boolean(roundStats));
         setMatchCompletePending(shouldShowTrainerFinalReview ? false : Boolean(matchComplete));
         setChoiceState(nextChoiceState || null);
+        setCurrentPlayerId('');
         setTrickPending(false);
         setCurrentTrick([]);
         if (standings) {
@@ -4255,6 +4282,7 @@ function App() {
         setAnimatingWinner(null);
         setFinalStandings(standings || []);
         setChoiceState(nextChoiceState || null);
+        setCurrentPlayerId('');
         setMatchCompletePending(Boolean(!normalizedTrainingReview));
         setIsStatsOpen(Boolean(!normalizedTrainingReview));
         setTrainingFinalReview(normalizedTrainingReview);
@@ -5182,6 +5210,7 @@ function App() {
     }
 
     setRankLeaderboardModal({
+      leaderboardType: 'rank',
       loading: true,
       error: '',
       currentUserId: userProfile?.userId || null,
@@ -5197,6 +5226,7 @@ function App() {
     try {
       const response = await requestJson(`/api/auth/leaderboard/rank/${encodeURIComponent(resolvedTargetUserId)}`);
       setRankLeaderboardModal({
+        leaderboardType: 'rank',
         loading: false,
         error: '',
         ...(response?.leaderboard || {}),
@@ -5209,6 +5239,47 @@ function App() {
         loading: false,
         error: error.message || 'Unable to load this leaderboard right now.',
         entries: []
+      }));
+    }
+  };
+
+  const openGlobalLeaderboardModal = async (page = 1) => {
+    const nextPage = Math.max(1, Number(page || 1));
+
+    setRankLeaderboardModal((current) => ({
+      leaderboardType: 'global',
+      loading: true,
+      error: '',
+      currentUserId: userProfile?.userId || current?.currentUserId || null,
+      highlightedUserId: userProfile?.userId || null,
+      title: 'Global ELO Leaderboard',
+      sourceLabel: 'global',
+      page: nextPage,
+      limit: current?.leaderboardType === 'global' ? current.limit || 50 : 50,
+      totalEntries: current?.leaderboardType === 'global' ? current.totalEntries || 0 : 0,
+      hasMore: current?.leaderboardType === 'global' ? Boolean(current.hasMore) : false,
+      tiers: current?.leaderboardType === 'global' ? current.tiers || [] : [],
+      entries: current?.leaderboardType === 'global' ? current.entries || [] : []
+    }));
+
+    try {
+      const response = await requestJson(`/api/auth/leaderboard/global?page=${encodeURIComponent(nextPage)}&limit=50`);
+      setRankLeaderboardModal({
+        leaderboardType: 'global',
+        loading: false,
+        error: '',
+        title: 'Global ELO Leaderboard',
+        sourceLabel: 'global',
+        ...(response?.leaderboard || {}),
+        highlightedUserId: userProfile?.userId || null,
+        entries: Array.isArray(response?.leaderboard?.entries) ? response.leaderboard.entries : []
+      });
+    } catch (error) {
+      setRankLeaderboardModal((current) => ({
+        ...(current || {}),
+        leaderboardType: 'global',
+        loading: false,
+        error: error.message || 'Unable to load the global leaderboard right now.'
       }));
     }
   };
@@ -5444,10 +5515,14 @@ function App() {
       return {
         ...current,
         parents: Array.isArray(current.parents)
-          ? current.parents.map((parent) => (parent.id === nextPost.id ? { ...parent, ...nextPost, replies: [] } : parent))
+          ? current.parents.map((parent) => (
+            parent.id === nextPost.id
+              ? mergeForumEntryPreservingReplies(parent, nextPost)
+              : parent
+          ))
           : current.parents,
         selected: current.selected.id === nextPost.id
-          ? nextPost
+          ? mergeForumEntryPreservingReplies(current.selected, nextPost)
           : {
             ...current.selected,
             replies: replaceForumEntryInTree(current.selected.replies || [], nextPost)
@@ -5458,11 +5533,7 @@ function App() {
       ...current,
       posts: current.posts.map((post) => (
         post.id === nextPost.id
-          ? {
-            ...post,
-            ...nextPost,
-            replies: post.replies || []
-          }
+          ? mergeForumEntryPreservingReplies(post, nextPost)
           : post
       ))
     }));
@@ -5470,11 +5541,7 @@ function App() {
       ...current,
       bookmarkedRulesetPosts: current.bookmarkedRulesetPosts.map((post) => (
         post.id === nextPost.id
-          ? {
-            ...post,
-            ...nextPost,
-            replies: []
-          }
+          ? mergeForumEntryPreservingReplies(post, nextPost)
           : post
       ))
     }));
@@ -6569,7 +6636,7 @@ function App() {
       setEditorJudgeReview(normalizedReview);
       setEditorJudgeSignature(signature);
       setEditorStatus('Ruleset judgment ready.');
-    } catch (error) {
+    } catch {
       setEditorJudgeError(judgeFailureMessage);
       setEditorStatus(judgeFailureMessage);
     } finally {
@@ -7208,10 +7275,10 @@ function App() {
     { id: 'play', label: 'Play', icon: Home },
     { id: 'library', label: 'Library', icon: Library },
     { id: 'ruleset-rater', label: 'Rentz Forum', icon: Users2 },
-    { id: 'editor', label: 'Editor', icon: FileCode2 },
+    { id: 'editor', label: 'Ruleset Editor', icon: FileCode2 },
     { id: 'login', label: isAuthenticated ? 'Account' : 'Login', icon: isAuthenticated ? UserRound : LogIn },
     ...(activeTab === 'notifications' ? [{ id: 'notifications', label: 'Notifications', icon: Bell }] : []),
-    ...(forumSearchState.hasResultsTab ? [{ id: 'search-results', label: 'Search results', icon: Search }] : [])
+    ...(forumSearchState.hasResultsTab ? [{ id: 'search-results', label: 'Search Results', icon: Search }] : [])
   ];
   const mobilePrimaryNavIds = new Set(['play', 'library', 'login']);
   const mobilePrimaryNavItems = navItems.filter((item) => mobilePrimaryNavIds.has(item.id));
@@ -7292,17 +7359,48 @@ function App() {
   const canInviteFriends = inLobby && !gameStarted && isAuthenticated && !activeProfile?.guest;
   const canManageRoomRulesets = Boolean(amIHost && !gameStarted);
   const isTrainingMatch = matchMode === MATCH_MODE_TRAINING;
+  const currentSectionLabel = (() => {
+    if (isTrainingSetupOpen || isTrainingMatch) {
+      return 'Training';
+    }
+
+    if (activeTab === 'play') {
+      if (inLobby && gameStarted) {
+        return 'Game';
+      }
+
+      if (inLobby) {
+        return 'Room';
+      }
+
+      return 'Play';
+    }
+
+    if (activeTab === 'login') {
+      return 'Account';
+    }
+
+    if (activeTab === 'guide') {
+      return 'Ruleset Editor';
+    }
+
+    return activeTabLabel;
+  })();
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
   const activeChatScope = gameStarted && !gameFinished ? 'game' : (inLobby ? 'lobby' : '');
   const activeChatMessages = activeChatScope === 'game' ? gameChatMessages : roomChatMessages;
   const activeChatTitle = activeChatScope === 'game' ? 'Game Chat' : 'Room Chat';
-  const isMyTurn = gameStarted && !gameFinished && myIndex === turnIndex;
+  const nextTurnPlayer = players.find((player) => player.userId === currentPlayerId) || players[turnIndex];
+  const isMyTurn = gameStarted && !gameFinished && (
+    currentPlayerId
+      ? myPlayerId === currentPlayerId
+      : myIndex === turnIndex
+  );
   const currentFriendRelationship = playerProfileModal
     ? getFriendRelationshipStatus(userProfile, playerProfileModal)
     : null;
   const currentProfileTargetId = getPlayerUserId(playerProfileModal);
-  const nextTurnPlayer = players[turnIndex];
   const currentChooser = players.find((player) => player.userId === choiceState?.chooserId) || null;
   const amIChooser = Boolean(choiceState?.chooserId && choiceState.chooserId === myPlayerId);
   const isChoosingNv = gameStarted && choiceState?.phase === 'choosing_nv';
@@ -7971,23 +8069,56 @@ function App() {
       entries = [],
       currentUserId,
       highlightedUserId,
+      leaderboardType = 'rank',
+      title,
+      page = 1,
+      totalEntries = 0,
+      hasMore = false,
       rankName,
       rankMinElo,
       rankMaxElo,
-      sourceLabel
+      sourceLabel,
+      tiers = []
     } = rankLeaderboardModal;
     const rankRangeLabel = rankMaxElo == null
       ? `${rankMinElo ?? 0}+ ELO`
       : `${rankMinElo ?? 0}-${rankMaxElo} ELO`;
+    const leaderboardTitle = title || (leaderboardType === 'global' ? 'Global ELO Leaderboard' : (rankName || 'Rank Leaderboard'));
+    const leaderboardEyebrow = leaderboardType === 'global'
+      ? `${totalEntries} ranked account${totalEntries === 1 ? '' : 's'}`
+      : `${sourceLabel === 'profile-preview' ? 'Profile rank leaderboard' : 'Current rank leaderboard'}${rankName ? ` • ${rankRangeLabel}` : ''}`;
+    const resolvedTiers = Array.isArray(tiers) ? tiers : [];
 
     return (
       <ModalShell
-        title={rankName || 'Rank Leaderboard'}
-        eyebrow={`${sourceLabel === 'profile-preview' ? 'Profile rank leaderboard' : 'Current rank leaderboard'}${rankName ? ` • ${rankRangeLabel}` : ''}`}
+        title={leaderboardTitle}
+        eyebrow={leaderboardEyebrow}
         onClose={() => setRankLeaderboardModal(null)}
         wide
         footer={(
-          <div className="flex justify-end">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {leaderboardType === 'global' ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={loading || page <= 1}
+                  onClick={() => void openGlobalLeaderboardModal(page - 1)}
+                  className={clsx(AERO_SECONDARY_BUTTON_CLASS, 'disabled:cursor-not-allowed disabled:opacity-60')}
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || !hasMore}
+                  onClick={() => void openGlobalLeaderboardModal(page + 1)}
+                  className={clsx(AERO_SECONDARY_BUTTON_CLASS, 'disabled:cursor-not-allowed disabled:opacity-60')}
+                >
+                  Next
+                  <ArrowLeft className="h-4 w-4 rotate-180" />
+                </button>
+              </div>
+            ) : <div />}
             <button
               type="button"
               onClick={() => setRankLeaderboardModal(null)}
@@ -7999,6 +8130,27 @@ function App() {
         )}
       >
         <div className="space-y-4">
+          {leaderboardType === 'global' && resolvedTiers.length > 0 ? (
+            <section className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+              <div className="mb-3 text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                Rank cutoffs
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {resolvedTiers.map((tier) => (
+                  <div
+                    key={tier.key}
+                    className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-3"
+                  >
+                    <div className="text-xs font-black text-[var(--text-primary)]">{tier.name}</div>
+                    <div className="mt-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+                      {tier.max == null ? `${tier.min}+ ELO` : `${tier.min}-${tier.max} ELO`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           {loading ? (
             <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
               Loading leaderboard...
@@ -8009,52 +8161,69 @@ function App() {
             </div>
           ) : entries.length === 0 ? (
             <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
-              No ranked accounts are available in this tier yet.
+              {leaderboardType === 'global'
+                ? 'No ranked accounts are available yet.'
+                : 'No ranked accounts are available in this tier yet.'}
             </div>
           ) : (
             <div className="grid gap-3">
-              {entries.map((entry) => {
+              {entries.map((entry, index) => {
                 const isCurrentUser = entry.userId && entry.userId === currentUserId;
                 const isHighlightedUser = entry.userId && entry.userId === highlightedUserId;
+                const previousTierKey = index > 0 ? entries[index - 1]?.rankTierKey : null;
+                const shouldShowTierSeparator = leaderboardType === 'global' && entry.rankTierKey !== previousTierKey;
+                const tierDefinition = resolvedTiers.find((tier) => tier.key === entry.rankTierKey) || null;
 
                 return (
-                  <div
-                    key={entry.userId || entry.username}
-                    className={clsx(
-                      'flex flex-wrap items-center gap-3 rounded-[1.35rem] border px-4 py-3 sm:flex-nowrap sm:px-5',
-                      isHighlightedUser
-                        ? 'border-emerald-300 bg-emerald-100/70'
-                        : 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
-                    )}
-                  >
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <div className={clsx(
-                        'flex h-10 min-w-10 items-center justify-center rounded-full border text-sm font-black',
+                  <div key={entry.userId || entry.username} className="space-y-2">
+                    {shouldShowTierSeparator ? (
+                      <div className="rounded-[1.15rem] border border-sky-200/70 bg-sky-100/70 px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-sky-950">
+                        {tierDefinition?.name || entry.rankName}
+                        <span className="ml-2 text-sky-800/80">
+                          {tierDefinition
+                            ? (tierDefinition.max == null ? `${tierDefinition.min}+ ELO` : `${tierDefinition.min}-${tierDefinition.max} ELO`)
+                            : ''}
+                        </span>
+                      </div>
+                    ) : null}
+
+                    <div
+                      className={clsx(
+                        'flex flex-wrap items-center gap-3 rounded-[1.35rem] border px-4 py-3 sm:flex-nowrap sm:px-5',
                         isHighlightedUser
-                          ? 'border-emerald-400 bg-white text-emerald-900'
-                          : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]'
+                          ? 'border-emerald-300 bg-emerald-100/70'
+                          : 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
                       )}
-                      >
-                        #{entry.placement || '--'}
-                      </div>
-                      <AvatarFace
-                        player={entry}
-                        alt={`${getPlayerName(entry)} avatar`}
-                        wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
-                        imageClassName="h-full w-full rounded-full object-cover"
-                        fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                      />
-                      <div className="min-w-0">
-                        <div className="truncate text-base font-black text-[var(--text-primary)]">
-                          {getPlayerName(entry)}{isCurrentUser ? ' (You)' : ''}
+                    >
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
+                        <div className={clsx(
+                          'flex h-10 min-w-10 items-center justify-center rounded-full border text-sm font-black',
+                          isHighlightedUser
+                            ? 'border-emerald-400 bg-white text-emerald-900'
+                            : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]'
+                        )}
+                        >
+                          #{entry.placement || '--'}
                         </div>
-                        <div className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
-                          {entry.rankName || rankName}
+                        <AvatarFace
+                          player={entry}
+                          alt={`${getPlayerName(entry)} avatar`}
+                          wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
+                          imageClassName="h-full w-full rounded-full object-cover"
+                          fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                        />
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-black text-[var(--text-primary)]">
+                            {getPlayerName(entry)}{isCurrentUser ? ' (You)' : ''}
+                          </div>
+                          <div className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                            {entry.rankName || rankName}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="ml-auto inline-flex rounded-full border border-[var(--glass-border)] bg-white/80 px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
-                      ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
+                      <div className="ml-auto inline-flex rounded-full border border-[var(--glass-border)] bg-white/80 px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+                        ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
+                      </div>
                     </div>
                   </div>
                 );
@@ -8932,7 +9101,6 @@ function App() {
     };
   }, [hand.length, handSpreadLayoutMode, isHandSpreadVisible, pageZoom, startingHandSize]);
 
-  const isCompactGameHeader = activeTab === 'play' && inLobby && gameStarted;
 
   const renderChatMessageEntry = (message, { compact = false } = {}) => {
     const isOwnMessage = Boolean(message.sender?.userId && message.sender.userId === activeProfile?.userId);
@@ -9545,28 +9713,20 @@ function App() {
         </div>
       </div>
 
-      <div className="glass-panel overflow-hidden p-5 sm:p-8">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200/80 bg-emerald-100/85 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-emerald-950">
-              <Sparkles className="h-3.5 w-3.5" />
-              Training
-            </div>
-            <h3 className="mt-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Training</h3>
-          </div>
+      <section className="glass-panel flex flex-col gap-5 overflow-hidden border border-emerald-200/75 bg-[linear-gradient(180deg,rgba(248,255,244,0.96)_0%,rgba(221,246,214,0.9)_54%,rgba(209,240,255,0.92)_100%)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_20px_44px_rgba(73,148,112,0.14)] sm:p-8 lg:flex-row lg:items-center lg:justify-between">
+        <p className="max-w-2xl text-2xl font-display font-black leading-tight text-[var(--text-primary)] sm:text-3xl">
+          Play against AI-powered trainer bot
+        </p>
 
-          <div className="flex w-full flex-col gap-3 lg:w-auto lg:min-w-[16rem]">
-            <button
-              type="button"
-              onClick={handleOpenTrainingSetup}
-              className="inline-flex items-center justify-center gap-3 rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(245,255,240,0.98)_0%,rgba(181,245,138,0.96)_48%,rgba(46,124,69,0.98)_100%)] px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.92),0_18px_36px_rgba(52,148,73,0.28)] transition hover:-translate-y-0.5 hover:brightness-[1.03] sm:text-base"
-            >
-              <Bot className="h-5 w-5" />
-              Training
-            </button>
-          </div>
-        </div>
-      </div>
+        <button
+          type="button"
+          onClick={handleOpenTrainingSetup}
+          className="inline-flex w-full items-center justify-center gap-3 rounded-[1.45rem] border border-emerald-100/90 bg-[linear-gradient(180deg,rgba(245,255,240,0.98)_0%,rgba(181,245,138,0.96)_48%,rgba(46,124,69,0.98)_100%)] px-6 py-4 text-sm font-black uppercase tracking-[0.16em] text-emerald-950 shadow-[inset_0_2px_4px_rgba(255,255,255,0.92),0_18px_36px_rgba(52,148,73,0.28)] transition hover:-translate-y-0.5 hover:brightness-[1.03] sm:w-auto sm:min-w-[17rem] sm:text-base"
+        >
+          <Bot className="h-5 w-5" />
+          Start Training
+        </button>
+      </section>
     </div>
   );
 
@@ -10677,9 +10837,6 @@ function App() {
         <div className="grid items-stretch gap-5 xl:grid-cols-[1.15fr_0.85fr]">
           <section className="glass-panel self-start p-5 sm:p-6">
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Ruleset Editor</h3>
-              </div>
               <div className="flex flex-wrap gap-2">
                 {isViewingEditableRoomRuleset && <div className="status-pill px-4 py-2">linked to room</div>}
                 <div className="status-pill px-4 py-2">{editorType.replace('_', ' ')}</div>
@@ -11188,7 +11345,7 @@ function App() {
   const renderNotificationsContent = () => {
     if (!isAuthenticated) {
       return renderPlaceholderModule(
-        'Notifications',
+        '',
         'Log in to receive friend requests, invites, resumed-game rejoin prompts, and Rentz Forum activity here.'
       );
     }
@@ -11204,9 +11361,6 @@ function App() {
       <div className="space-y-5">
         <section className="glass-panel p-5 sm:p-6">
           <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Notifications</h3>
-            </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -11438,7 +11592,7 @@ function App() {
           </section>
 
           <section className="glass-panel p-5 sm:p-6">
-            <div className="grid gap-4 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
               <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
                 <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
                   ELO
@@ -11487,6 +11641,19 @@ function App() {
                 >
                   <Trophy className="h-4 w-4" />
                   View Your Rank
+                </button>
+              </div>
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                  Global Leaderboard
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openGlobalLeaderboardModal(1)}
+                  className={clsx(AERO_SECONDARY_BUTTON_CLASS, 'mt-3 w-full')}
+                >
+                  <Trophy className="h-4 w-4" />
+                  View All Players
                 </button>
               </div>
             </div>
@@ -11770,7 +11937,9 @@ function App() {
 
   const renderPlaceholderModule = (title, body) => (
     <div className="glass-panel min-h-[60vh] p-5 sm:p-8">
-      <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">{title}</h3>
+      {title ? (
+        <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">{title}</h3>
+      ) : null}
       <p className="max-w-2xl text-base font-semibold leading-7 text-[var(--text-secondary)] sm:text-sm">{body}</p>
     </div>
   );
@@ -12102,6 +12271,7 @@ endif`}
                   onFocus={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
                   onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void handleForumRateRuleset(entry.id, leftValue);
                   }}
@@ -12115,6 +12285,7 @@ endif`}
                   onFocus={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
                   onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void handleForumRateRuleset(entry.id, rightValue);
                   }}
@@ -12145,6 +12316,7 @@ endif`}
           type="button"
           disabled={previewBusy}
           onClick={(event) => {
+            event.preventDefault();
             event.stopPropagation();
             void handleForumPreviewRuleset(entry.id);
           }}
@@ -12156,6 +12328,7 @@ endif`}
           type="button"
           disabled={copyBusy}
           onClick={(event) => {
+            event.preventDefault();
             event.stopPropagation();
             void handleForumCopyRulesetToEditor(entry.id);
           }}
@@ -12167,6 +12340,7 @@ endif`}
           type="button"
           disabled={saveBusy}
           onClick={(event) => {
+            event.preventDefault();
             event.stopPropagation();
             openForumRulesetSaveChoice(entry);
           }}
@@ -12284,6 +12458,7 @@ endif`}
           <button
             type="button"
             onClick={(event) => {
+              event.preventDefault();
               event.stopPropagation();
               void openPlayerProfileModal(entry.author);
             }}
@@ -12305,6 +12480,7 @@ endif`}
                 <button
                   type="button"
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void openPlayerProfileModal(entry.author);
                   }}
@@ -12330,6 +12506,7 @@ endif`}
                   type="button"
                   disabled={actionBusy('delete')}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     setForumDeleteTarget(entry);
                   }}
@@ -12369,6 +12546,7 @@ endif`}
                   type="button"
                   disabled={actionBusy('like')}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void handleForumEntryAction(entry.id, 'like', {
                       loginPrompt: 'Log in to like Rentz Forum posts.'
@@ -12388,6 +12566,7 @@ endif`}
                 <button
                   type="button"
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     setForumReplyTarget(entry);
                   }}
@@ -12401,6 +12580,7 @@ endif`}
                   type="button"
                   disabled={actionBusy('bookmark')}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void handleForumEntryAction(entry.id, 'bookmark', {
                       loginPrompt: 'Log in to save Rentz Forum posts.'
@@ -12421,6 +12601,7 @@ endif`}
                   type="button"
                   disabled={actionBusy('mute-notifications')}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     void handleToggleForumThreadNotifications(entry);
                   }}
@@ -13013,7 +13194,7 @@ endif`}
   const renderLibraryContent = () => {
     if (!isAuthenticated) {
       return renderPlaceholderModule(
-        'Library',
+        '',
         'Log in to see your saved rulesets, saved matches, and match history.'
       );
     }
@@ -13215,11 +13396,6 @@ endif`}
 
       <section className="space-y-4">
         <div className="flex items-center justify-between gap-3 px-1">
-          <div>
-            <h3 className="text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">
-              Rentz Forum
-            </h3>
-          </div>
           <div className="flex items-center gap-2">
             {forumView === 'thread' && (
               <button
@@ -13401,8 +13577,6 @@ endif`}
       return (
         <div className="space-y-5">
           <div className="glass-panel p-5 sm:p-6 lg:p-8">
-            <h3 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)] sm:text-3xl">Settings</h3>
-
             <div className="rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
               <div className="mb-4">
                 <h4 className="text-xl font-display font-black text-[var(--text-primary)] sm:text-2xl">Theme Palette</h4>
@@ -13492,22 +13666,28 @@ endif`}
   return (
     <div className="app-shell relative min-h-screen w-full overflow-hidden p-0 pt-2 font-sans transition-colors duration-700 sm:pt-4 md:p-3 md:pt-3 lg:p-4">
       <div className="app-window macos-window relative z-20 mx-auto flex h-[calc(100dvh-0.5rem)] w-full max-w-[1680px] flex-col border border-[var(--glass-border)] shadow-2xl transition-colors duration-500 sm:h-[calc(100dvh-1rem)] md:h-[96vh]">
-        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center gap-3.5 border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:gap-3 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
-          <div className="flex w-auto shrink-0 gap-2.5 md:w-24">
-            <div className="h-3.5 w-3.5 rounded-full border border-[#e0443e] bg-[#ff5f56] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
-            <div className="h-3.5 w-3.5 rounded-full border border-[#dea123] bg-[#ffbd2e] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
-            <div className="h-3.5 w-3.5 rounded-full border border-[#1aab29] bg-[#27c93f] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
-          </div>
-
-          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-3">
-            <div className="flex shrink-0 items-center gap-2">
-              <Droplet fill="currentColor" className="h-4 w-4 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
-              <span className="font-display text-[10px] font-semibold uppercase tracking-widest text-[var(--text-primary)] opacity-60 sm:text-xs">
-                Rentz Arena
-              </span>
+        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
+          <div className="relative z-10 flex min-w-0 flex-1 items-center gap-3">
+            <div className="flex w-auto shrink-0 gap-2.5 md:w-24">
+              <div className="h-3.5 w-3.5 rounded-full border border-[#e0443e] bg-[#ff5f56] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
+              <div className="h-3.5 w-3.5 rounded-full border border-[#dea123] bg-[#ffbd2e] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
+              <div className="h-3.5 w-3.5 rounded-full border border-[#1aab29] bg-[#27c93f] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             </div>
 
-            <form onSubmit={handleForumSearchSubmit} className="ml-auto hidden w-full min-w-0 max-w-[12rem] sm:block md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
+            <div className="min-w-0 truncate font-display text-base font-black tracking-tight text-[var(--text-primary)] sm:text-xl">
+              {currentSectionLabel}
+            </div>
+          </div>
+
+          <div className="pointer-events-none absolute left-1/2 top-1/2 flex max-w-[calc(100%-8rem)] -translate-x-1/2 -translate-y-1/2 items-center gap-2 px-2 text-center">
+            <Droplet fill="currentColor" className="h-4 w-4 shrink-0 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
+            <span className="truncate font-display text-xs font-black uppercase tracking-[0.22em] text-[var(--text-primary)] sm:text-sm">
+              Rentz Arena
+            </span>
+          </div>
+
+          <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-3 sm:gap-2">
+            <form onSubmit={handleForumSearchSubmit} className="hidden w-full min-w-0 max-w-[12rem] sm:block md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
               <div className="flex items-center gap-1.5 rounded-full border border-[var(--glass-border)] bg-[var(--surface-input)] px-2.5 py-1.5 shadow-[inset_0_1px_2px_rgba(255,255,255,0.35)]">
                 <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
                 <input
@@ -13525,9 +13705,7 @@ endif`}
                 </button>
               </div>
             </form>
-          </div>
 
-          <div className="flex w-auto shrink-0 items-center justify-end gap-3 sm:gap-2 md:w-auto">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center sm:hidden">
               <button
                 type="button"
@@ -13685,21 +13863,6 @@ endif`}
           <main className="relative z-10 flex h-full flex-1 flex-col overflow-y-auto overflow-x-auto p-1 pb-16 sm:p-2 sm:pb-24 md:p-2 lg:p-2">
             <div className="subpage-viewport">
               <div className="subpage-content">
-                {!isCompactGameHeader && (
-                  <header className="mb-6 flex shrink-0 flex-col gap-3">
-                    <div className="min-w-0 flex flex-col gap-1.5 pt-1">
-                      <h2 className="flex items-center gap-3 font-display font-black capitalize leading-[1.08] tracking-tight text-[var(--text-primary)] drop-shadow-sm text-[2rem] sm:text-3xl md:text-[4rem]">
-                        {activeTab === 'play' && !inLobby && <Swords className="h-8 w-8 opacity-70 sm:h-10 sm:w-10" />}
-                        {activeTabLabel}
-                      </h2>
-                      <div
-                        className="h-1.5 w-24 rounded-full"
-                        style={{ background: 'var(--button-bg)', boxShadow: 'var(--nav-active-shadow)' }}
-                      />
-                    </div>
-                  </header>
-                )}
-
                 {errorMsg && activeTab !== 'play' && (
                   <div className="mb-4 flex items-center gap-2 rounded-[1.5rem] bg-red-500/90 px-4 py-3 text-sm font-bold text-white shadow-lg sm:rounded-full sm:px-6">
                     <Info className="h-5 w-5" />
