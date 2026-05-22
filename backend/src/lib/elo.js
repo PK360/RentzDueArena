@@ -368,14 +368,21 @@ async function getGlobalLeaderboard({ viewer = null, page = 1, limit = 50 } = {}
   const skip = (normalizedPage - 1) * normalizedLimit;
   const User = getUserModel();
 
-  const [totalEntries, users] = await Promise.all([
+  const [totalEntries, users, tierCounts] = await Promise.all([
     User.countDocuments({}),
     User.find({})
       .select('username usernameLower profilePicture elo')
       .sort({ elo: -1, usernameLower: 1 })
       .skip(skip)
       .limit(normalizedLimit)
-      .lean()
+      .lean(),
+    Promise.all(ELO_RANK_TIERS.map(async (tier) => {
+      const filter = tier.max == null
+        ? { elo: { $gte: tier.min } }
+        : { elo: { $gte: tier.min, $lte: tier.max } };
+
+      return [tier.key, await User.countDocuments(filter)];
+    }))
   ]);
 
   const uniqueEloValues = [...new Set(users.map((user) => normalizeEloValue(user?.elo, 0)))];
@@ -394,6 +401,7 @@ async function getGlobalLeaderboard({ viewer = null, page = 1, limit = 50 } = {}
       placement: higherRatedCount + 1
     });
   });
+  const tierCountMap = new Map(tierCounts);
 
   return {
     currentUserId: viewer?._id ? String(viewer._id) : null,
@@ -401,7 +409,10 @@ async function getGlobalLeaderboard({ viewer = null, page = 1, limit = 50 } = {}
     limit: normalizedLimit,
     totalEntries,
     hasMore: skip + entries.length < totalEntries,
-    tiers: ELO_RANK_TIERS.map((tier) => ({ ...tier })),
+    tiers: ELO_RANK_TIERS.map((tier) => ({
+      ...tier,
+      playerCount: Number(tierCountMap.get(tier.key) || 0)
+    })),
     entries
   };
 }

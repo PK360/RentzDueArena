@@ -872,6 +872,7 @@ function migrateGameSeatIdentity(game, fromUserId, toUserId) {
   }
   if (game.currentPlayerId === fromUserId) {
     game.currentPlayerId = toUserId;
+    syncCurrentPlayerFlags(game, toUserId);
   }
 }
 
@@ -2434,6 +2435,165 @@ function syncCurrentPlayerFlags(game, currentPlayerId) {
   });
 }
 
+function bumpTurnVersion(game) {
+  if (!game) {
+    return 0;
+  }
+
+  game.turnVersion = Number(game.turnVersion || 0) + 1;
+  return game.turnVersion;
+}
+
+function clearCurrentPlayer(game, { resetTurnIndex = false } = {}) {
+  if (!game) {
+    return false;
+  }
+
+  const hadCurrentPlayer = Boolean(game.currentPlayerId)
+    || Boolean(Array.isArray(game.players) && game.players.some((player) => PLAYER_TURN_FLAG_KEYS.some((flagKey) => Boolean(player?.[flagKey]))));
+
+  if (resetTurnIndex) {
+    game.turnIndex = 0;
+  }
+
+  game.currentPlayerId = null;
+  syncCurrentPlayerFlags(game, null);
+
+  if (hadCurrentPlayer) {
+    bumpTurnVersion(game);
+  }
+
+  return hadCurrentPlayer;
+}
+
+function getCurrentTrickParticipantIds(game) {
+  return new Set(
+    Array.isArray(game?.currentTrick)
+      ? game.currentTrick
+        .map((play) => play?.playedBy)
+        .filter(Boolean)
+      : []
+  );
+}
+
+function getPlayersMarkedCurrent(game) {
+  if (!game || !Array.isArray(game.players)) {
+    return [];
+  }
+
+  return game.players
+    .filter((player) => PLAYER_TURN_FLAG_KEYS.some((flagKey) => Boolean(player?.[flagKey])))
+    .map((player) => player.userId);
+}
+
+function hasPerPlayerTurnFlags(game) {
+  return Boolean(
+    Array.isArray(game?.players)
+    && game.players.some((player) => PLAYER_TURN_FLAG_KEYS.some((flagKey) => Object.prototype.hasOwnProperty.call(player || {}, flagKey)))
+  );
+}
+
+function getRoundActivePlayers(game, { allowDisconnected = false } = {}) {
+  if (!game || !Array.isArray(game.players)) {
+    return [];
+  }
+
+  const trickParticipantIds = getCurrentTrickParticipantIds(game);
+  return game.players.filter((player) => {
+    if (!player?.userId) {
+      return false;
+    }
+
+    if (
+      !allowDisconnected
+      && player.connectionStatus === 'abandoned'
+      && !isBotPlayer(player)
+    ) {
+      return false;
+    }
+
+    const handSize = (game.handsReady?.[player.userId] || []).length;
+    return handSize > 0 || trickParticipantIds.has(player.userId);
+  });
+}
+
+function isSeatTurnEligible(game, player, { allowDisconnected = false } = {}) {
+  if (!game || !player?.userId) {
+    return false;
+  }
+
+  if (
+    !allowDisconnected
+    && player.connectionStatus === 'abandoned'
+    && !isBotPlayer(player)
+  ) {
+    return false;
+  }
+
+  if (game.phase !== 'playing_round') {
+    return true;
+  }
+
+  const handSize = (game.handsReady?.[player.userId] || []).length;
+  if (handSize <= 0) {
+    return false;
+  }
+
+  if (game.trickPending) {
+    return true;
+  }
+
+  return !getCurrentTrickParticipantIds(game).has(player.userId);
+}
+
+function findNextEligiblePlayerFromIndex(game, startIndex, {
+  allowDisconnected = false,
+  predicate = () => true
+} = {}) {
+  const playerCount = game?.players?.length || 0;
+  if (playerCount === 0) {
+    return null;
+  }
+
+  const normalizedStartIndex = ((Number(startIndex) || 0) % playerCount + playerCount) % playerCount;
+  for (let offset = 0; offset < playerCount; offset += 1) {
+    const index = (normalizedStartIndex + offset) % playerCount;
+    const player = game.players[index];
+    if (!player?.userId) {
+      continue;
+    }
+
+    if (
+      !allowDisconnected
+      && player.connectionStatus === 'abandoned'
+      && !isBotPlayer(player)
+    ) {
+      continue;
+    }
+
+    if (predicate(player, index)) {
+      return player;
+    }
+  }
+
+  return null;
+}
+
+function findNextTurnEligiblePlayer(game, startIndex, { allowDisconnected = false } = {}) {
+  return findNextEligiblePlayerFromIndex(game, startIndex, {
+    allowDisconnected,
+    predicate: (player) => isSeatTurnEligible(game, player, { allowDisconnected })
+  });
+}
+
+function findNextRoundActivePlayer(game, startIndex, { allowDisconnected = false } = {}) {
+  const roundActiveIds = new Set(getRoundActivePlayers(game, { allowDisconnected }).map((player) => player.userId));
+  return findNextEligiblePlayerFromIndex(game, startIndex, {
+    allowDisconnected,
+    predicate: (player) => roundActiveIds.has(player.userId)
+  });
+}
+
 function getNormalizedTurnIndex(game) {
   const playerCount = game?.players?.length || 0;
   if (playerCount === 0) {
@@ -2449,7 +2609,10 @@ function getNormalizedTurnIndex(game) {
   return normalizedIndex >= 0 ? normalizedIndex : normalizedIndex + playerCount;
 }
 
-function setCurrentPlayer(game, playerId, { allowDisconnected = false } = {}) {
+function setOnlyCurrentPlayer(game, playerId, {
+  allowDisconnected = false,
+  allowTurnIneligible = false
+} = {}) {
   if (!game || !playerId || !Array.isArray(game.players) || game.players.length === 0) {
     return false;
   }
@@ -2468,11 +2631,30 @@ function setCurrentPlayer(game, playerId, { allowDisconnected = false } = {}) {
     return false;
   }
 
+  if (
+    !allowTurnIneligible
+    && game.phase === 'playing_round'
+    && !game.trickPending
+    && !isSeatTurnEligible(game, targetPlayer, { allowDisconnected })
+  ) {
+    return false;
+  }
+
+  const previousTurnIndex = Number(game.turnIndex);
+  const previousCurrentPlayerId = game.currentPlayerId || null;
+
   game.turnIndex = playerIndex;
   game.currentPlayerId = targetPlayer.userId;
   syncCurrentPlayerFlags(game, targetPlayer.userId);
+
+  if (previousTurnIndex !== playerIndex || previousCurrentPlayerId !== targetPlayer.userId) {
+    bumpTurnVersion(game);
+  }
+
   return true;
 }
+
+const setCurrentPlayer = setOnlyCurrentPlayer;
 
 function normalizeCurrentPlayerState(game, {
   fallbackPlayerId = null,
@@ -2480,41 +2662,67 @@ function normalizeCurrentPlayerState(game, {
 } = {}) {
   if (!game || !Array.isArray(game.players) || game.players.length === 0) {
     if (game) {
-      game.turnIndex = 0;
-      game.currentPlayerId = null;
-      syncCurrentPlayerFlags(game, null);
+      clearCurrentPlayer(game, { resetTurnIndex: true });
     }
     return null;
-  }
-
-  const currentByIdIndex = game.currentPlayerId
-    ? game.players.findIndex((player) => player.userId === game.currentPlayerId)
-    : -1;
-  if (currentByIdIndex !== -1) {
-    const currentById = game.players[currentByIdIndex];
-    if (
-      allowDisconnected
-      || currentById?.connectionStatus !== 'abandoned'
-      || isBotPlayer(currentById)
-    ) {
-      setCurrentPlayer(game, currentById.userId, { allowDisconnected });
-      return currentById;
-    }
-  }
-
-  if (fallbackPlayerId && setCurrentPlayer(game, fallbackPlayerId, { allowDisconnected })) {
-    return game.players[game.turnIndex] || null;
   }
 
   const normalizedIndex = getNormalizedTurnIndex(game);
-  const fallbackPlayer = game.players[normalizedIndex >= 0 ? normalizedIndex : 0] || game.players[0] || null;
+  const currentByIdIndex = game.currentPlayerId
+    ? game.players.findIndex((player) => player.userId === game.currentPlayerId)
+    : -1;
+  const currentById = currentByIdIndex >= 0 ? game.players[currentByIdIndex] : null;
+  const candidateIsValid = (player) => {
+    if (!player?.userId) {
+      return false;
+    }
+
+    if (
+      !allowDisconnected
+      && player.connectionStatus === 'abandoned'
+      && !isBotPlayer(player)
+    ) {
+      return false;
+    }
+
+    if (game.phase !== 'playing_round') {
+      return true;
+    }
+
+    if (game.trickPending) {
+      return getRoundActivePlayers(game, { allowDisconnected }).some((entry) => entry.userId === player.userId);
+    }
+
+    return isSeatTurnEligible(game, player, { allowDisconnected });
+  };
+
+  if (candidateIsValid(currentById)) {
+    setCurrentPlayer(game, currentById.userId, {
+      allowDisconnected,
+      allowTurnIneligible: game.trickPending
+    });
+    return currentById;
+  }
+
+  if (fallbackPlayerId && setCurrentPlayer(game, fallbackPlayerId, {
+    allowDisconnected,
+    allowTurnIneligible: game.trickPending
+  })) {
+    return game.players[game.turnIndex] || null;
+  }
+
+  const fallbackPlayer = game.phase === 'playing_round' && !game.trickPending
+    ? findNextTurnEligiblePlayer(game, normalizedIndex, { allowDisconnected })
+    : findNextRoundActivePlayer(game, normalizedIndex, { allowDisconnected });
   if (!fallbackPlayer) {
-    game.currentPlayerId = null;
-    syncCurrentPlayerFlags(game, null);
+    clearCurrentPlayer(game);
     return null;
   }
 
-  setCurrentPlayer(game, fallbackPlayer.userId, { allowDisconnected: true });
+  setCurrentPlayer(game, fallbackPlayer.userId, {
+    allowDisconnected: true,
+    allowTurnIneligible: game.trickPending
+  });
   return fallbackPlayer;
 }
 
@@ -2554,7 +2762,13 @@ function validateActiveTurnState(game, context, {
   const previousCurrentPlayerId = game.currentPlayerId || null;
   const currentPlayer = normalizeCurrentPlayerState(game, { fallbackPlayerId, allowDisconnected });
   if (!currentPlayer) {
-    warnInvalidTurnState(game, context, 'no active player was available');
+    warnInvalidTurnState(game, context, `no active player was available (${JSON.stringify({
+      currentPlayerId: previousCurrentPlayerId,
+      playersMarkedCurrent: getPlayersMarkedCurrent(game),
+      handSizes: buildCardCounts(game),
+      currentTrickLength: game.currentTrick?.length || 0,
+      roundActivePlayerIds: getRoundActivePlayers(game, { allowDisconnected }).map((player) => player.userId)
+    })})`);
     return false;
   }
 
@@ -2571,11 +2785,57 @@ function validateActiveTurnState(game, context, {
     return false;
   }
 
+  const playersMarkedCurrent = getPlayersMarkedCurrent(game);
+  if (hasPerPlayerTurnFlags(game) && (playersMarkedCurrent.length !== 1 || playersMarkedCurrent[0] !== game.currentPlayerId)) {
+    syncCurrentPlayerFlags(game, game.currentPlayerId || null);
+    warnInvalidTurnState(
+      game,
+      context,
+      `current-player flags were resynced (${JSON.stringify({
+        currentPlayerId: game.currentPlayerId,
+        playersMarkedCurrent
+      })})`
+    );
+  }
+
+  const trickParticipantIds = getCurrentTrickParticipantIds(game);
+  const duplicateTrickParticipants = [...trickParticipantIds].filter((playerId) =>
+    (game.currentTrick || []).filter((play) => play.playedBy === playerId).length > 1
+  );
+  if (duplicateTrickParticipants.length > 0) {
+    warnInvalidTurnState(
+      game,
+      context,
+      `duplicate trick participants detected (${JSON.stringify({
+        duplicateTrickParticipants,
+        currentTrickLength: game.currentTrick?.length || 0,
+        handSizes: buildCardCounts(game)
+      })})`
+    );
+    return false;
+  }
+
   if (game.trickPending) {
     return true;
   }
 
   const hand = game.handsReady?.[currentPlayer.userId] || [];
+  if (hand.length === 0) {
+    warnInvalidTurnState(game, context, `current player ${currentPlayer.userId} has no cards left`);
+    return false;
+  }
+
+  if (trickParticipantIds.has(currentPlayer.userId)) {
+    const recoveredPlayer = findNextTurnEligiblePlayer(game, game.turnIndex, { allowDisconnected: true });
+    if (recoveredPlayer && recoveredPlayer.userId !== currentPlayer.userId) {
+      setCurrentPlayer(game, recoveredPlayer.userId, { allowDisconnected: true });
+      return true;
+    }
+
+    warnInvalidTurnState(game, context, `current player ${currentPlayer.userId} already played this trick`);
+    return false;
+  }
+
   if (hand.length > 0 && getLegalCardsForPlayer(game, currentPlayer.userId).length === 0) {
     warnInvalidTurnState(game, context, `current player ${currentPlayer.userId} has no legal move`);
   }
@@ -2630,7 +2890,7 @@ function getPendingBotActionKey(game) {
   if (game.phase === 'playing_round' && !game.trickPending) {
     const currentPlayer = normalizeCurrentPlayerState(game);
     return currentPlayer
-      ? `${game.phase}:${currentPlayer.userId}:${game.turnIndex}:${game.currentTrick.length}:${game.stateVersion}`
+      ? `${game.phase}:${currentPlayer.userId}:${game.turnIndex}:${game.currentTrick.length}:${game.stateVersion}:${game.turnVersion || 0}`
       : null;
   }
 
@@ -2919,6 +3179,8 @@ async function executeBotAction(io, roomId, game, actionKey, generation) {
       return;
     }
 
+    const expectedTurnVersion = Number(game.turnVersion || 0);
+
     const decision = await chooseBotMove({
       roomId,
       kind,
@@ -2929,7 +3191,11 @@ async function executeBotAction(io, roomId, game, actionKey, generation) {
     });
     const selectedMove = decision.selectedMove;
 
-    if (!selectedMove || !doesBotActionStillMatchTurn(game, actionKey, generation)) {
+    if (
+      !selectedMove
+      || !doesBotActionStillMatchTurn(game, actionKey, generation)
+      || Number(game.turnVersion || 0) !== expectedTurnVersion
+    ) {
       return;
     }
 
@@ -2960,6 +3226,14 @@ async function executeBotAction(io, roomId, game, actionKey, generation) {
       );
 
       if (!doesBotActionStillMatchTurn(game, actionKey, generation)) {
+        return;
+      }
+    }
+
+    if (kind === 'play_card') {
+      const selectedCardId = selectedMove.card || selectedMove.id;
+      const liveLegalCards = getLegalCardsForPlayer(game, livePlayer.userId);
+      if (!selectedCardId || !liveLegalCards.includes(selectedCardId)) {
         return;
       }
     }
@@ -3067,6 +3341,11 @@ function autoplayCurrentTurn(io, roomId, game, context) {
   const currentPlayer = normalizeCurrentPlayerState(game, { allowDisconnected: true });
   if (!currentPlayer) {
     warnInvalidTurnState(game, context, 'autoplay found no current player');
+    return;
+  }
+
+  if (isBotPlayer(currentPlayer)) {
+    void scheduleBotActionIfNeeded(io, roomId, game);
     return;
   }
 
@@ -3186,6 +3465,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
       return acc;
     }, {}),
     stateVersion: 0,
+    turnVersion: 0,
     turnIndex: 0,
     currentPlayerId: null,
     trickPending: false,
@@ -3379,8 +3659,7 @@ function startTrainingRound(io, roomId, game, { announce = true } = {}) {
   clearRoundAutoContinue(game);
 
   game.phase = 'choosing_nv';
-  game.currentPlayerId = null;
-  syncCurrentPlayerFlags(game, null);
+  clearCurrentPlayer(game);
   game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
   game.activeRulesetId = game.training.selectedRulesetId;
   game.nvSelected = false;
@@ -3819,8 +4098,7 @@ async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
     });
     game.status = 'finished';
     game.phase = 'finished';
-    game.currentPlayerId = null;
-    syncCurrentPlayerFlags(game, null);
+    clearCurrentPlayer(game);
 
     if (isTrainingMatch(game)) {
       game.training.finalReview = await generateTrainerFinalReview({
@@ -3900,8 +4178,7 @@ function beginChooserTurn(io, roomId, game) {
   game.chooserId = nextChooser.playerId;
   game.activeRulesetId = null;
   game.nvSelected = false;
-  game.currentPlayerId = null;
-  syncCurrentPlayerFlags(game, null);
+  clearCurrentPlayer(game);
   game.currentTrick = [];
   game.trickSuit = null;
   game.trickPending = false;
@@ -4018,8 +4295,7 @@ function finishSmallGameRound(io, roomId, game) {
   clearGameTimer(game);
   clearRoundAutoContinue(game);
   game.phase = 'round_stats';
-  game.currentPlayerId = null;
-  syncCurrentPlayerFlags(game, null);
+  clearCurrentPlayer(game);
   const roundStats = finalizeRoundStats(game);
   game.lastRoundStats = roundStats;
   if (isTrainingMatch(game)) {
@@ -4345,6 +4621,7 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     roundNumber: Number(snapshot.roundNumber || 0),
     handsReady: cloneStateSnapshot(snapshot.handsReady || {}) || {},
     stateVersion: Number(snapshot.stateVersion || 0),
+    turnVersion: Number(snapshot.turnVersion || 0),
     turnIndex: Number(snapshot.turnIndex || 0),
     currentPlayerId: snapshot.currentPlayerId || null,
     trickPending: Boolean(snapshot.trickPending),
@@ -4960,6 +5237,10 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     return { error: 'Spectators cannot play cards' };
   }
 
+  if (game.currentTrick.some((play) => play.playedBy === playerId)) {
+    return { error: 'You already played in this trick' };
+  }
+
   if (!validateActiveTurnState(game, 'playCardForPlayer:precheck', { fallbackPlayerId: playerId })) {
     return { error: 'Current player state is invalid' };
   }
@@ -5056,10 +5337,15 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
       componentDeltas: ruleResolution.componentDeltas
     });
 
-    setCurrentPlayer(game, winningPlay.playedBy, { allowDisconnected: true });
+    setCurrentPlayer(game, winningPlay.playedBy, {
+      allowDisconnected: true,
+      allowTurnIneligible: true
+    });
   } else {
-    const nextTurnIndex = (pIndex + 1) % game.players.length;
-    setCurrentPlayer(game, game.players[nextTurnIndex]?.userId, { allowDisconnected: true });
+    const nextPlayer = findNextTurnEligiblePlayer(game, pIndex + 1, { allowDisconnected: true });
+    if (!nextPlayer || !setCurrentPlayer(game, nextPlayer.userId, { allowDisconnected: true })) {
+      return { error: 'Unable to advance to the next player' };
+    }
     validateActiveTurnState(game, 'playCardForPlayer:advance', { allowDisconnected: true });
     scheduleGameTimer(io, roomId, game, () => {
       autoplayCurrentTurn(io, roomId, game, 'round_turn_timer');
@@ -5104,6 +5390,13 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     return { success: true };
   }
 
+  if (!validateActiveTurnState(game, 'playCardForPlayer:beforeTrickWonBroadcast', {
+    fallbackPlayerId: winningPlay?.playedBy || null,
+    allowDisconnected: true
+  })) {
+    return { error: 'Current player state is invalid' };
+  }
+
   const trickWonVersion = bumpGameStateVersion(game);
   const nextSpectatorVisibleHandState = buildSpectatorVisibleHandState(game);
 
@@ -5137,10 +5430,12 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     const gameShouldFinish = allHandsEmpty || ruleResolution.gameEnded;
 
     if (!gameShouldFinish) {
-      validateActiveTurnState(game, 'playCardForPlayer:nextTrick', {
+      if (!validateActiveTurnState(game, 'playCardForPlayer:nextTrick', {
         fallbackPlayerId: winningPlay?.playedBy || null,
         allowDisconnected: true
-      });
+      })) {
+        return;
+      }
       scheduleGameTimer(io, roomId, game, () => {
         autoplayCurrentTurn(io, roomId, game, 'next_trick_timer');
       });

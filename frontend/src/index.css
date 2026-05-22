@@ -459,6 +459,32 @@
       linear-gradient(135deg, rgba(237,244,251,0.9) 0%, rgba(199,222,245,0.92) 52%, rgba(141,182,236,0.9) 100%);
   }
 
+  .rentz-editor-action.is-compact {
+    gap: 0.7rem;
+    min-height: 4.45rem;
+    padding: 0.8rem 0.95rem;
+  }
+
+  .rentz-editor-action.is-compact .rentz-editor-action-icon {
+    height: 2.55rem;
+    width: 2.55rem;
+    border-radius: 0.9rem;
+  }
+
+  .rentz-editor-action.is-compact .rentz-editor-action-title {
+    font-size: 0.92rem;
+    letter-spacing: 0.05em;
+  }
+
+  .rentz-editor-judgement-heading {
+    color: var(--theme-chip-active-text, var(--text-primary));
+    letter-spacing: 0.02em;
+    text-shadow:
+      0 1px 0 rgba(255,255,255,0.82),
+      0 0 16px rgba(140,198,63,0.18),
+      0 10px 22px rgba(122,179,50,0.12);
+  }
+
   html.rentz-modal-open,
   body.rentz-modal-open {
     height: 100%;

@@ -6,12 +6,19 @@ const { Server } = require('socket.io');
 
 const createApp = require('./src/app');
 const { connectToMongo, disconnectFromMongo, getMongoUri } = require('./src/lib/database');
+const { getEditorAiLogPath, isEditorAiLogEnabled } = require('./src/lib/editorAiLogger');
+const {
+  getEditorBotResponseCapturePath,
+  isEditorBotResponseCaptureEnabled,
+  resetEditorBotResponseCapture
+} = require('./src/lib/editorBotResponseCapture');
 const { warmEditorBotOnStartup } = require('./src/lib/editorBot');
 const registerSocketHandlers = require('./socketManager');
 
 const PORT = Number(process.env.PORT || 4000);
 
 function start() {
+  void resetEditorBotResponseCapture('backend startup via node index.js');
   const app = createApp();
   const server = http.createServer(app);
   const io = new Server(server, {
@@ -57,6 +64,12 @@ function start() {
 
   server.listen(PORT, () => {
     console.log(`Rentz Arena backend listening on port ${PORT}`);
+    if (isEditorAiLogEnabled()) {
+      console.log(`Editor AI log file: ${getEditorAiLogPath()}`);
+    }
+    if (isEditorBotResponseCaptureEnabled()) {
+      console.log(`Editor Bot response dump: ${getEditorBotResponseCapturePath()}`);
+    }
     void warmEditorBotOnStartup()
       .then((results) => {
         for (const result of results) {

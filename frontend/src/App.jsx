@@ -12,7 +12,7 @@ import {
   Copy,
   Crown,
   Download,
-  Droplet,
+  Eye,
   FileCode2,
   Globe2,
   Heart,
@@ -277,6 +277,60 @@ function sanitizeEditorJudgeText(value, fallback = '', maxLength = 500) {
   return text.slice(0, maxLength);
 }
 
+function escapeRegex(value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripEditorJudgeScoreBoilerplate(value) {
+  return String(value ?? '')
+    .replace(/\(\s*\d+(?:\.\d+)?\s*\/\s*10\s*\)/gi, '')
+    .replace(/\b(?:score|rating|rated|overall)\s*(?:is\s+|was\s+|maybe\s+|likely\s+|probably\s+|around\s+|about\s+|at\s+)?[:=]?\s*\d+(?:\.\d+)?(?:\s*\/\s*10)?\.?/gi, '')
+    .replace(/\b(?:i would score it|this is a|it is a|it's a)\s+\d+(?:\.\d+)?(?:\s*\/\s*10)?\.?/gi, '')
+    .replace(/\b(?:so high|so low|maybe|likely|probably|around|about|overall)\s*,?\s*\d+(?:\.\d+)?(?:\s*\/\s*10)?\.?/gi, '')
+    .replace(/\b\d+(?:\.\d+)?\s*\/\s*10\b\.?/gi, '')
+    .replace(/\s*(?:[,;:]\s*|\s+(?:so high|so low|maybe|likely|probably|overall)\s*,?\s*)\d+\.\d+(?:\s*\/\s*10)?\.?$/i, '')
+    .replace(/\s+(?:=|-)\s*\d+(?:\.\d+)?\s*$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .trim();
+}
+
+function sanitizeEditorJudgeCategoryExplanation(value, category, fallback = '') {
+  let text = sanitizeEditorJudgeText(value, '', 220);
+  if (!text) {
+    return fallback;
+  }
+
+  const keyPattern = escapeRegex(category?.key || '');
+  const labelPattern = escapeRegex(category?.label || '');
+  const labelPatternCompactSlash = escapeRegex(String(category?.label || '').replace(/\s*\/\s*/g, '/'));
+  const labelPatternWithoutSlash = escapeRegex(String(category?.label || '').replace(/\s*\/\s*/g, ' '));
+
+  const prefixPatterns = [
+    keyPattern,
+    labelPattern,
+    labelPatternCompactSlash,
+    labelPatternWithoutSlash,
+    keyPattern ? keyPattern.replace(/([a-z])([A-Z])/g, '$1\\s*$2') : ''
+  ].filter(Boolean);
+
+  for (const pattern of prefixPatterns) {
+    text = text.replace(
+      new RegExp(`^${pattern}\\s*(?:[:=\\-—]+\\s*)?(?:(?:score|rating|rated|overall)\\s*)?(?:\\d+(?:\\.\\d+)?(?:\\s*\\/\\s*10)?)?\\s*(?:[:=\\-—]+\\s*)?`, 'i'),
+      ''
+    );
+  }
+
+  text = stripEditorJudgeScoreBoilerplate(text)
+    .replace(/^(?:score|rating)\s*[:=]?\s*/i, '')
+    .replace(/^[,;:—=\-\s]+/, '')
+    .replace(/[,:;—=\-\s]+$/, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return text || fallback;
+}
+
 function sanitizeEditorJudgeList(values = [], fallback = []) {
   const list = Array.isArray(values) ? values : [];
   const sanitized = list
@@ -284,6 +338,59 @@ function sanitizeEditorJudgeList(values = [], fallback = []) {
     .filter(Boolean);
 
   return sanitized.length > 0 ? sanitized.slice(0, 6) : fallback;
+}
+
+function getEditorJudgeFallbackEmoji(score = 5) {
+  const safeScore = clampScoreToTenth(score, 5);
+
+  if (safeScore >= 8.5) {
+    return '👍';
+  }
+
+  if (safeScore >= 7) {
+    return '🙂';
+  }
+
+  if (safeScore >= 5) {
+    return '🤔';
+  }
+
+  if (safeScore >= 3) {
+    return '😬';
+  }
+
+  return '👎';
+}
+
+function sanitizeEditorJudgeEmoji(value, fallbackScore = 5) {
+  const fallbackEmoji = getEditorJudgeFallbackEmoji(fallbackScore);
+  const rawText = String(value ?? '').trim();
+  if (!rawText) {
+    return fallbackEmoji;
+  }
+
+  const graphemes = typeof Intl?.Segmenter === 'function'
+    ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(rawText), (entry) => entry.segment)
+    : Array.from(rawText);
+
+  for (const segment of graphemes) {
+    const candidate = String(segment || '').trim();
+    if (!candidate) {
+      continue;
+    }
+
+    if (/[A-Za-z0-9]/.test(candidate)) {
+      continue;
+    }
+
+    if (/^[.,:;'"!?()[\]{}<>/\\|`~_-]+$/.test(candidate)) {
+      continue;
+    }
+
+    return candidate.slice(0, 8);
+  }
+
+  return fallbackEmoji;
 }
 
 function normalizeEditorJudgeReview(review = null) {
@@ -300,7 +407,11 @@ function normalizeEditorJudgeReview(review = null) {
     const entry = rawCategories[category.key] || {};
     acc[category.key] = {
       score: clampScoreToTenth(entry.score, 0),
-      explanation: sanitizeEditorJudgeText(entry.explanation, 'No extra detail was provided for this category yet.', 220)
+      explanation: sanitizeEditorJudgeCategoryExplanation(
+        entry.explanation,
+        category,
+        'No extra detail was provided for this category yet.'
+      )
     };
     return acc;
   }, {});
@@ -309,18 +420,30 @@ function normalizeEditorJudgeReview(review = null) {
 
   return {
     overallScore: clampScoreToTenth(review.overallScore, categoryAverage),
+    representativeEmoji: sanitizeEditorJudgeEmoji(review.representativeEmoji, review.overallScore ?? categoryAverage),
     categoryRatings,
     rulesetSummary: sanitizeEditorJudgeText(review.rulesetSummary, 'Ruleset summary unavailable right now.', 500),
     constructiveReview: sanitizeEditorJudgeText(review.constructiveReview, 'Review unavailable right now.', 500),
-    recommendations: sanitizeEditorJudgeList(review.recommendations, []),
+    recommendations: sanitizeEditorJudgeList(review.recommendations, []).filter((item) => !EDITOR_JUDGE_INTERNAL_TEXT_PATTERN.test(item)),
     warnings: sanitizeEditorJudgeList(review.warnings, []).filter((warning) => !EDITOR_JUDGE_INTERNAL_TEXT_PATTERN.test(warning)),
-    reviewSource: review.reviewSource === 'fallback'
+    reviewSource: review.reviewSource === 'cloud'
+      ? 'cloud'
+      : review.reviewSource === 'cloud-repaired'
+        ? 'cloud-repaired'
+      : review.reviewSource === 'cached'
+        ? 'cached'
+      : review.reviewSource === 'fallback'
       ? 'fallback'
       : review.reviewSource === 'heuristic'
         ? 'heuristic'
-        : review.reviewSource === 'hybrid'
+      : review.reviewSource === 'hybrid'
           ? 'hybrid'
-          : 'ai',
+          : 'cloud',
+    requestId: sanitizeEditorJudgeText(review.requestId, '', 40),
+    rulesetHash: sanitizeEditorJudgeText(review.rulesetHash, '', 40),
+    usedFallback: review.usedFallback === true,
+    usedCache: review.usedCache === true,
+    errorCode: sanitizeEditorJudgeText(review.errorCode, '', 80),
     diagnostics: Array.isArray(review.diagnostics)
       ? review.diagnostics.map((entry) => ({
         attempt: sanitizeEditorJudgeText(entry?.attempt, 'unknown', 80),
@@ -332,6 +455,18 @@ function normalizeEditorJudgeReview(review = null) {
       }))
       : []
   };
+}
+
+function hashEditorRulesetSignature(signature = '') {
+  let hash = 2166136261;
+  const text = String(signature || '');
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `edr-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function normalizeRentzMetadataKey(key) {
@@ -701,13 +836,32 @@ function mergeForumEntryPreservingReplies(currentEntry, nextEntry) {
     return nextEntry;
   }
 
+  const shouldPreserveReplies = Array.isArray(currentEntry?.replies)
+    && currentEntry.replies.length > 0
+    && Array.isArray(nextEntry?.replies)
+    && nextEntry.replies.length === 0;
+
   return {
     ...currentEntry,
     ...nextEntry,
-    replies: Array.isArray(nextEntry?.replies)
+    replies: shouldPreserveReplies
+      ? currentEntry.replies
+      : Array.isArray(nextEntry?.replies)
       ? nextEntry.replies
       : (currentEntry.replies || [])
   };
+}
+
+function stopForumCardActionPropagation(event) {
+  event?.stopPropagation?.();
+}
+
+function isForumCardActionTarget(target) {
+  if (typeof Element === 'undefined' || !(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest('[data-forum-card-action="true"]'));
 }
 
 function replaceForumEntryInTree(entries, nextEntry) {
@@ -2866,6 +3020,7 @@ function App() {
   const desktopChatListRef = useRef(null);
   const roomChatListRef = useRef(null);
   const gameChatListRef = useRef(null);
+  const editorJudgeRequestRef = useRef({ token: 0, signature: '', rulesetHash: '' });
 
   const [editorTitle, setEditorTitle] = useState('My House Rules');
   const [editorShortName, setEditorShortName] = useState('MHR');
@@ -2876,10 +3031,12 @@ function App() {
   const [editorRoomRulesetId, setEditorRoomRulesetId] = useState(null);
   const [editorStatus, setEditorStatus] = useState('');
   const [editorAst, setEditorAst] = useState(null);
+  const [isEditorCompilerPreviewOpen, setIsEditorCompilerPreviewOpen] = useState(false);
   const [editorJudgeBusy, setEditorJudgeBusy] = useState(false);
   const [editorJudgeError, setEditorJudgeError] = useState('');
   const [editorJudgeReview, setEditorJudgeReview] = useState(null);
   const [editorJudgeSignature, setEditorJudgeSignature] = useState('');
+  const [editorJudgeMeta, setEditorJudgeMeta] = useState(null);
   const [roomRulesetSourcePicker, setRoomRulesetSourcePicker] = useState(null);
   const [ruleDrafts, setRuleDrafts] = useState(() => {
     try {
@@ -4927,6 +5084,7 @@ function App() {
     setEditorType(normalizeRulesetType(ruleset.type));
     setEditorCode(ruleset.code || '');
     setEditorAst(null);
+    setIsEditorCompilerPreviewOpen(false);
     setEditorStatus(linkedRoomRulesetId ? 'Editing room ruleset.' : 'Ruleset loaded into the editor.');
     setEditorRoomRulesetId(linkedRoomRulesetId);
     if (switchToEditor) {
@@ -6580,17 +6738,21 @@ function App() {
       }
 
       setEditorAst(data.ast);
+      setIsEditorCompilerPreviewOpen(false);
       setEditorStatus('Ruleset compiled successfully.');
     } catch (error) {
       setEditorStatus(error.message);
       setEditorAst(null);
+      setIsEditorCompilerPreviewOpen(false);
     }
   };
 
   const handleJudgeRulesetWithAi = async () => {
     const rulesetPayload = getEditorRulesetPayload();
     const signature = buildEditorRulesetSignature(rulesetPayload);
-    const judgeFailureMessage = 'Could not judge this ruleset right now. Try again.';
+    const rulesetHash = hashEditorRulesetSignature(signature);
+    const judgeFailureMessage = 'Could not complete AI judgment right now. Try again.';
+    const requestToken = editorJudgeRequestRef.current.token + 1;
 
     if (!rulesetPayload.code.trim()) {
       const message = 'Write a ruleset before asking the Editor Bot to judge it.';
@@ -6601,8 +6763,15 @@ function App() {
     }
 
     try {
+      editorJudgeRequestRef.current = {
+        token: requestToken,
+        signature,
+        rulesetHash
+      };
       setEditorJudgeBusy(true);
       setEditorJudgeError('');
+      setEditorJudgeReview(null);
+      setEditorJudgeMeta(null);
       setEditorStatus('Judging ruleset...');
 
       const response = await fetch('/api/rulesets/judge', {
@@ -6610,22 +6779,41 @@ function App() {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(rulesetPayload)
+        body: JSON.stringify({
+          ...rulesetPayload,
+          clientRulesetHash: rulesetHash
+        })
       });
       const data = await response.json().catch(() => null);
+      const currentSignature = buildEditorRulesetSignature();
+      const currentRulesetHash = hashEditorRulesetSignature(currentSignature);
+      const isLatestRequest = editorJudgeRequestRef.current.token === requestToken;
+      const requestStillMatchesCurrentRuleset = currentSignature === signature && currentRulesetHash === rulesetHash;
 
       if (!response.ok) {
         if (data?.compiler?.ast) {
           setEditorAst(data.compiler.ast);
         } else if (data?.compiler?.status === 'error') {
           setEditorAst(null);
+          setIsEditorCompilerPreviewOpen(false);
         }
 
         throw new Error(data?.error || 'Unable to judge this ruleset right now.');
       }
 
-      const normalizedReview = normalizeEditorJudgeReview(data?.review);
-      if (!normalizedReview) {
+      if (!isLatestRequest || !requestStillMatchesCurrentRuleset) {
+        if (isLatestRequest) {
+          setEditorStatus('Ruleset changed before the judgment finished. Request a new judgment when ready.');
+        }
+        return;
+      }
+
+      if (data?.rulesetHash && data.rulesetHash !== rulesetHash) {
+        throw new Error('Received a stale judgment response.');
+      }
+
+      const normalizedReview = normalizeEditorJudgeReview(data?.judgment || data?.review);
+      if (data?.success !== true || !normalizedReview) {
         throw new Error(judgeFailureMessage);
       }
 
@@ -6635,12 +6823,32 @@ function App() {
 
       setEditorJudgeReview(normalizedReview);
       setEditorJudgeSignature(signature);
+      setEditorJudgeMeta({
+        requestId: String(data?.requestId || normalizedReview.requestId || ''),
+        rulesetHash: String(data?.rulesetHash || normalizedReview.rulesetHash || rulesetHash),
+        source: String(data?.source || normalizedReview.reviewSource || 'cloud'),
+        usedFallback: data?.usedFallback === true || normalizedReview.usedFallback === true,
+        usedCache: data?.usedCache === true || normalizedReview.usedCache === true
+      });
       setEditorStatus('Ruleset judgment ready.');
     } catch {
+      if (editorJudgeRequestRef.current.token !== requestToken) {
+        return;
+      }
+
+      if (hashEditorRulesetSignature(buildEditorRulesetSignature()) !== rulesetHash) {
+        setEditorStatus('Ruleset changed before the judgment finished. Request a new judgment when ready.');
+        return;
+      }
+
+      setEditorJudgeReview(null);
+      setEditorJudgeMeta(null);
       setEditorJudgeError(judgeFailureMessage);
       setEditorStatus(judgeFailureMessage);
     } finally {
-      setEditorJudgeBusy(false);
+      if (editorJudgeRequestRef.current.token === requestToken) {
+        setEditorJudgeBusy(false);
+      }
     }
   };
 
@@ -6717,6 +6925,7 @@ function App() {
     } catch (error) {
       setEditorStatus(error.message);
       setEditorAst(null);
+      setIsEditorCompilerPreviewOpen(false);
     }
   };
 
@@ -7385,6 +7594,37 @@ function App() {
     }
 
     return activeTabLabel;
+  })();
+  const CurrentSectionIcon = (() => {
+    if (isTrainingSetupOpen || isTrainingMatch) {
+      return Bot;
+    }
+
+    if (activeTab === 'play') {
+      if (inLobby && gameStarted) {
+        return Swords;
+      }
+
+      if (inLobby) {
+        return Users;
+      }
+
+      return Home;
+    }
+
+    if (activeTab === 'login') {
+      return UserRound;
+    }
+
+    if (activeTab === 'guide') {
+      return FileCode2;
+    }
+
+    return ({
+      settings: Settings,
+      notifications: Bell,
+      'search-results': Search
+    }[activeTab] || activeNavItem?.icon || Home);
   })();
   const amIReady = inLobby && !!activeLobbyPlayer?.isReady;
   const amISpectator = inLobby && !!mySpectatorProfile;
@@ -8088,6 +8328,60 @@ function App() {
       ? `${totalEntries} ranked account${totalEntries === 1 ? '' : 's'}`
       : `${sourceLabel === 'profile-preview' ? 'Profile rank leaderboard' : 'Current rank leaderboard'}${rankName ? ` • ${rankRangeLabel}` : ''}`;
     const resolvedTiers = Array.isArray(tiers) ? tiers : [];
+    const resolvedGlobalTiers = leaderboardType === 'global'
+      ? [...resolvedTiers].sort((left, right) => (right.min ?? 0) - (left.min ?? 0))
+      : [];
+    const globalEntriesByTier = resolvedGlobalTiers.map((tier) => ({
+      ...tier,
+      entries: entries.filter((entry) => entry.rankTierKey === tier.key)
+    }));
+
+    const renderLeaderboardEntry = (entry) => {
+      const isCurrentUser = entry.userId && entry.userId === currentUserId;
+      const isHighlightedUser = entry.userId && entry.userId === highlightedUserId;
+
+      return (
+        <div
+          key={entry.userId || entry.username}
+          className={clsx(
+            'flex flex-wrap items-center gap-3 rounded-[1.35rem] border px-4 py-3 sm:flex-nowrap sm:px-5',
+            isHighlightedUser
+              ? 'border-emerald-300 bg-emerald-100/70'
+              : 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
+          )}
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className={clsx(
+              'flex h-10 min-w-10 items-center justify-center rounded-full border text-sm font-black',
+              isHighlightedUser
+                ? 'border-emerald-400 bg-white text-emerald-900'
+                : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]'
+            )}
+            >
+              #{entry.placement || '--'}
+            </div>
+            <AvatarFace
+              player={entry}
+              alt={`${getPlayerName(entry)} avatar`}
+              wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
+              imageClassName="h-full w-full rounded-full object-cover"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+            />
+            <div className="min-w-0">
+              <div className="truncate text-base font-black text-[var(--text-primary)]">
+                {getPlayerName(entry)}{isCurrentUser ? ' (You)' : ''}
+              </div>
+              <div className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                {entry.rankName || rankName}
+              </div>
+            </div>
+          </div>
+          <div className="ml-auto inline-flex rounded-full border border-[var(--glass-border)] bg-white/80 px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
+            ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
+          </div>
+        </div>
+      );
+    };
 
     return (
       <ModalShell
@@ -8130,27 +8424,6 @@ function App() {
         )}
       >
         <div className="space-y-4">
-          {leaderboardType === 'global' && resolvedTiers.length > 0 ? (
-            <section className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
-              <div className="mb-3 text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                Rank cutoffs
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {resolvedTiers.map((tier) => (
-                  <div
-                    key={tier.key}
-                    className="rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-3"
-                  >
-                    <div className="text-xs font-black text-[var(--text-primary)]">{tier.name}</div>
-                    <div className="mt-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-                      {tier.max == null ? `${tier.min}+ ELO` : `${tier.min}-${tier.max} ELO`}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
           {loading ? (
             <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
               Loading leaderboard...
@@ -8160,75 +8433,55 @@ function App() {
               {error}
             </div>
           ) : entries.length === 0 ? (
-            <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
-              {leaderboardType === 'global'
-                ? 'No ranked accounts are available yet.'
-                : 'No ranked accounts are available in this tier yet.'}
-            </div>
-          ) : (
-            <div className="grid gap-3">
-              {entries.map((entry, index) => {
-                const isCurrentUser = entry.userId && entry.userId === currentUserId;
-                const isHighlightedUser = entry.userId && entry.userId === highlightedUserId;
-                const previousTierKey = index > 0 ? entries[index - 1]?.rankTierKey : null;
-                const shouldShowTierSeparator = leaderboardType === 'global' && entry.rankTierKey !== previousTierKey;
-                const tierDefinition = resolvedTiers.find((tier) => tier.key === entry.rankTierKey) || null;
-
-                return (
-                  <div key={entry.userId || entry.username} className="space-y-2">
-                    {shouldShowTierSeparator ? (
-                      <div className="rounded-[1.15rem] border border-sky-200/70 bg-sky-100/70 px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-sky-950">
-                        {tierDefinition?.name || entry.rankName}
-                        <span className="ml-2 text-sky-800/80">
-                          {tierDefinition
-                            ? (tierDefinition.max == null ? `${tierDefinition.min}+ ELO` : `${tierDefinition.min}-${tierDefinition.max} ELO`)
-                            : ''}
-                        </span>
-                      </div>
-                    ) : null}
-
-                    <div
-                      className={clsx(
-                        'flex flex-wrap items-center gap-3 rounded-[1.35rem] border px-4 py-3 sm:flex-nowrap sm:px-5',
-                        isHighlightedUser
-                          ? 'border-emerald-300 bg-emerald-100/70'
-                          : 'border-[var(--glass-border)] bg-[var(--surface-soft)]'
-                      )}
-                    >
-                      <div className="flex min-w-0 flex-1 items-center gap-3">
-                        <div className={clsx(
-                          'flex h-10 min-w-10 items-center justify-center rounded-full border text-sm font-black',
-                          isHighlightedUser
-                            ? 'border-emerald-400 bg-white text-emerald-900'
-                            : 'border-[var(--glass-border)] bg-[var(--surface-medium)] text-[var(--text-primary)]'
-                        )}
-                        >
-                          #{entry.placement || '--'}
-                        </div>
-                        <AvatarFace
-                          player={entry}
-                          alt={`${getPlayerName(entry)} avatar`}
-                          wrapperClassName="seat-avatar h-12 w-12 text-sm shrink-0"
-                          imageClassName="h-full w-full rounded-full object-cover"
-                          fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
-                        />
-                        <div className="min-w-0">
-                          <div className="truncate text-base font-black text-[var(--text-primary)]">
-                            {getPlayerName(entry)}{isCurrentUser ? ' (You)' : ''}
-                          </div>
-                          <div className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
-                            {entry.rankName || rankName}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="ml-auto inline-flex rounded-full border border-[var(--glass-border)] bg-white/80 px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)]">
-                        ELO {getPlayerRating(entry) == null ? '--' : getPlayerRating(entry)}
-                      </div>
+            leaderboardType === 'global' && resolvedGlobalTiers.length > 0 ? (
+              <div className="grid gap-3">
+                {resolvedGlobalTiers.map((tier) => (
+                  <section key={tier.key} className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                    <div className="rounded-[1.15rem] border border-sky-200/70 bg-sky-100/70 px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-sky-950">
+                      {tier.name}
+                      <span className="ml-2 text-sky-800/80">
+                        {tier.max == null ? `${tier.min}+ ELO` : `${tier.min}-${tier.max} ELO`}
+                      </span>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                    <div className="mt-3 rounded-[1.15rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-4 text-sm font-semibold text-[var(--text-secondary)]">
+                      No players in this rank.
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
+                No ranked accounts are available in this tier yet.
+              </div>
+            )
+          ) : (
+            leaderboardType === 'global' && resolvedGlobalTiers.length > 0 ? (
+              <div className="grid gap-3">
+                {globalEntriesByTier.map((tier) => (
+                  <section key={tier.key} className="rounded-[1.35rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
+                    <div className="rounded-[1.15rem] border border-sky-200/70 bg-sky-100/70 px-4 py-2.5 text-xs font-black uppercase tracking-[0.14em] text-sky-950">
+                      {tier.name}
+                      <span className="ml-2 text-sky-800/80">
+                        {tier.max == null ? `${tier.min}+ ELO` : `${tier.min}-${tier.max} ELO`}
+                      </span>
+                    </div>
+                    {tier.entries.length > 0 ? (
+                      <div className="mt-3 grid gap-3">
+                        {tier.entries.map((entry) => renderLeaderboardEntry(entry))}
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-[1.15rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-4 text-sm font-semibold text-[var(--text-secondary)]">
+                        {tier.playerCount === 0 ? 'No players in this rank.' : 'No players from this rank appear on this page.'}
+                      </div>
+                    )}
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {entries.map((entry) => renderLeaderboardEntry(entry))}
+              </div>
+            )
           )}
         </div>
       </ModalShell>
@@ -9714,9 +9967,21 @@ function App() {
       </div>
 
       <section className="glass-panel flex flex-col gap-5 overflow-hidden border border-emerald-200/75 bg-[linear-gradient(180deg,rgba(248,255,244,0.96)_0%,rgba(221,246,214,0.9)_54%,rgba(209,240,255,0.92)_100%)] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_20px_44px_rgba(73,148,112,0.14)] sm:p-8 lg:flex-row lg:items-center lg:justify-between">
-        <p className="max-w-2xl text-2xl font-display font-black leading-tight text-[var(--text-primary)] sm:text-3xl">
-          Play against AI-powered trainer bot
-        </p>
+        <div className="relative max-w-2xl">
+          <span className="pointer-events-none absolute -left-5 top-1/2 h-20 w-20 -translate-y-1/2 rounded-full bg-emerald-300/30 blur-2xl" />
+          <span className="pointer-events-none absolute right-4 top-0 h-12 w-12 rounded-full bg-sky-300/30 blur-xl" />
+          <div className="relative inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/40 px-4 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_10px_24px_rgba(34,197,94,0.14)] backdrop-blur-sm">
+            <Sparkles className="h-4 w-4 text-emerald-700" />
+            <span className="text-[0.72rem] font-black uppercase tracking-[0.24em] text-emerald-900/80">
+              AI-ENHANCED
+            </span>
+          </div>
+          <p className="relative mt-3 text-2xl font-display font-black leading-tight text-[var(--text-primary)] drop-shadow-[0_10px_20px_rgba(255,255,255,0.4)] sm:text-3xl">
+            <span className="bg-[linear-gradient(120deg,#123c2a_0%,#157f5b_38%,#1869a7_100%)] bg-clip-text text-transparent">
+              Play against the AI-powered training bot
+            </span>
+          </p>
+        </div>
 
         <button
           type="button"
@@ -10831,19 +11096,21 @@ function App() {
   const renderEditorContent = () => {
     const currentEditorJudgeSignature = buildEditorRulesetSignature();
     const isJudgeReviewStale = Boolean(editorJudgeReview) && editorJudgeSignature !== currentEditorJudgeSignature;
+    const hasEditorCompilerPreview = Boolean(editorAst);
 
     return (
       <div className="space-y-5">
         <div className="grid items-stretch gap-5 xl:grid-cols-[1.15fr_0.85fr]">
           <section className="glass-panel self-start p-5 sm:p-6">
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {isViewingEditableRoomRuleset && <div className="status-pill px-4 py-2">linked to room</div>}
-                <div className="status-pill px-4 py-2">{editorType.replace('_', ' ')}</div>
+            {isViewingEditableRoomRuleset && (
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-2">
+                  <div className="status-pill px-4 py-2">linked to room</div>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(8rem,12rem)_auto]">
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(8rem,12rem)_minmax(9.5rem,11rem)]">
               <label>
                 <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Long name</span>
                 <input
@@ -10864,15 +11131,36 @@ function App() {
               </label>
               <label>
                 <span className="mb-2 block text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Type</span>
-                <select
-                  value={editorType}
-                  onChange={(event) => setEditorType(event.target.value)}
-                  className="w-full rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-input)] px-4 py-4 font-black text-[var(--text-primary)] shadow-inner focus:outline-none"
-                >
-                  <option value="per_round">per_round</option>
-                  <option value="end_game">end_game</option>
-                </select>
+                <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)]">
+                  <select
+                    value={editorType}
+                    onChange={(event) => setEditorType(event.target.value)}
+                    aria-label="Ruleset type"
+                    className="w-full bg-transparent px-1 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] focus:outline-none"
+                  >
+                    <option value="per_round">per_round</option>
+                    <option value="end_game">end_game</option>
+                  </select>
+                </div>
               </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-start gap-3 sm:flex-nowrap sm:items-center">
+              <div
+                className="flex min-h-[3.35rem] min-w-0 flex-1 items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
+                role="status"
+                aria-live="polite"
+              >
+                {editorStatus || 'Ready.'}
+              </div>
+              <button onClick={() => setActiveTab('guide')} className="rentz-editor-action is-guide is-compact shrink-0">
+                <span className="rentz-editor-action-icon">
+                  <Info className="h-5 w-5" />
+                </span>
+                <span className="rentz-editor-action-copy">
+                  <span className="rentz-editor-action-title">Guide</span>
+                </span>
+              </button>
             </div>
 
             <div className="rentz-code-editor-shell mt-4">
@@ -10939,41 +11227,32 @@ function App() {
                     <Sparkles className="h-5 w-5" />
                   </span>
                   <span className="rentz-editor-action-copy">
-                    <span className="rentz-editor-action-title">{isViewingEditableRoomRuleset ? 'Update Room Ruleset' : 'Apply to Room'}</span>
-                  </span>
-                </button>
-              )}
-              <button onClick={() => setActiveTab('guide')} className="rentz-editor-action is-guide">
-                <span className="rentz-editor-action-icon">
-                  <Info className="h-5 w-5" />
-                </span>
-                <span className="rentz-editor-action-copy">
-                  <span className="rentz-editor-action-title">Guide</span>
+                  <span className="rentz-editor-action-title">{isViewingEditableRoomRuleset ? 'Update Room Ruleset' : 'Apply to Room'}</span>
                 </span>
               </button>
+              )}
             </div>
           </section>
 
           <section className="flex h-full w-full max-w-[44rem] flex-col gap-5 self-stretch">
-            <div
-              className="flex min-h-[3.35rem] items-center rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] px-4 py-3 text-sm font-semibold text-[var(--text-secondary)]"
-              role="status"
-              aria-live="polite"
-            >
-              {editorStatus || 'Ready.'}
-            </div>
-
             <div className="glass-panel p-5 sm:p-6">
-              <h4 className="mb-3 text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
-              {editorAst ? (
-                <pre className="max-h-[24rem] overflow-auto rounded-[1.3rem] bg-slate-950/80 p-4 text-xs text-lime-100">
-                  {JSON.stringify(editorAst, null, 2)}
-                </pre>
-              ) : (
-                <p className="rounded-[1.3rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] p-5 text-sm font-semibold text-[var(--text-secondary)]">
-                  No compiled preview yet.
-                </p>
-              )}
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">Compiler Preview</h4>
+                <button
+                  type="button"
+                  onClick={() => setIsEditorCompilerPreviewOpen(true)}
+                  disabled={!hasEditorCompilerPreview}
+                  className="inline-flex items-center gap-2 rounded-[1.15rem] border border-[var(--glass-border)] bg-[var(--surface-medium)] px-4 py-2 text-sm font-black uppercase tracking-[0.14em] text-[var(--text-primary)] transition hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Eye className="h-4 w-4" />
+                  Show Preview
+                </button>
+              </div>
+              <div className="rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-4 py-4 text-sm font-semibold text-[var(--text-secondary)]">
+                {hasEditorCompilerPreview
+                  ? 'Compiled preview is ready to expand.'
+                  : 'Compile the ruleset to generate a preview.'}
+              </div>
             </div>
 
             <div className="glass-panel p-5 sm:p-6">
@@ -11014,7 +11293,9 @@ function App() {
             </div>
 
             <div className="glass-panel mt-auto p-5 sm:p-6">
-              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">AI Judgment</h4>
+              <h4 className="rentz-editor-judgement-heading text-2xl font-display font-black leading-tight sm:text-[2.05rem]">
+                Request AI-powered Ruleset Judgement
+              </h4>
 
               <button
                 type="button"
@@ -11026,47 +11307,37 @@ function App() {
                   {editorJudgeBusy ? <RefreshCw className="h-5 w-5 animate-spin" /> : <Bot className="h-5 w-5" />}
                 </span>
                 <span className="rentz-editor-action-copy">
-                  <span className="rentz-editor-action-title">{editorJudgeBusy ? 'Judging...' : 'Judge Ruleset with AI'}</span>
+                  <span className="rentz-editor-action-title">{editorJudgeBusy ? 'Judging...' : 'Request Judgement'}</span>
                 </span>
               </button>
-
-              <div className="mt-4 rounded-[1.3rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-sm font-semibold text-[var(--text-secondary)]">
-                {editorJudgeError
-                  ? editorJudgeError
-                  : editorJudgeBusy
-                    ? 'Judging ruleset...'
-                    : 'Compile before judging.'}
-              </div>
             </div>
           </section>
         </div>
 
         {editorJudgeReview && (
           <section className="glass-panel p-5 sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <h4 className="text-2xl font-display font-black text-[var(--text-primary)]">AI Ruleset Judgment</h4>
-              {isJudgeReviewStale && <div className="status-pill px-4 py-2">Earlier draft</div>}
-            </div>
+            {isJudgeReviewStale && <div className="mb-4 flex justify-end"><div className="status-pill px-4 py-2">Earlier draft</div></div>}
 
-            <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
               <div className="min-w-0 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Overall score</div>
                     <div className="mt-3 flex items-end gap-3">
                       <span className="text-4xl font-display font-black text-[var(--text-primary)] sm:text-5xl">{editorJudgeReview.overallScore.toFixed(1)}</span>
+                      <span className="pb-1 text-xl font-black text-amber-500">★</span>
                       <span className="pb-1 text-sm font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">/ 10</span>
                     </div>
                   </div>
-                  <div className="rounded-full border border-[var(--glass-border)] bg-[var(--surface-subtle)] p-4 text-[var(--text-primary)]">
-                    <Star className="h-6 w-6" />
+                  <div className="flex h-20 w-20 items-center justify-center rounded-[1.6rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] text-5xl shadow-[inset_0_1px_0_rgba(255,255,255,0.8)]">
+                    <span role="img" aria-label="Representative judgment emoji">{editorJudgeReview.representativeEmoji}</span>
                   </div>
                 </div>
                 <p className="mt-4 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.rulesetSummary}</p>
               </div>
 
               <div className="min-w-0 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-5 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
-                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Constructive review</div>
+                <div className="text-xs font-black uppercase tracking-[0.16em] text-[var(--text-secondary)]">Review</div>
                 <p className="mt-3 text-sm font-semibold leading-6 text-[var(--text-secondary)]">{editorJudgeReview.constructiveReview}</p>
                 {editorJudgeReview.recommendations.length > 0 && (
                   <div className="mt-4">
@@ -11660,21 +11931,11 @@ function App() {
           </section>
 
           <section className="glass-panel p-5 sm:p-6">
-            <div className="mb-6 max-w-xs">
-              <div className="rounded-[1.4rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                  Friends
-                </div>
-                <div className="mt-2 text-3xl font-black text-[var(--text-primary)]">
-                  {friendState.friends.length}
-                </div>
-              </div>
-            </div>
-
             <section className="mb-6 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-soft)] p-4 sm:p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
-                <h4 className="text-xl font-display font-black text-[var(--text-primary)]">Friends</h4>
-                <div className="status-pill px-3 py-2">{friendState.friends.length}</div>
+                <h4 className="text-xl font-display font-black text-[var(--text-primary)]">
+                  Friends <span className="text-base text-[var(--text-secondary)]">({friendState.friends.length})</span>
+                </h4>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
@@ -12249,7 +12510,10 @@ endif`}
 
     return (
       <div
+        data-forum-card-action="true"
         className="flex flex-wrap items-center justify-end gap-3 sm:flex-nowrap"
+        onClick={stopForumCardActionPropagation}
+        onKeyDown={stopForumCardActionPropagation}
         onMouseLeave={() => setForumRatingPreview((current) => (current?.postId === entry.id ? null : current))}
       >
         <span className="shrink-0 whitespace-nowrap text-[10px] font-extrabold uppercase tracking-[0.14em] text-slate-500">
@@ -12266,7 +12530,9 @@ endif`}
                 <RatingStarFill fill={fill} className="h-9 w-9" />
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={ratingBusy}
+                  onKeyDown={stopForumCardActionPropagation}
                   onMouseEnter={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
                   onFocus={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
                   onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: leftValue })}
@@ -12280,7 +12546,9 @@ endif`}
                 />
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={ratingBusy}
+                  onKeyDown={stopForumCardActionPropagation}
                   onMouseEnter={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
                   onFocus={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
                   onTouchStart={() => setForumRatingPreview({ postId: entry.id, value: rightValue })}
@@ -12314,7 +12582,9 @@ endif`}
       <>
         <button
           type="button"
+          data-forum-card-action="true"
           disabled={previewBusy}
+          onKeyDown={stopForumCardActionPropagation}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -12326,7 +12596,9 @@ endif`}
         </button>
         <button
           type="button"
+          data-forum-card-action="true"
           disabled={copyBusy}
+          onKeyDown={stopForumCardActionPropagation}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -12338,7 +12610,9 @@ endif`}
         </button>
         <button
           type="button"
+          data-forum-card-action="true"
           disabled={saveBusy}
+          onKeyDown={stopForumCardActionPropagation}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -12384,10 +12658,20 @@ endif`}
 
         {!compact && (
           <>
-            <div className="hidden gap-2 md:absolute md:right-4 md:top-4 md:flex md:flex-col md:opacity-0 md:transition md:group-hover:opacity-100">
+            <div
+              data-forum-card-action="true"
+              className="hidden gap-2 md:absolute md:right-4 md:top-4 md:flex md:flex-col md:opacity-0 md:transition md:group-hover:opacity-100"
+              onClick={stopForumCardActionPropagation}
+              onKeyDown={stopForumCardActionPropagation}
+            >
               {actionButtons}
             </div>
-            <div className="mt-5 flex flex-wrap gap-2 md:hidden">
+            <div
+              data-forum-card-action="true"
+              className="mt-5 flex flex-wrap gap-2 md:hidden"
+              onClick={stopForumCardActionPropagation}
+              onKeyDown={stopForumCardActionPropagation}
+            >
               {actionButtons}
             </div>
           </>
@@ -12439,9 +12723,19 @@ endif`}
         key={`${entry.id}-${compact ? 'compact' : 'full'}`}
         role={interactive ? 'button' : undefined}
         tabIndex={interactive ? 0 : undefined}
-        onClick={openThread}
+        onClick={(event) => {
+          if (isForumCardActionTarget(event.target)) {
+            return;
+          }
+
+          openThread();
+        }}
         onKeyDown={interactive
           ? (event) => {
+            if (isForumCardActionTarget(event.target)) {
+              return;
+            }
+
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
               openThread();
@@ -12457,6 +12751,8 @@ endif`}
         <div className="flex items-start gap-4">
           <button
             type="button"
+            data-forum-card-action="true"
+            onKeyDown={stopForumCardActionPropagation}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -12479,6 +12775,8 @@ endif`}
               <div className="min-w-0">
                 <button
                   type="button"
+                  data-forum-card-action="true"
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -12504,7 +12802,9 @@ endif`}
               {!compact && isOwner && !isDeleted && (
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={actionBusy('delete')}
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -12541,10 +12841,17 @@ endif`}
             {!isDeleted && renderForumRulesetAttachment(entry, { compact })}
 
             {!compact && !isDeleted && (
-              <div className="mt-5 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+              <div
+                data-forum-card-action="true"
+                className="mt-5 flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-[0.12em] text-[var(--text-secondary)]"
+                onClick={stopForumCardActionPropagation}
+                onKeyDown={stopForumCardActionPropagation}
+              >
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={actionBusy('like')}
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -12565,6 +12872,8 @@ endif`}
 
                 <button
                   type="button"
+                  data-forum-card-action="true"
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -12578,7 +12887,9 @@ endif`}
 
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={actionBusy('bookmark')}
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -12599,7 +12910,9 @@ endif`}
 
                 <button
                   type="button"
+                  data-forum-card-action="true"
                   disabled={actionBusy('mute-notifications')}
+                  onKeyDown={stopForumCardActionPropagation}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -13666,27 +13979,32 @@ endif`}
   return (
     <div className="app-shell relative min-h-screen w-full overflow-hidden p-0 pt-2 font-sans transition-colors duration-700 sm:pt-4 md:p-3 md:pt-3 lg:p-4">
       <div className="app-window macos-window relative z-20 mx-auto flex h-[calc(100dvh-0.5rem)] w-full max-w-[1680px] flex-col border border-[var(--glass-border)] shadow-2xl transition-colors duration-500 sm:h-[calc(100dvh-1rem)] md:h-[96vh]">
-        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
-          <div className="relative z-10 flex min-w-0 flex-1 items-center gap-3">
+        <div className="relative z-30 flex min-h-[4.5rem] shrink-0 items-center border-b border-[var(--glass-border)] px-3 py-2 shadow-sm transition-colors duration-500 sm:grid sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:gap-3 sm:px-4 md:px-5" style={{ background: 'var(--glass-bg)' }}>
+          <div className="relative z-10 flex min-w-0 flex-1 items-center gap-3 sm:flex-none">
             <div className="flex w-auto shrink-0 gap-2.5 md:w-24">
               <div className="h-3.5 w-3.5 rounded-full border border-[#e0443e] bg-[#ff5f56] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
               <div className="h-3.5 w-3.5 rounded-full border border-[#dea123] bg-[#ffbd2e] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
               <div className="h-3.5 w-3.5 rounded-full border border-[#1aab29] bg-[#27c93f] shadow-[inset_0_1px_4px_rgba(0,0,0,0.2)]" />
             </div>
 
-            <div className="min-w-0 truncate font-display text-base font-black tracking-tight text-[var(--text-primary)] sm:text-xl">
-              {currentSectionLabel}
+            <div className="flex min-w-0 items-center gap-2 sm:hidden">
+              <CurrentSectionIcon className="h-[1.1rem] w-[1.1rem] shrink-0 text-[var(--text-primary)]" />
+              <span className="min-w-0 truncate font-display text-[1.05rem] font-black tracking-tight text-[var(--text-primary)]">
+                {currentSectionLabel}
+              </span>
             </div>
           </div>
 
-          <div className="pointer-events-none absolute left-1/2 top-1/2 flex max-w-[calc(100%-8rem)] -translate-x-1/2 -translate-y-1/2 items-center gap-2 px-2 text-center">
-            <Droplet fill="currentColor" className="h-4 w-4 shrink-0 text-[var(--text-primary)] opacity-40 drop-shadow-md" />
-            <span className="truncate font-display text-xs font-black uppercase tracking-[0.22em] text-[var(--text-primary)] sm:text-sm">
-              Rentz Arena
-            </span>
+          <div className="pointer-events-none hidden min-w-0 items-center sm:absolute sm:left-1/2 sm:top-1/2 sm:flex sm:w-full sm:max-w-[calc(100%-24rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:justify-center lg:max-w-[calc(100%-28rem)] xl:max-w-[calc(100%-32rem)]">
+            <div className="flex min-w-0 max-w-full items-center gap-2 text-[var(--text-primary)]">
+              <CurrentSectionIcon className="h-[1.35rem] w-[1.35rem] shrink-0" />
+              <span className="min-w-0 truncate font-display text-[1.3rem] font-black tracking-tight md:text-[1.45rem]">
+                {currentSectionLabel}
+              </span>
+            </div>
           </div>
 
-          <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-3 sm:gap-2">
+          <div className="relative z-10 flex min-w-0 flex-1 items-center justify-end gap-3 sm:flex-none sm:gap-2">
             <form onSubmit={handleForumSearchSubmit} className="hidden w-full min-w-0 max-w-[12rem] sm:block md:max-w-[13rem] lg:max-w-[14rem] xl:max-w-[15rem]">
               <div className="flex items-center gap-1.5 rounded-full border border-[var(--glass-border)] bg-[var(--surface-input)] px-2.5 py-1.5 shadow-[inset_0_1px_2px_rgba(255,255,255,0.35)]">
                 <Search className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
@@ -14701,6 +15019,27 @@ endif`}
                 type: rulesetPreview.type,
                 code: rulesetPreview.code
               })}
+            </pre>
+          </div>
+        </ModalShell>
+      )}
+
+      {isEditorCompilerPreviewOpen && editorAst && (
+        <ModalShell
+          title="Compiler Preview"
+          eyebrow="Compiled output"
+          onClose={() => setIsEditorCompilerPreviewOpen(false)}
+          wide
+          bodyClassName="mt-5 min-h-0 flex-1 overflow-auto pr-1"
+        >
+          <div
+            className="rounded-[1.45rem] p-1.5 shadow-[inset_0_2px_10px_rgba(0,0,0,0.42),inset_0_-10px_24px_rgba(0,0,0,0.32)]"
+            style={{
+              background: 'linear-gradient(180deg, rgba(20,27,45,0.96) 0%, rgba(7,11,22,0.99) 100%)'
+            }}
+          >
+            <pre className="overflow-auto rounded-[1.1rem] bg-[linear-gradient(180deg,rgba(3,7,18,0.96)_0%,rgba(2,6,23,0.99)_100%)] p-5 text-xs leading-6 text-lime-100 shadow-[inset_0_1px_10px_rgba(0,0,0,0.5)]" data-rentz-modal-scroll="x">
+              {JSON.stringify(editorAst, null, 2)}
             </pre>
           </div>
         </ModalShell>

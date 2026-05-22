@@ -135,19 +135,29 @@ RENTZ_BOT_ACTION_DELAY_MS=900
 RENTZ_BOT_DECISION_TIMEOUT_MS=6000
 RENTZ_BOT_OLLAMA_BASE_URL=http://127.0.0.1:11434
 RENTZ_BOT_OLLAMA_MODEL=qwen2.5:7b
-RENTZ_EDITOR_BOT_TIMEOUT_MS=6500
-RENTZ_EDITOR_BOT_OLLAMA_BASE_URL=http://127.0.0.1:11434
-RENTZ_EDITOR_BOT_OLLAMA_MODEL=qwen2.5:7b
-RENTZ_EDITOR_BOT_FULL_OLLAMA_MODEL=llama3.2:3b
-RENTZ_EDITOR_BOT_LEAN_OLLAMA_MODEL=llama3.2:3b
+RENTZ_EDITOR_BOT_TIMEOUT_MS=60000
+RENTZ_EDITOR_BOT_NUM_PREDICT=900
+RENTZ_EDITOR_BOT_OLLAMA_BASE_URL=https://ollama.com/api
+RENTZ_EDITOR_BOT_OLLAMA_MODEL=gpt-oss:120b-cloud
+RENTZ_EDITOR_BOT_FULL_OLLAMA_MODEL=gpt-oss:120b-cloud
+RENTZ_EDITOR_BOT_LEAN_OLLAMA_MODEL=gpt-oss:120b-cloud
+# Optional when your Ollama-compatible endpoint requires auth:
+# RENTZ_EDITOR_BOT_OLLAMA_AUTH_TOKEN=...
+EDITOR_AI_LOG_ENABLED=true
+EDITOR_AI_LOG_PATH=logs/editor-ai.log.txt
+EDITOR_AI_LOG_VERBOSE=false
 ```
 
 Notes:
 - If Ollama is unavailable, bot turns fall back to deterministic legal moves instead of freezing the game.
 - Bot difficulty is derived from the average ELO of non-bot active players, defaulting to `500` when no human ELO is present.
 - Mixed human/bot games only update human ELO, and abandoned players that get replaced by bots are excluded from ELO updates.
-- If `qwen2.5:7b` is too slow for the ruleset editor on your machine, keep it for gameplay bots and set the Editor Bot full/lean model env vars to `llama3.2:3b`.
-- The backend also accepts `OLLAMA_EDITOR_BOT_MODEL`, `OLLAMA_EDITOR_BOT_FULL_MODEL`, `OLLAMA_EDITOR_BOT_LEAN_MODEL`, and `OLLAMA_EDITOR_BOT_BASE_URL` as aliases for the Editor Bot-specific Ollama settings.
+- Gameplay bots keep using `RENTZ_BOT_OLLAMA_MODEL`; the Editor Bot cloud model is configured separately and does not change in-game bot behavior.
+- If you prefer a local Editor Bot, point `RENTZ_EDITOR_BOT_OLLAMA_BASE_URL` back to `http://127.0.0.1:11434` and choose a local model such as `llama3.2:3b`.
+- The backend also accepts `OLLAMA_EDITOR_BOT_MODEL`, `OLLAMA_EDITOR_BOT_FULL_MODEL`, `OLLAMA_EDITOR_BOT_LEAN_MODEL`, `OLLAMA_EDITOR_BOT_BASE_URL`, `OLLAMA_EDITOR_BOT_TIMEOUT_MS`, `OLLAMA_EDITOR_BOT_NUM_PREDICT`, and `OLLAMA_EDITOR_BOT_AUTH_TOKEN` as aliases for the Editor Bot-specific Ollama settings.
+- Editor AI logs are written to `backend/logs/editor-ai.log.txt` by default when the backend runs from the `backend` directory.
+- Warmup failures are logged, non-fatal, and do not disable later Ruleset Judgment requests.
+- `EDITOR_AI_LOG_VERBOSE=true` adds a short safe ruleset preview to the log, but never writes auth tokens or full session data.
 
 ## Start Commands
 

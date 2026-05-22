@@ -25,6 +25,7 @@ const {
   validateTrainingSettings
 } = require('../socketManager');
 const { compileRuleset } = require('../engine/evaluator');
+const { generateDeck, dealCards } = require('../utils/cards');
 const { activeGames, playCardForPlayer, setCurrentPlayer, validateActiveTurnState } = __testHelpers;
 
 test('prevents starting a game when the lobby has only one player', () => {
@@ -738,6 +739,272 @@ test('playCardForPlayer keeps the trick winner as the only next current player',
     assert.strictEqual(trickEnd.payload.currentPlayerId, 'bot-3');
   } finally {
     global.setTimeout = originalSetTimeout;
+    activeGames.delete(roomId);
+  }
+});
+
+test('playCardForPlayer preserves all 6 bots across trick boundaries and finishes the round cleanly', () => {
+  const emitted = [];
+  const io = {
+    to(target) {
+      return {
+        emit(event, payload) {
+          emitted.push({ target, event, payload });
+        }
+      };
+    }
+  };
+  const roomId = 'BOT6ROUND';
+  const players = Array.from({ length: 6 }, (_, index) => ({
+    userId: `bot-${index + 1}`,
+    name: `Bot ${index + 1}`,
+    socketId: `socket-${index + 1}`,
+    isBot: true
+  }));
+  const hands = dealCards(generateDeck(players.length), players.map((player) => player.userId));
+  const game = {
+    roomId,
+    phase: 'playing_round',
+    status: 'playing',
+    players,
+    chooserOrder: players.map((player) => player.userId),
+    chooserCursor: 0,
+    chooserId: players[0].userId,
+    usedChoices: Object.fromEntries(players.map((player) => [player.userId, { whist: true }])),
+    selectedRulesets: { whist: true },
+    rulesetPermissions: Object.fromEntries(players.map((player) => [player.userId, { whist: true }])),
+    activeRulesetId: 'whist',
+    nvAllowed: false,
+    nvSelected: false,
+    roundNumber: 1,
+    handsReady: hands,
+    startingHandSize: hands[players[0].userId].length,
+    stateVersion: 0,
+    turnVersion: 0,
+    turnIndex: 0,
+    currentPlayerId: players[0].userId,
+    trickPending: false,
+    currentTrick: [],
+    trickSuit: null,
+    collectedHands: [],
+    pointsByPlayer: Object.fromEntries(players.map((player) => [player.userId, 0])),
+    collectedByPlayer: Object.fromEntries(players.map((player) => [player.userId, []])),
+    chatMessages: [],
+    roundStats: { tricks: [], scoreDeltas: {} },
+    customRulesets: [],
+    choiceState: null,
+    botActionTimeoutId: null,
+    pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
+    useTurnTimer: false,
+    training: null
+  };
+
+  activeGames.set(roomId, game);
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay) => {
+    if (delay === 1500) {
+      callback();
+    }
+    return { unref() {} };
+  };
+
+  const pickLegalCard = (currentGame, playerId) => {
+    const hand = currentGame.handsReady[playerId] || [];
+    if (!currentGame.trickSuit || currentGame.currentTrick.length === 0) {
+      return hand[0];
+    }
+
+    return hand.find((card) => card.split('-')[1] === currentGame.trickSuit) || hand[0];
+  };
+
+  try {
+    let firstTrickLeader = game.currentPlayerId;
+    let secondTrickLeader = null;
+    let completedTricks = 0;
+
+    while (game.phase === 'playing_round') {
+      assert.equal(validateActiveTurnState(game, 'six-bot-regression', { allowDisconnected: true }), true);
+
+      const currentPlayerId = game.currentPlayerId;
+      assert.ok(currentPlayerId);
+
+      const currentFlags = game.players.filter((player) => Boolean(player.isCurrent || player.current || player.isTurn));
+      assert.equal(currentFlags.length <= 1, true);
+
+      const selectedCard = pickLegalCard(game, currentPlayerId);
+      const result = playCardForPlayer(io, roomId, currentPlayerId, selectedCard, { auto: true });
+      assert.deepEqual(result, { success: true });
+
+      if (game.currentTrick.length === 0) {
+        completedTricks += 1;
+        if (completedTricks === 1) {
+          secondTrickLeader = game.currentPlayerId;
+        }
+      }
+
+      if (completedTricks > 12) {
+        assert.fail('expected the 6-bot round to finish within the dealt hand size');
+      }
+    }
+
+    assert.equal(firstTrickLeader, players[0].userId);
+    assert.ok(secondTrickLeader);
+    assert.notEqual(secondTrickLeader, '');
+    assert.equal(game.phase, 'round_stats');
+    assert.equal(game.roundStats.tricks.length, 8);
+    assert.deepEqual(
+      Object.fromEntries(players.map((player) => [player.userId, (game.handsReady[player.userId] || []).length])),
+      Object.fromEntries(players.map((player) => [player.userId, 0]))
+    );
+    assert.equal(
+      game.roundStats.tricks.every((trick) => new Set(trick.cards.map((play) => play.playedBy)).size === players.length),
+      true
+    );
+    assert.equal(
+      emitted.some((entry) => entry.event === 'trick_end' && entry.payload.currentPlayerId === secondTrickLeader),
+      true
+    );
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    activeGames.delete(roomId);
+  }
+});
+
+test('playCardForPlayer rejects a second play from the same player in one trick', () => {
+  const io = {
+    to() {
+      return {
+        emit() {}
+      };
+    }
+  };
+  const roomId = 'BOTDUP';
+  const game = {
+    roomId,
+    phase: 'playing_round',
+    status: 'playing',
+    players: [
+      { userId: 'bot-1', name: 'Bot 1', socketId: 'socket-1', isBot: true },
+      { userId: 'bot-2', name: 'Bot 2', socketId: 'socket-2', isBot: true },
+      { userId: 'bot-3', name: 'Bot 3', socketId: 'socket-3', isBot: true }
+    ],
+    turnIndex: 0,
+    currentPlayerId: 'bot-1',
+    trickPending: false,
+    trickSuit: 'hearts',
+    currentTrick: [
+      { playedBy: 'bot-1', playerName: 'Bot 1', card: 'A-hearts', auto: true }
+    ],
+    handsReady: {
+      'bot-1': ['K-hearts'],
+      'bot-2': ['Q-hearts'],
+      'bot-3': ['J-hearts']
+    },
+    collectedHands: [],
+    collectedByPlayer: {
+      'bot-1': [],
+      'bot-2': [],
+      'bot-3': []
+    },
+    pointsByPlayer: {
+      'bot-1': 0,
+      'bot-2': 0,
+      'bot-3': 0
+    },
+    roundStats: { tricks: [] },
+    stateVersion: 0,
+    turnVersion: 0,
+    customRulesets: [],
+    activeRulesetId: null,
+    choiceState: null,
+    botActionTimeoutId: null,
+    pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
+    useTurnTimer: false,
+    training: null
+  };
+
+  activeGames.set(roomId, game);
+
+  try {
+    const result = playCardForPlayer(io, roomId, 'bot-1', 'K-hearts', { auto: true });
+    assert.equal(result.error, 'You already played in this trick');
+  } finally {
+    activeGames.delete(roomId);
+  }
+});
+
+test('playCardForPlayer keeps mixed human and bot turn order intact', () => {
+  const io = {
+    to() {
+      return {
+        emit() {}
+      };
+    }
+  };
+  const roomId = 'MIXTURN';
+  const game = {
+    roomId,
+    phase: 'playing_round',
+    status: 'playing',
+    players: [
+      { userId: 'human-1', name: 'Human 1', socketId: 'socket-human', isBot: false },
+      { userId: 'bot-2', name: 'Bot 2', socketId: 'socket-bot-2', isBot: true },
+      { userId: 'bot-3', name: 'Bot 3', socketId: 'socket-bot-3', isBot: true }
+    ],
+    turnIndex: 0,
+    currentPlayerId: 'human-1',
+    trickPending: false,
+    trickSuit: null,
+    currentTrick: [],
+    handsReady: {
+      'human-1': ['A-hearts', '2-clubs'],
+      'bot-2': ['K-hearts', '3-clubs'],
+      'bot-3': ['Q-hearts', '4-clubs']
+    },
+    collectedHands: [],
+    collectedByPlayer: {
+      'human-1': [],
+      'bot-2': [],
+      'bot-3': []
+    },
+    pointsByPlayer: {
+      'human-1': 0,
+      'bot-2': 0,
+      'bot-3': 0
+    },
+    roundStats: { tricks: [] },
+    stateVersion: 0,
+    turnVersion: 0,
+    customRulesets: [],
+    activeRulesetId: null,
+    choiceState: null,
+    botActionTimeoutId: null,
+    pendingBotActionKey: null,
+    botActionGeneration: 0,
+    botActionInFlightKey: null,
+    botActionInFlightGeneration: null,
+    useTurnTimer: false,
+    training: null
+  };
+
+  activeGames.set(roomId, game);
+
+  try {
+    assert.deepEqual(playCardForPlayer(io, roomId, 'human-1', 'A-hearts'), { success: true });
+    assert.equal(game.currentPlayerId, 'bot-2');
+    assert.equal(game.turnIndex, 1);
+
+    assert.deepEqual(playCardForPlayer(io, roomId, 'bot-2', 'K-hearts', { auto: true }), { success: true });
+    assert.equal(game.currentPlayerId, 'bot-3');
+    assert.equal(game.turnIndex, 2);
+    assert.equal(validateActiveTurnState(game, 'mixed-turn-regression', { allowDisconnected: true }), true);
+  } finally {
     activeGames.delete(roomId);
   }
 });

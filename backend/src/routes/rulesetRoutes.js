@@ -202,12 +202,23 @@ router.post('/evaluate-preview', (req, res, next) => {
 router.post('/judge', async (req, res, next) => {
   try {
     const ruleset = buildSafeRulesetPayload(req.body);
+    const clientRulesetHash = typeof req.body?.clientRulesetHash === 'string'
+      ? req.body.clientRulesetHash.trim().slice(0, 40)
+      : '';
     let ast = null;
 
     try {
       ast = compileRuleset(ruleset.code, ruleset.type);
     } catch (error) {
       return res.status(400).json({
+        success: false,
+        judgment: null,
+        source: 'error',
+        requestId: '',
+        rulesetHash: clientRulesetHash,
+        errorCode: 'compiler-error',
+        usedFallback: false,
+        usedCache: false,
         error: `Fix compiler errors before asking the Editor Bot to judge this ruleset: ${error.message}`,
         compiler: {
           status: 'error',
@@ -229,17 +240,36 @@ router.post('/judge', async (req, res, next) => {
     const review = await reviewRulesetWithEditorBot({
       ruleset,
       ast,
-      compiler
+      compiler,
+      rulesetHashOverride: clientRulesetHash
     });
 
     res.json({
       ok: true,
+      success: true,
       compiler,
-      review
+      judgment: review,
+      review,
+      source: review.reviewSource || 'cloud',
+      requestId: review.requestId || '',
+      rulesetHash: review.rulesetHash || clientRulesetHash,
+      errorCode: review.errorCode || '',
+      usedFallback: review.usedFallback === true,
+      usedCache: review.usedCache === true
     });
   } catch (error) {
     if (error.statusCode) {
-      return res.status(error.statusCode).json({ error: error.message });
+      return res.status(error.statusCode).json({
+        success: false,
+        judgment: null,
+        source: 'error',
+        requestId: '',
+        rulesetHash: '',
+        errorCode: 'request-error',
+        usedFallback: false,
+        usedCache: false,
+        error: error.message
+      });
     }
 
     next(error);
