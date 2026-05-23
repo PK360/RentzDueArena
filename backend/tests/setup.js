@@ -1,0 +1,14 @@
+process.env.NODE_ENV = 'test';
+process.env.AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET || 'rentz-arena-test-secret';
+process.env.CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://127.0.0.1';
+process.env.EDITOR_AI_LOG_ENABLED = 'false';
+process.env.EDITOR_AI_LOG_VERBOSE = 'false';
+process.env.EDITOR_BOT_RESPONSE_CAPTURE_ENABLED = 'false';
+process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS = process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || '1000';
+process.env.RENTZ_BOT_OLLAMA_BASE_URL = 'http://127.0.0.1:1';
+process.env.RENTZ_EDITOR_BOT_OLLAMA_BASE_URL = 'http://127.0.0.1:1';
+process.env.OLLAMA_EDITOR_BOT_BASE_URL = 'http://127.0.0.1:1';
+process.env.RENTZ_BOT_ACTION_DELAY_MS = '150';
+process.env.RENTZ_BOT_DECISION_TIMEOUT_MS = '1000';
+process.env.RENTZ_TRAINER_COMMENT_TIMEOUT_MS = '1000';
+process.env.RENTZ_TRAINER_FEEDBACK_TIMEOUT_MS = '1000';

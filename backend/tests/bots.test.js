@@ -1,4 +1,3 @@
-const test = require('node:test');
 const assert = require('node:assert');
 
 const {
@@ -65,6 +64,34 @@ test('starts bot numbering at 1 and reuses the lowest open bot ordinal', () => {
 
   assert.match(firstBot.displayName, /\b1$/);
   assert.match(secondBot.displayName, /\b2$/);
+});
+
+test('avoids bot identity collisions when a seat index is reused', () => {
+  const existingBots = [
+    buildBotIdentity({
+      roomId: 'ROOM91',
+      seatIndex: 1,
+      players: [{ userId: 'human-1', elo: 1200 }]
+    }),
+    buildBotIdentity({
+      roomId: 'ROOM91',
+      seatIndex: 2,
+      players: [{ userId: 'human-1', elo: 1200 }]
+    }),
+    buildBotIdentity({
+      roomId: 'ROOM91',
+      seatIndex: 3,
+      players: [{ userId: 'human-1', elo: 1200 }]
+    })
+  ];
+  const shiftedSeatBot = buildBotIdentity({
+    roomId: 'ROOM91',
+    seatIndex: 3,
+    players: [{ userId: 'human-1', elo: 1200 }, ...existingBots]
+  });
+
+  assert.equal(existingBots.some((player) => player.userId === shiftedSeatBot.userId), false);
+  assert.equal(existingBots.some((player) => player.socketId === shiftedSeatBot.socketId), false);
 });
 
 test('chooses a deterministic legal fallback move', () => {

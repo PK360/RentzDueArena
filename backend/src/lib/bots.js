@@ -140,8 +140,6 @@ function buildBotIdentity({
     ? normalizeEloValue(fixedElo, DEFAULT_ACCOUNT_ELO)
     : averageHumanElo;
   const rankTier = getRankTierForElo(resolvedElo);
-  const botSeed = `${roomId || 'room'}:${seatIndex}:${replacementFor?.userId || 'seat'}`;
-  const shortHash = crypto.createHash('sha1').update(botSeed).digest('hex').slice(0, 8);
   const botOrdinal = trainerBot ? null : getNextBotOrdinal(players);
   const botNameBase = BOT_NAME_POOL[seatIndex % BOT_NAME_POOL.length] || 'Rentz Bot';
   const resolvedDisplayName = String(displayName || '').trim() || (
@@ -158,10 +156,30 @@ function buildBotIdentity({
   );
   const identityPrefix = trainerBot ? 'trainer' : 'bot';
   const socketPrefix = trainerBot ? 'trainer' : 'bot';
+  const existingIds = new Set(
+    (Array.isArray(players) ? players : [])
+      .flatMap((player) => [player?.userId, player?.socketId])
+      .filter(Boolean)
+  );
+  let collisionIndex = 0;
+  let shortHash = '';
+  let userId = '';
+  let socketId = '';
+
+  do {
+    const baseSeed = `${roomId || 'room'}:${seatIndex}:${replacementFor?.userId || 'seat'}`;
+    const botSeed = collisionIndex === 0
+      ? baseSeed
+      : `${baseSeed}:${collisionIndex}`;
+    shortHash = crypto.createHash('sha1').update(botSeed).digest('hex').slice(0, 8);
+    userId = `${identityPrefix}_${roomId || 'room'}_${seatIndex}_${shortHash}`;
+    socketId = `${socketPrefix}:${roomId || 'room'}:${seatIndex}:${shortHash}`;
+    collisionIndex += 1;
+  } while (existingIds.has(userId) || existingIds.has(socketId));
 
   return {
-    userId: `${identityPrefix}_${roomId || 'room'}_${seatIndex}_${shortHash}`,
-    socketId: `${socketPrefix}:${roomId || 'room'}:${seatIndex}:${shortHash}`,
+    userId,
+    socketId,
     name: resolvedDisplayName,
     displayName: resolvedDisplayName,
     avatarUrl: DEFAULT_BOT_AVATAR_URL,

@@ -1,4 +1,3 @@
-const test = require('node:test');
 const assert = require('node:assert');
 const {
   abandonActiveMatch,
@@ -26,7 +25,48 @@ const {
 } = require('../socketManager');
 const { compileRuleset } = require('../engine/evaluator');
 const { generateDeck, dealCards } = require('../utils/cards');
-const { activeGames, playCardForPlayer, setCurrentPlayer, validateActiveTurnState } = __testHelpers;
+const { createSixBotGame } = require('./helpers/builders');
+const {
+  assertRoundInvariants,
+  assertUniqueActivePlayers,
+  assertValidCurrentPlayer,
+  buildInvariantSnapshot,
+  createMockIo,
+  createSixBotRoom,
+  getRoundActivePlayerIds,
+  playOneCompleteTrick,
+  playUntilRoundEnd,
+  startGameWithBots
+} = require('./helpers/gameFlow');
+const {
+  activeGames,
+  beginChooserTurn,
+  buildGameStateFromLobby,
+  buildRoundActivePlayerIds,
+  continueAfterRound,
+  dealNewRoundCards,
+  getLegalCardsForPlayer,
+  playCardForPlayer,
+  selectRulesetForRound,
+  setCurrentPlayer,
+  validateActiveTurnState,
+  validateRoundStateIntegrity
+} = __testHelpers;
+
+function captureWarnings() {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => {
+    warnings.push(args.map((value) => String(value)).join(' '));
+  };
+
+  return {
+    warnings,
+    restore() {
+      console.warn = originalWarn;
+    }
+  };
+}
 
 test('prevents starting a game when the lobby has only one player', () => {
   const error = getStartGameValidationError(
@@ -122,6 +162,81 @@ test('lets the host remove a bot seat before the game starts', () => {
   assert.strictEqual(lobby.players.length, 1);
   assert.strictEqual(lobby.players[0].seatIndex, 0);
   assert.strictEqual(lobby.rulesetPermissions['bot_BOT456_1_abcd'], undefined);
+});
+
+test('re-adding a removed middle bot seat keeps lobby bot ids unique', () => {
+  const lobby = {
+    roomId: 'TL2SVI',
+    hostId: 'host-1',
+    players: [{
+      socketId: 'socket-host',
+      userId: 'host-1',
+      isReady: true,
+      role: 'player',
+      elo: 1200
+    }],
+    spectators: [],
+    customRulesets: [],
+    selectedRulesets: { whist: true },
+    rulesetPermissions: {
+      'host-1': { whist: true }
+    }
+  };
+
+  for (let index = 0; index < 5; index += 1) {
+    const result = addBotToLobby(lobby);
+    assert.strictEqual(result.error, undefined);
+  }
+
+  const removedBotUserId = lobby.players[3].userId;
+  assert.strictEqual(removeBotFromLobby(lobby, removedBotUserId).error, undefined);
+  assert.strictEqual(addBotToLobby(lobby).error, undefined);
+
+  const playerIds = lobby.players.map((player) => player.userId);
+  assert.strictEqual(playerIds.length, 6);
+  assert.strictEqual(new Set(playerIds).size, 6);
+});
+
+test('buildRoundActivePlayerIds keeps all 6 seated bot participants unique', () => {
+  const lobby = createSixBotRoom({
+    roomId: 'BOT6ACTIVE',
+    selectedRulesets: { whist: true, levate: true }
+  });
+  const game = buildGameStateFromLobby(lobby);
+
+  const roundActivePlayerIds = buildRoundActivePlayerIds(game, { allowDisconnected: true });
+
+  assert.strictEqual(
+    roundActivePlayerIds.length,
+    6,
+    JSON.stringify(buildInvariantSnapshot(game, { step: 'buildRoundActivePlayerIds' }))
+  );
+  assert.strictEqual(
+    new Set(roundActivePlayerIds).size,
+    6,
+    JSON.stringify(buildInvariantSnapshot(game, { step: 'buildRoundActivePlayerIds' }))
+  );
+  assert.deepStrictEqual(
+    roundActivePlayerIds.slice().sort(),
+    game.players.map((player) => player.userId).sort()
+  );
+});
+
+test('validateRoundStateIntegrity rejects an invalid currentPlayerId during active play', () => {
+  const game = {
+    ...createSixBotGame({
+      roundActivePlayerIds: ['bot-1', 'bot-2', 'bot-3', 'bot-4', 'bot-5', 'bot-6'],
+      currentPlayerId: 'ghost-player'
+    })
+  };
+
+  assert.strictEqual(
+    validateRoundStateIntegrity(game, 'invalid-current-player', {
+      allowDisconnected: true,
+      requireHands: true
+    }),
+    false
+  );
 });
 
 test('prevents moving a spectator into the player list when all six seats are taken', () => {
@@ -773,6 +888,7 @@ test('playCardForPlayer preserves all 6 bots across trick boundaries and finishe
     usedChoices: Object.fromEntries(players.map((player) => [player.userId, { whist: true }])),
     selectedRulesets: { whist: true },
     rulesetPermissions: Object.fromEntries(players.map((player) => [player.userId, { whist: true }])),
+    roundActivePlayerIds: players.map((player) => player.userId),
     activeRulesetId: 'whist',
     nvAllowed: false,
     nvSelected: false,
@@ -827,12 +943,14 @@ test('playCardForPlayer preserves all 6 bots across trick boundaries and finishe
 
     while (game.phase === 'playing_round') {
       assert.equal(validateActiveTurnState(game, 'six-bot-regression', { allowDisconnected: true }), true);
+      assert.strictEqual(game.roundActivePlayerIds.length, game.players.length);
 
       const currentPlayerId = game.currentPlayerId;
       assert.ok(currentPlayerId);
 
       const currentFlags = game.players.filter((player) => Boolean(player.isCurrent || player.current || player.isTurn));
       assert.equal(currentFlags.length <= 1, true);
+      assert.strictEqual(new Set(game.roundActivePlayerIds.length ? game.roundActivePlayerIds : game.players.map((player) => player.userId)).size, players.length);
 
       const selectedCard = pickLegalCard(game, currentPlayerId);
       const result = playCardForPlayer(io, roomId, currentPlayerId, selectedCard, { auto: true });
@@ -871,6 +989,340 @@ test('playCardForPlayer preserves all 6 bots across trick boundaries and finishe
     global.setTimeout = originalSetTimeout;
     activeGames.delete(roomId);
   }
+});
+
+test('dealNewRoundCards keeps 6 unique active bots and uniform hands after a bot seat is reused', () => {
+  const io = {
+    to() {
+      return {
+        emit() {}
+      };
+    }
+  };
+  const lobby = {
+    roomId: 'BOT6DEAL',
+    roomName: 'Bot Table',
+    hostId: 'bot-host',
+    rulesetId: null,
+    customRulesets: [],
+    selectedRulesets: { whist: true },
+    rulesetPermissions: {},
+    nvAllowed: false,
+    autoBotReplacementEnabled: true,
+    useTurnTimer: false,
+    turnTimerSeconds: 45,
+    players: Array.from({ length: 6 }, (_, index) => ({
+      userId: `bot-${index + 1}`,
+      socketId: `socket-${index + 1}`,
+      seatIndex: index,
+      joinOrder: index + 1,
+      displayName: `Bot ${index + 1}`,
+      name: `Bot ${index + 1}`,
+      isBot: true,
+      isReady: true,
+      role: 'player',
+      isConnected: true,
+      connectionStatus: 'connected'
+    }))
+  };
+  const game = buildGameStateFromLobby(lobby);
+
+  assert.deepStrictEqual(dealNewRoundCards(io, lobby.roomId, game), true);
+  assert.strictEqual(game.roundActivePlayerIds.length, 6);
+  assert.strictEqual(new Set(game.roundActivePlayerIds).size, 6);
+  assert.strictEqual(
+    game.roundActivePlayerIds.every((playerId) => Array.isArray(game.handsReady[playerId])),
+    true
+  );
+  assert.deepStrictEqual(
+    game.roundActivePlayerIds.map((playerId) => game.handsReady[playerId].length),
+    [8, 8, 8, 8, 8, 8]
+  );
+});
+
+test('standard 6-bot game flow completes one full trick with invariant checks after every move', () => {
+  const { io, emitted } = createMockIo();
+  const lobby = createSixBotRoom({
+    roomId: 'BOT6TRICKFLOW',
+    selectedRulesets: { whist: true, levate: true }
+  });
+  const warningCapture = captureWarnings();
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay) => {
+    if (delay === 1500) {
+      callback();
+    }
+    return { unref() {} };
+  };
+
+  try {
+    const { game } = startGameWithBots(io, lobby, {
+      buildGameStateFromLobby,
+      beginChooserTurn,
+      selectRulesetForRound,
+      getEligibleRuleIdsForPlayer,
+      preferredRulesetId: 'levate'
+    });
+    activeGames.set(lobby.roomId, game);
+
+    const initialActivePlayerIds = getRoundActivePlayerIds(game);
+    const expectedDeckSize = 8 * initialActivePlayerIds.length;
+
+    assertRoundInvariants(game, {
+      expectedDeckSize,
+      expectedHandSize: 8,
+      initialActivePlayerIds,
+      step: 'roundStart'
+    });
+
+    playOneCompleteTrick(io, lobby.roomId, game, {
+      playCardForPlayer,
+      getLegalCardsForPlayer,
+      expectedDeckSize,
+      initialActivePlayerIds,
+      step: 'firstTrick'
+    });
+
+    assert.strictEqual(
+      game.currentTrick.length,
+      0,
+      JSON.stringify(buildInvariantSnapshot(game, { step: 'afterFirstTrick', expectedDeckSize, initialActivePlayerIds }))
+    );
+    assertRoundInvariants(game, {
+      expectedDeckSize,
+      expectedHandSize: 7,
+      initialActivePlayerIds,
+      step: 'afterFirstTrick'
+    });
+    assert.ok(emitted.some((entry) => entry.event === 'trick_won'));
+    assert.ok(emitted.some((entry) => entry.event === 'trick_end'));
+    assert.strictEqual(
+      warningCapture.warnings.some((warning) =>
+        warning.includes('no active player was available')
+        || warning.includes('Active players corrupted before bot scheduling')
+      ),
+      false,
+      warningCapture.warnings.join('\n')
+    );
+  } finally {
+    warningCapture.restore();
+    global.setTimeout = originalSetTimeout;
+    activeGames.delete(lobby.roomId);
+  }
+});
+
+test('standard 6-bot game flow completes a full round without deadlock or card loss', () => {
+  const { io, emitted } = createMockIo();
+  const lobby = createSixBotRoom({
+    roomId: 'BOT6FULLFLOW',
+    selectedRulesets: { whist: true, levate: true }
+  });
+  const warningCapture = captureWarnings();
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay) => {
+    if (delay === 1500) {
+      callback();
+    }
+    return { unref() {} };
+  };
+
+  try {
+    const { game } = startGameWithBots(io, lobby, {
+      buildGameStateFromLobby,
+      beginChooserTurn,
+      selectRulesetForRound,
+      getEligibleRuleIdsForPlayer,
+      preferredRulesetId: 'levate'
+    });
+    activeGames.set(lobby.roomId, game);
+
+    const initialActivePlayerIds = getRoundActivePlayerIds(game);
+    const expectedDeckSize = 8 * initialActivePlayerIds.length;
+
+    const moveCount = playUntilRoundEnd(io, lobby.roomId, game, {
+      playCardForPlayer,
+      getLegalCardsForPlayer,
+      expectedDeckSize,
+      initialActivePlayerIds
+    });
+
+    assert.ok(moveCount > 0);
+    assert.strictEqual(game.phase, 'round_stats');
+    assert.deepStrictEqual(
+      Object.fromEntries(initialActivePlayerIds.map((playerId) => [playerId, (game.handsReady[playerId] || []).length])),
+      Object.fromEntries(initialActivePlayerIds.map((playerId) => [playerId, 0])),
+      JSON.stringify(buildInvariantSnapshot(game, { step: 'roundEnd', expectedDeckSize, initialActivePlayerIds }))
+    );
+    assertUniqueActivePlayers(game, {
+      expectedCount: 6,
+      initialActivePlayerIds,
+      step: 'roundEnd'
+    });
+    assert.strictEqual(game.pendingBotActionKey || null, null);
+    assert.strictEqual(game.botActionTimeoutId || null, null);
+    assert.ok(emitted.some((entry) => entry.event === 'round_finished'));
+    assert.strictEqual(
+      warningCapture.warnings.some((warning) =>
+        warning.includes('no active player was available')
+        || warning.includes('Active players corrupted before bot scheduling')
+        || warning.includes('Duplicate roundActivePlayerIds detected')
+      ),
+      false,
+      warningCapture.warnings.join('\n')
+    );
+  } finally {
+    warningCapture.restore();
+    global.setTimeout = originalSetTimeout;
+    activeGames.delete(lobby.roomId);
+  }
+});
+
+test('continuing after round stats rebuilds the next round cleanly for the same 6 bots', () => {
+  const { io } = createMockIo();
+  const lobby = createSixBotRoom({
+    roomId: 'BOT6ROUND2',
+    selectedRulesets: { whist: true, levate: true }
+  });
+  const warningCapture = captureWarnings();
+  const originalSetTimeout = global.setTimeout;
+  global.setTimeout = (callback, delay) => {
+    if (delay === 1500) {
+      callback();
+    }
+    return { unref() {} };
+  };
+
+  try {
+    const { game } = startGameWithBots(io, lobby, {
+      buildGameStateFromLobby,
+      beginChooserTurn,
+      selectRulesetForRound,
+      getEligibleRuleIdsForPlayer,
+      preferredRulesetId: 'levate'
+    });
+    activeGames.set(lobby.roomId, game);
+
+    const firstRoundActivePlayerIds = getRoundActivePlayerIds(game);
+    const expectedDeckSize = 8 * firstRoundActivePlayerIds.length;
+
+    playUntilRoundEnd(io, lobby.roomId, game, {
+      playCardForPlayer,
+      getLegalCardsForPlayer,
+      expectedDeckSize,
+      initialActivePlayerIds: firstRoundActivePlayerIds
+    });
+
+    assert.strictEqual(game.phase, 'round_stats');
+    assert.deepStrictEqual(continueAfterRound(io, lobby.roomId, game), { success: true });
+    assert.strictEqual(game.phase, 'choosing_ruleset');
+    assert.strictEqual(game.currentTrick.length, 0);
+    assert.strictEqual(game.trickSuit, null);
+
+    const secondRoundPreSelectionActivePlayerIds = getRoundActivePlayerIds(game);
+    assert.deepStrictEqual(
+      [...new Set(secondRoundPreSelectionActivePlayerIds)].sort(),
+      [...new Set(firstRoundActivePlayerIds)].sort(),
+      JSON.stringify(buildInvariantSnapshot(game, {
+        step: 'secondRoundPreSelection',
+        expectedDeckSize,
+        initialActivePlayerIds: firstRoundActivePlayerIds
+      }))
+    );
+    assert.deepStrictEqual(
+      secondRoundPreSelectionActivePlayerIds.map((playerId) => game.handsReady[playerId].length),
+      [8, 8, 8, 8, 8, 8]
+    );
+
+    const eligibleRuleIds = getEligibleRuleIdsForPlayer(game, game.chooserId);
+    assert.ok(eligibleRuleIds.length > 0);
+    assert.deepStrictEqual(
+      selectRulesetForRound(io, lobby.roomId, game, game.chooserId, eligibleRuleIds[0]),
+      { success: true }
+    );
+    assert.strictEqual(game.roundNumber, 2);
+
+    const secondRoundActivePlayerIds = getRoundActivePlayerIds(game);
+    assertRoundInvariants(game, {
+      expectedDeckSize,
+      expectedHandSize: 8,
+      initialActivePlayerIds: secondRoundActivePlayerIds,
+      step: 'secondRoundStart'
+    });
+
+    playOneCompleteTrick(io, lobby.roomId, game, {
+      playCardForPlayer,
+      getLegalCardsForPlayer,
+      expectedDeckSize,
+      initialActivePlayerIds: secondRoundActivePlayerIds,
+      step: 'secondRoundFirstTrick'
+    });
+
+    assertValidCurrentPlayer(game, { step: 'secondRoundFirstTrickEnd' });
+    assert.strictEqual(
+      warningCapture.warnings.some((warning) =>
+        warning.includes('no active player was available')
+        || warning.includes('Active players corrupted before bot scheduling')
+      ),
+      false,
+      warningCapture.warnings.join('\n')
+    );
+  } finally {
+    warningCapture.restore();
+    global.setTimeout = originalSetTimeout;
+    activeGames.delete(lobby.roomId);
+  }
+});
+
+test('validateRoundStateIntegrity rejects duplicated active players before bot scheduling', () => {
+  const duplicatedPlayerId = 'bot_TL2SVI_4_e16d7807';
+  const game = {
+    roomId: 'TL2SVI',
+    phase: 'playing_round',
+    status: 'playing',
+    players: [
+      { userId: 'bot_TL2SVI_1_955e3fa9', isBot: true, connectionStatus: 'connected' },
+      { userId: 'bot_TL2SVI_2_0e50db5f', isBot: true, connectionStatus: 'connected' },
+      { userId: 'bot_TL2SVI_3_2591d9b3', isBot: true, connectionStatus: 'connected' },
+      { userId: duplicatedPlayerId, isBot: true, connectionStatus: 'connected' },
+      { userId: duplicatedPlayerId, isBot: true, connectionStatus: 'connected' },
+      { userId: 'bot_TL2SVI_5_7f06bfcb', isBot: true, connectionStatus: 'connected' }
+    ],
+    roundActivePlayerIds: [
+      'bot_TL2SVI_1_955e3fa9',
+      'bot_TL2SVI_2_0e50db5f',
+      'bot_TL2SVI_3_2591d9b3',
+      duplicatedPlayerId,
+      duplicatedPlayerId,
+      'bot_TL2SVI_5_7f06bfcb'
+    ],
+    handsReady: {
+      'bot_TL2SVI_1_955e3fa9': Array(7).fill('2-C'),
+      'bot_TL2SVI_2_0e50db5f': Array(7).fill('3-C'),
+      'bot_TL2SVI_3_2591d9b3': Array(7).fill('4-C'),
+      [duplicatedPlayerId]: Array(15).fill('5-C'),
+      'bot_TL2SVI_5_7f06bfcb': Array(7).fill('6-C')
+    },
+    startingHandSize: 8,
+    collectedHands: [],
+    currentTrick: [
+      { playedBy: 'bot_TL2SVI_1_955e3fa9', card: 'A-H' },
+      { playedBy: 'bot_TL2SVI_2_0e50db5f', card: 'K-H' },
+      { playedBy: 'bot_TL2SVI_3_2591d9b3', card: 'Q-H' },
+      { playedBy: duplicatedPlayerId, card: 'J-H' },
+      { playedBy: 'bot_TL2SVI_5_7f06bfcb', card: '10-H' }
+    ],
+    trickPending: false,
+    currentPlayerId: 'bot_TL2SVI_3_2591d9b3',
+    turnIndex: 2
+  };
+
+  assert.strictEqual(
+    validateRoundStateIntegrity(game, 'six-bot-corruption', {
+      allowDisconnected: true,
+      requireHands: true
+    }),
+    false
+  );
 });
 
 test('playCardForPlayer rejects a second play from the same player in one trick', () => {
