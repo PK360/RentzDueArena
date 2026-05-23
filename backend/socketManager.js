@@ -208,6 +208,204 @@ function buildCollectedHands(game) {
   }, {});
 }
 
+function findDuplicateIds(values = []) {
+  const counts = new Map();
+  const duplicates = [];
+
+  values.filter(Boolean).forEach((value) => {
+    const nextCount = (counts.get(value) || 0) + 1;
+    counts.set(value, nextCount);
+    if (nextCount === 2) {
+      duplicates.push(value);
+    }
+  });
+
+  return duplicates;
+}
+
+function getCanonicalRoundPlayers(game, { allowDisconnected = false } = {}) {
+  if (!game || !Array.isArray(game.players)) {
+    return [];
+  }
+
+  return game.players.filter((player) => {
+    if (!player?.userId) {
+      return false;
+    }
+
+    if (
+      !allowDisconnected
+      && player.connectionStatus === 'abandoned'
+      && !isBotPlayer(player)
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function buildRoundActivePlayerIds(game, { allowDisconnected = false } = {}) {
+  return getCanonicalRoundPlayers(game, { allowDisconnected }).map((player) => player.userId);
+}
+
+function getStoredRoundActivePlayerIds(game) {
+  return Array.isArray(game?.roundActivePlayerIds)
+    ? game.roundActivePlayerIds.filter(Boolean)
+    : [];
+}
+
+function rebuildRoundActivePlayerIds(game, { allowDisconnected = false } = {}) {
+  if (!game) {
+    return [];
+  }
+
+  const roundActivePlayerIds = buildRoundActivePlayerIds(game, { allowDisconnected });
+  game.roundActivePlayerIds = [...roundActivePlayerIds];
+  return game.roundActivePlayerIds;
+}
+
+function getExpectedRemainingHandSize(game, playerId) {
+  if (!game || !playerId || !Number.isFinite(Number(game.startingHandSize))) {
+    return null;
+  }
+
+  const completedTrickCount = Array.isArray(game.collectedHands) ? game.collectedHands.length : 0;
+  const trickParticipantIds = game.trickPending ? new Set() : getCurrentTrickParticipantIds(game);
+  return Math.max(0, Number(game.startingHandSize) - completedTrickCount - (trickParticipantIds.has(playerId) ? 1 : 0));
+}
+
+function buildRoundStateDiagnostics(game, { allowDisconnected = false } = {}) {
+  const playerIds = Array.isArray(game?.players)
+    ? game.players.map((player) => player?.userId).filter(Boolean)
+    : [];
+  const storedRoundActivePlayerIds = getStoredRoundActivePlayerIds(game);
+  const canonicalRoundActivePlayerIds = buildRoundActivePlayerIds(game, { allowDisconnected });
+  const roundActivePlayerIds = storedRoundActivePlayerIds.length > 0
+    ? storedRoundActivePlayerIds
+    : canonicalRoundActivePlayerIds;
+  const roundActivePlayerIdSet = new Set(roundActivePlayerIds);
+  const currentTrickPlayerIds = Array.isArray(game?.currentTrick)
+    ? game.currentTrick.map((play) => play?.playedBy).filter(Boolean)
+    : [];
+  const handSizes = Object.fromEntries(
+    roundActivePlayerIds.map((playerId) => [playerId, Array.isArray(game?.handsReady?.[playerId]) ? game.handsReady[playerId].length : null])
+  );
+  const handSizeMismatches = roundActivePlayerIds
+    .map((playerId) => {
+      const expectedSize = getExpectedRemainingHandSize(game, playerId);
+      const actualSize = Array.isArray(game?.handsReady?.[playerId]) ? game.handsReady[playerId].length : null;
+      return expectedSize === null || actualSize === expectedSize
+        ? null
+        : { playerId, expectedSize, actualSize };
+    })
+    .filter(Boolean);
+
+  return {
+    playerIds,
+    uniquePlayerIdsCount: new Set(playerIds).size,
+    duplicatePlayerIds: findDuplicateIds(playerIds),
+    roundActivePlayerIds,
+    uniqueRoundActiveCount: roundActivePlayerIdSet.size,
+    duplicateRoundActivePlayerIds: findDuplicateIds(roundActivePlayerIds),
+    missingPlayers: roundActivePlayerIds.filter((playerId) => !playerIds.includes(playerId)),
+    missingActivePlayerHands: roundActivePlayerIds.filter((playerId) => !Array.isArray(game?.handsReady?.[playerId])),
+    unexpectedHandOwners: Object.keys(game?.handsReady || {}).filter((playerId) => {
+      const hand = game?.handsReady?.[playerId];
+      return Array.isArray(hand) && hand.length > 0 && !roundActivePlayerIdSet.has(playerId);
+    }),
+    handSizes,
+    handSizeMismatches,
+    totalCardsInHands: Object.values(handSizes).reduce((sum, handSize) => sum + (Number.isFinite(handSize) ? handSize : 0), 0),
+    currentPlayerId: game?.currentPlayerId || null,
+    currentTrickLength: game?.currentTrick?.length || 0,
+    currentTrickPlayerIds,
+    duplicateCurrentTrickPlayerIds: findDuplicateIds(currentTrickPlayerIds),
+    invalidCurrentTrickPlayerIds: currentTrickPlayerIds.filter((playerId) => !roundActivePlayerIdSet.has(playerId)),
+    playersMarkedCurrent: getPlayersMarkedCurrent(game)
+  };
+}
+
+function validateRoundStateIntegrity(game, context, {
+  allowDisconnected = false,
+  requireHands = false,
+  requireUniformHands = false
+} = {}) {
+  if (!game || game.phase !== 'playing_round') {
+    return true;
+  }
+
+  const diagnostics = buildRoundStateDiagnostics(game, { allowDisconnected });
+  const activePlayerCount = diagnostics.roundActivePlayerIds.length;
+  const expectedTotalCards = Number.isFinite(Number(game.startingHandSize))
+    ? Math.max(
+      0,
+      (activePlayerCount * Number(game.startingHandSize))
+        - ((Array.isArray(game.collectedHands) ? game.collectedHands.length : 0) * activePlayerCount)
+        - (game.trickPending ? 0 : diagnostics.currentTrickLength)
+    )
+    : null;
+
+  if (diagnostics.duplicatePlayerIds.length > 0) {
+    warnInvalidTurnState(game, context, `Duplicate roundActivePlayerIds detected (${JSON.stringify(diagnostics)})`);
+    return false;
+  }
+
+  if (
+    diagnostics.duplicateRoundActivePlayerIds.length > 0
+    || diagnostics.missingPlayers.length > 0
+    || diagnostics.currentTrickLength > activePlayerCount
+    || diagnostics.duplicateCurrentTrickPlayerIds.length > 0
+    || diagnostics.invalidCurrentTrickPlayerIds.length > 0
+  ) {
+    warnInvalidTurnState(game, context, `Active players corrupted before bot scheduling (${JSON.stringify(diagnostics)})`);
+    return false;
+  }
+
+  if (game.currentPlayerId && !diagnostics.roundActivePlayerIds.includes(game.currentPlayerId)) {
+    warnInvalidTurnState(game, context, `currentPlayerId is outside roundActivePlayerIds (${JSON.stringify(diagnostics)})`);
+    return false;
+  }
+
+  if (requireHands) {
+    if (diagnostics.missingActivePlayerHands.length > 0) {
+      warnInvalidTurnState(game, context, `Missing active player hand (${JSON.stringify(diagnostics)})`);
+      return false;
+    }
+
+    if (diagnostics.unexpectedHandOwners.length > 0) {
+      warnInvalidTurnState(game, context, `Unexpected hand owner detected (${JSON.stringify(diagnostics)})`);
+      return false;
+    }
+
+    if (diagnostics.handSizeMismatches.length > 0) {
+      warnInvalidTurnState(game, context, `Hand size mismatch after deal (${JSON.stringify({
+        ...diagnostics,
+        expectedTotalCards
+      })})`);
+      return false;
+    }
+
+    if (expectedTotalCards !== null && diagnostics.totalCardsInHands !== expectedTotalCards) {
+      warnInvalidTurnState(game, context, `Total cards in hands mismatch (${JSON.stringify({
+        ...diagnostics,
+        expectedTotalCards
+      })})`);
+      return false;
+    }
+
+    if (requireUniformHands) {
+      const uniqueHandSizes = [...new Set(Object.values(diagnostics.handSizes).filter((handSize) => Number.isFinite(handSize)))];
+      if (uniqueHandSizes.length > 1) {
+        warnInvalidTurnState(game, context, `Hand size mismatch after deal (${JSON.stringify(diagnostics)})`);
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 function buildStandings(game, pointsByPlayer = game.pointsByPlayer) {
   return game.players
     .map((player) => ({
@@ -867,6 +1065,7 @@ function migrateGameSeatIdentity(game, fromUserId, toUserId) {
   migrateStateEntryKey(game.lastEloDeltaByUserId, fromUserId, toUserId, () => 0);
 
   game.chooserOrder = (game.chooserOrder || []).map((playerId) => (playerId === fromUserId ? toUserId : playerId));
+  game.roundActivePlayerIds = getStoredRoundActivePlayerIds(game).map((playerId) => (playerId === fromUserId ? toUserId : playerId));
   if (game.chooserId === fromUserId) {
     game.chooserId = toUserId;
   }
@@ -1820,6 +2019,11 @@ function getStartGameValidationError(lobby, user) {
     return `At least ${MIN_PLAYERS_TO_START} players are required to start the game`;
   }
 
+  const duplicatePlayerIds = findDuplicateIds(lobby.players.map((player) => player?.userId));
+  if (duplicatePlayerIds.length > 0) {
+    return 'Lobby players are corrupted';
+  }
+
   const allReady = lobby.players.every((player) => player.isReady);
   if (!allReady) {
     return 'Not all players are ready';
@@ -2498,23 +2702,20 @@ function getRoundActivePlayers(game, { allowDisconnected = false } = {}) {
     return [];
   }
 
-  const trickParticipantIds = getCurrentTrickParticipantIds(game);
-  return game.players.filter((player) => {
-    if (!player?.userId) {
-      return false;
-    }
+  const activePlayersById = new Map(
+    getCanonicalRoundPlayers(game, { allowDisconnected }).map((player) => [player.userId, player])
+  );
+  const roundActivePlayerIds = getStoredRoundActivePlayerIds(game);
+  const storedIdsAreValid = roundActivePlayerIds.length > 0
+    && findDuplicateIds(roundActivePlayerIds).length === 0
+    && roundActivePlayerIds.every((playerId) => activePlayersById.has(playerId));
+  const resolvedPlayerIds = storedIdsAreValid
+    ? roundActivePlayerIds
+    : rebuildRoundActivePlayerIds(game, { allowDisconnected });
 
-    if (
-      !allowDisconnected
-      && player.connectionStatus === 'abandoned'
-      && !isBotPlayer(player)
-    ) {
-      return false;
-    }
-
-    const handSize = (game.handsReady?.[player.userId] || []).length;
-    return handSize > 0 || trickParticipantIds.has(player.userId);
-  });
+  return resolvedPlayerIds
+    .map((playerId) => activePlayersById.get(playerId))
+    .filter(Boolean);
 }
 
 function isSeatTurnEligible(game, player, { allowDisconnected = false } = {}) {
@@ -2756,6 +2957,13 @@ function validateActiveTurnState(game, context, {
 } = {}) {
   if (!game || game.phase !== 'playing_round') {
     return true;
+  }
+
+  if (!validateRoundStateIntegrity(game, `${context}:roundState`, {
+    allowDisconnected,
+    requireHands: true
+  })) {
+    return false;
   }
 
   const previousTurnIndex = Number(game.turnIndex || 0);
@@ -3367,9 +3575,16 @@ function emitHands(io, roomId, game) {
 }
 
 function dealNewRoundCards(io, roomId, game) {
-  const unShuffledDeck = generateDeck(game.players.length);
+  const playerIds = rebuildRoundActivePlayerIds(game, { allowDisconnected: true });
+  if (playerIds.length !== game.players.length || findDuplicateIds(playerIds).length > 0) {
+    warnInvalidTurnState(game, 'dealNewRoundCards:beforeDeal', `Duplicate roundActivePlayerIds detected (${JSON.stringify(
+      buildRoundStateDiagnostics(game, { allowDisconnected: true })
+    )})`);
+    return false;
+  }
+
+  const unShuffledDeck = generateDeck(playerIds.length);
   const shuffledDeck = shuffle([...unShuffledDeck]);
-  const playerIds = game.players.map((player) => player.userId);
   const hands = dealCards(shuffledDeck, playerIds);
 
   game.handsReady = hands;
@@ -3382,8 +3597,16 @@ function dealNewRoundCards(io, roomId, game) {
     acc[playerId] = [];
     return acc;
   }, {});
+  if (!validateRoundStateIntegrity(game, 'dealNewRoundCards:afterDeal', {
+    allowDisconnected: true,
+    requireHands: true,
+    requireUniformHands: true
+  })) {
+    return false;
+  }
 
   emitHands(io, roomId, game);
+  return true;
 }
 
 function buildInitialPoints(players) {
@@ -3457,6 +3680,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
       acc[playerId] = {};
       return acc;
     }, {}),
+    roundActivePlayerIds: [],
     activeRulesetId: null,
     nvSelected: false,
     roundNumber: 0,
@@ -3605,7 +3829,9 @@ function startTrainingRoundGameplay(io, roomId, game, {
   clearPendingBotAction(game);
   clearRoundAutoContinue(game);
 
-  dealNewRoundCards(io, roomId, game);
+  if (!dealNewRoundCards(io, roomId, game)) {
+    return { error: 'Round state is corrupted' };
+  }
   game.phase = 'playing_round';
   game.chooserId = game.training.humanUserId || getTrainingHumanPlayer(game)?.userId || null;
   game.activeRulesetId = game.training.selectedRulesetId;
@@ -3666,6 +3892,7 @@ function startTrainingRound(io, roomId, game, { announce = true } = {}) {
   game.currentTrick = [];
   game.trickSuit = null;
   game.trickPending = false;
+  game.roundActivePlayerIds = [];
   game.handsReady = createEmptyHandsByPlayer(game);
   game.startingHandSize = 0;
   game.collectedHands = [];
@@ -4154,7 +4381,9 @@ async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
 
 function startRulesetSelection(io, roomId, game, { dealFirst = false } = {}) {
   if (dealFirst) {
-    dealNewRoundCards(io, roomId, game);
+    if (!dealNewRoundCards(io, roomId, game)) {
+      return { error: 'Round state is corrupted' };
+    }
   }
 
   game.phase = 'choosing_ruleset';
@@ -4165,6 +4394,7 @@ function startRulesetSelection(io, roomId, game, { dealFirst = false } = {}) {
     playerPoints: buildPointTotals(game)
   });
   void scheduleBotActionIfNeeded(io, roomId, game);
+  return { success: true };
 }
 
 function beginChooserTurn(io, roomId, game) {
@@ -4182,6 +4412,7 @@ function beginChooserTurn(io, roomId, game) {
   game.currentTrick = [];
   game.trickSuit = null;
   game.trickPending = false;
+  game.roundActivePlayerIds = [];
   game.handsReady = game.players.reduce((acc, player) => {
     acc[player.userId] = [];
     return acc;
@@ -4204,8 +4435,7 @@ function beginChooserTurn(io, roomId, game) {
   }
 
   game.nvSelected = false;
-  startRulesetSelection(io, roomId, game, { dealFirst: true });
-  return true;
+  return !startRulesetSelection(io, roomId, game, { dealFirst: true }).error;
 }
 
 function setNvChoiceForRound(io, roomId, game, playerId, nvSelected) {
@@ -4228,8 +4458,7 @@ function setNvChoiceForRound(io, roomId, game, playerId, nvSelected) {
     });
   }
 
-  startRulesetSelection(io, roomId, game, { dealFirst: !game.nvSelected });
-  return { success: true };
+  return startRulesetSelection(io, roomId, game, { dealFirst: !game.nvSelected });
 }
 
 function selectRulesetForRound(io, roomId, game, playerId, rulesetId) {
@@ -4249,7 +4478,9 @@ function selectRulesetForRound(io, roomId, game, playerId, rulesetId) {
   clearPendingBotAction(game);
 
   if (game.nvSelected && game.players.every((player) => (game.handsReady[player.userId] || []).length === 0)) {
-    dealNewRoundCards(io, roomId, game);
+    if (!dealNewRoundCards(io, roomId, game)) {
+      return { error: 'Round state is corrupted' };
+    }
   }
 
   game.usedChoices[playerId] = {
@@ -4616,6 +4847,7 @@ async function resumeSavedGameSession(io, socket, user, savedGameId) {
     chooserCursor: Number(snapshot.chooserCursor || 0),
     chooserId: snapshot.chooserId || null,
     usedChoices: cloneStateSnapshot(snapshot.usedChoices || {}) || {},
+    roundActivePlayerIds: cloneStateSnapshot(snapshot.roundActivePlayerIds || []) || [],
     activeRulesetId: snapshot.activeRulesetId || null,
     nvSelected: Boolean(snapshot.nvSelected),
     roundNumber: Number(snapshot.roundNumber || 0),
@@ -6702,7 +6934,15 @@ module.exports.setNvChoiceForRound = setNvChoiceForRound;
 module.exports.validateTrainingSettings = validateTrainingSettings;
 module.exports.__testHelpers = {
   activeGames,
+  beginChooserTurn,
+  buildGameStateFromLobby,
+  buildRoundActivePlayerIds,
+  continueAfterRound,
+  dealNewRoundCards,
+  getLegalCardsForPlayer,
   playCardForPlayer,
+  selectRulesetForRound,
   setCurrentPlayer,
-  validateActiveTurnState
+  validateActiveTurnState,
+  validateRoundStateIntegrity
 };

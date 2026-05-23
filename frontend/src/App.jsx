@@ -15138,4 +15138,10 @@ endif`}
   );
 }
 
+export {
+  isForumCardActionTarget,
+  mergeForumEntryPreservingReplies,
+  stopForumCardActionPropagation
+};
+
 export default App;
