@@ -1,0 +1,89 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Git branch to deploy
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_BRANCH: ${{ inputs.branch || vars.DEPLOY_BRANCH || 'main' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      PM2_APP_NAME: ${{ vars.PM2_APP_NAME || 'rentz-arena' }}
+      SERVER_HEALTH_URL: ${{ secrets.SERVER_HEALTH_URL }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          script_stop: true
+          envs: DEPLOY_BRANCH,DEPLOY_PATH,PM2_APP_NAME
+          script: |
+            set -e
+
+            if [ -z "$DEPLOY_PATH" ]; then
+              echo "DEPLOY_PATH is not configured."
+              exit 1
+            fi
+
+            cd "$DEPLOY_PATH"
+
+            git fetch origin
+            git checkout "$DEPLOY_BRANCH"
+            git pull --ff-only origin "$DEPLOY_BRANCH"
+
+            if [ -f package.json ]; then
+              if [ -f package-lock.json ]; then
+                npm ci
+              else
+                npm install
+              fi
+            fi
+
+            if [ -f backend/package.json ]; then
+              cd backend
+              if [ -f package-lock.json ]; then
+                npm ci
+              else
+                npm install
+              fi
+              cd ..
+            fi
+
+            if [ -f frontend/package.json ]; then
+              cd frontend
+              if [ -f package-lock.json ]; then
+                npm ci
+              else
+                npm install
+              fi
+              npm run build
+              cd ..
+            fi
+
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 restart "$PM2_APP_NAME" || pm2 start backend/index.js --name "$PM2_APP_NAME"
+              pm2 save
+            else
+              echo "PM2 is not installed on the server. Restart the backend process manually."
+            fi
+
+      - name: Run optional health check
+        if: ${{ env.SERVER_HEALTH_URL != '' }}
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 "$SERVER_HEALTH_URL"

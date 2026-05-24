@@ -1,0 +1,92 @@
+name: Bot Evals
+
+on:
+  workflow_dispatch:
+    inputs:
+      eval_type:
+        description: Select which hosted-safe eval lane to run
+        required: true
+        type: choice
+        default: mock
+        options:
+          - mock
+          - stable
+          - editor-cloud
+
+permissions:
+  contents: read
+
+jobs:
+  bot-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      CI: 'true'
+      PROMPTFOO_USE_REAL_OLLAMA: 'false'
+      PROMPTFOO_USE_REAL_CLOUD: 'false'
+      AUTH_JWT_SECRET: test-jwt-secret
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_EDITOR_BOT_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        if: hashFiles('package.json') != ''
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install backend dependencies
+        if: hashFiles('backend/package.json') != ''
+        working-directory: backend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install frontend dependencies
+        if: hashFiles('frontend/package.json') != ''
+        working-directory: frontend
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run mock eval suite
+        if: ${{ inputs.eval_type == 'mock' }}
+        run: npm run eval:bots:mock --if-present
+
+      - name: Run hosted-safe stable eval suite
+        if: ${{ inputs.eval_type == 'stable' }}
+        run: npm run eval:bots --if-present
+
+      - name: Require cloud editor secret
+        if: ${{ inputs.eval_type == 'editor-cloud' && secrets.OLLAMA_API_KEY == '' }}
+        run: |
+          echo "The editor-cloud lane requires the OLLAMA_API_KEY secret."
+          exit 1
+
+      - name: Run editor cloud eval
+        if: ${{ inputs.eval_type == 'editor-cloud' && secrets.OLLAMA_API_KEY != '' }}
+        env:
+          PROMPTFOO_USE_REAL_CLOUD: 'true'
+        run: npm run eval:editor-bot:cloud --if-present
