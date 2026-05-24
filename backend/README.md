@@ -124,6 +124,8 @@ ollama list
 curl http://127.0.0.1:11434/api/tags
 ```
 
+Promptfoo-based bot eval docs live at [evals/promptfoo/README.md](/home/alexn/FMI/MDS/RentzArena/evals/promptfoo/README.md).
+
 ## Bot and Abandonment Settings
 
 These backend env values control AI seats and abandonment replacement:

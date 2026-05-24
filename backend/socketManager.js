@@ -27,7 +27,8 @@ const {
   generateTrainerPreMoveComment,
   getAverageHumanElo,
   isBotPlayer,
-  isTrainerBot
+  isTrainerBot,
+  warmTrainerBotStage
 } = require('./src/lib/bots');
 const {
   DEFAULT_ACCOUNT_ELO,
@@ -83,6 +84,7 @@ const TRAINING_MATCH_MODE = 'training';
 const STANDARD_MATCH_MODE = 'standard';
 const TRAINING_ROUNDS_RANGE = { min: 1, max: 15 };
 const TRAINING_PLAYERS_RANGE = { min: 2, max: 6 };
+const LOG_BOT_AI_DEBUG = process.env.LOG_BOT_AI_DEBUG === 'true' || process.env.DEBUG_BOT_AI === 'true';
 const ROOM_INVITE_TTL_MS = Math.max(30 * 1000, Number(process.env.ROOM_INVITE_TTL_MS || 3 * 60 * 1000));
 const DEFAULT_TRAINER_MESSAGE_SETTINGS = Object.freeze({
   preMoveCommentaryEnabled: true,
@@ -120,6 +122,7 @@ function serializeTrainingState(training = null) {
     selectedRulesetId: training.selectedRulesetId || '',
     selectedRulesetLabel: training.selectedRulesetLabel || '',
     selectedRulesetSource: training.selectedRulesetSource || 'default',
+    finalReviewPending: training.finalReviewPending === true,
     preMoveCommentaryEnabled: training.preMoveCommentaryEnabled !== false,
     postMoveFeedbackEnabled: training.postMoveFeedbackEnabled !== false
   };
@@ -132,8 +135,94 @@ function serializeTrainingFinalReview(finalReview = null) {
 
   return {
     review: String(finalReview.review || '').trim(),
-    starRating: Math.max(0.5, Math.min(5, Number(finalReview.starRating || 3)))
+    starRating: Math.max(0.5, Math.min(5, Number(finalReview.starRating || 3))),
+    debugMeta: serializeTrainerDebugMeta(finalReview.debugMeta)
   };
+}
+
+function serializeGameplayBotDebugMeta(debugMeta = null) {
+  if (!debugMeta) {
+    return null;
+  }
+
+  return {
+    botDecisionSource: String(debugMeta.source || 'unknown'),
+    botDecisionFallbackUsed: debugMeta.fallbackUsed === true,
+    botDecisionElapsedMs: Math.max(0, Math.round(Number(debugMeta.elapsedMs) || 0)),
+    botDecisionErrorCode: debugMeta.errorCode ? String(debugMeta.errorCode) : null,
+    botDecisionMode: String(debugMeta.mode || 'live'),
+    model: String(debugMeta.model || ''),
+    timeoutMs: Math.max(0, Math.round(Number(debugMeta.timeoutMs) || 0)),
+    numPredict: Math.max(0, Math.round(Number(debugMeta.numPredict) || 0)),
+    promptLength: Math.max(0, Math.round(Number(debugMeta.promptLength) || 0)),
+    payloadLength: Math.max(0, Math.round(Number(debugMeta.payloadLength) || 0)),
+    legalMoveCount: Math.max(0, Math.round(Number(debugMeta.legalMoveCount) || 0)),
+    outputContract: String(debugMeta.outputContract || 'legacy'),
+    rawOutputPreview: debugMeta.rawOutputPreview ? String(debugMeta.rawOutputPreview) : '',
+    selectedIndex: Number.isInteger(debugMeta.selectedIndex) ? debugMeta.selectedIndex : null,
+    selectedMoveId: String(debugMeta.selectedMoveId || '')
+  };
+}
+
+function serializeTrainerDebugMeta(debugMeta = null) {
+  if (!debugMeta) {
+    return null;
+  }
+
+  return {
+    trainerSource: String(debugMeta.source || 'unknown'),
+    trainerFallbackUsed: debugMeta.fallbackUsed === true,
+    trainerElapsedMs: Math.max(0, Math.round(Number(debugMeta.elapsedMs) || 0)),
+    trainerErrorCode: debugMeta.errorCode ? String(debugMeta.errorCode) : null,
+    trainerMode: String(debugMeta.mode || 'fast'),
+    model: String(debugMeta.model || ''),
+    timeoutMs: Math.max(0, Math.round(Number(debugMeta.timeoutMs) || 0)),
+    numPredict: Math.max(0, Math.round(Number(debugMeta.numPredict) || 0)),
+    promptLength: Math.max(0, Math.round(Number(debugMeta.promptLength) || 0)),
+    payloadLength: Math.max(0, Math.round(Number(debugMeta.payloadLength) || 0)),
+    parserMode: String(debugMeta.parserMode || 'fallback'),
+    preview: debugMeta.preview ? String(debugMeta.preview) : '',
+    stage: debugMeta.stage ? String(debugMeta.stage) : '',
+    rawResponsePreview: debugMeta.rawResponsePreview ? String(debugMeta.rawResponsePreview) : '',
+    rawResponseLength: Math.max(0, Math.round(Number(debugMeta.rawResponseLength) || 0)),
+    parseStep: debugMeta.parseStep ? String(debugMeta.parseStep) : '',
+    parseErrorMessage: debugMeta.parseErrorMessage ? String(debugMeta.parseErrorMessage) : '',
+    validationErrorMessage: debugMeta.validationErrorMessage ? String(debugMeta.validationErrorMessage) : '',
+    sourceBeforeFallback: debugMeta.sourceBeforeFallback ? String(debugMeta.sourceBeforeFallback) : '',
+    finalSource: debugMeta.finalSource ? String(debugMeta.finalSource) : '',
+    fallbackReason: debugMeta.fallbackReason ? String(debugMeta.fallbackReason) : ''
+  };
+}
+
+function logTrainerRuntimeDebug(roomId, stage, metadata = {}) {
+  if (!LOG_BOT_AI_DEBUG) {
+    return;
+  }
+
+  const debugMeta = metadata?.debugMeta || metadata || {};
+  console.info('[trainer-bot]', JSON.stringify({
+    roomId: roomId || '',
+    stage: debugMeta.stage || stage,
+    sourceBeforeFallback: debugMeta.sourceBeforeFallback || metadata.source || 'unknown',
+    source: debugMeta.finalSource || metadata.source || 'unknown',
+    fallbackUsed: debugMeta.fallbackUsed === true || metadata.fallbackUsed === true,
+    elapsedMs: Math.max(0, Math.round(Number(debugMeta.elapsedMs ?? metadata.elapsedMs) || 0)),
+    mode: debugMeta.mode || metadata.mode || '',
+    model: debugMeta.model || metadata.model || '',
+    timeoutMs: Math.max(0, Math.round(Number(debugMeta.timeoutMs ?? metadata.timeoutMs) || 0)),
+    numPredict: Math.max(0, Math.round(Number(debugMeta.numPredict ?? metadata.numPredict) || 0)),
+    promptLength: Math.max(0, Math.round(Number(debugMeta.promptLength ?? metadata.promptLength) || 0)),
+    payloadLength: Math.max(0, Math.round(Number(debugMeta.payloadLength ?? metadata.payloadLength) || 0)),
+    parserMode: debugMeta.parserMode || metadata.parserMode || 'fallback',
+    parseStep: debugMeta.parseStep || '',
+    parseErrorMessage: debugMeta.parseErrorMessage || '',
+    validationErrorMessage: debugMeta.validationErrorMessage || '',
+    rawResponseLength: Math.max(0, Math.round(Number(debugMeta.rawResponseLength) || 0)),
+    rawResponsePreview: debugMeta.rawResponsePreview ? String(debugMeta.rawResponsePreview).slice(0, 160) : '',
+    errorCode: debugMeta.errorCode || metadata.errorCode || null,
+    fallbackReason: debugMeta.fallbackReason || '',
+    preview: debugMeta.preview ? String(debugMeta.preview).slice(0, 160) : ''
+  }));
 }
 
 function getMaxTrainerEloForUser(user) {
@@ -1121,7 +1210,8 @@ function serializeChatMessages(messages = []) {
       ...(message.sender || {})
     },
     content: message.content,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    debugMeta: serializeTrainerDebugMeta(message.debugMeta)
   }));
 }
 
@@ -1145,14 +1235,15 @@ function emitGameActivity(io, roomId, message, { tone = 'info' } = {}) {
   });
 }
 
-function createScopedChatMessage(roomId, scope, user, member, content) {
+function createScopedChatMessage(roomId, scope, user, member, content, { debugMeta = null } = {}) {
   return {
     id: `chat_${Date.now().toString(36)}_${randomFriendCode().toLowerCase()}`,
     roomId,
     scope,
     sender: serializeChatSender(user, member),
     content,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    debugMeta: serializeTrainerDebugMeta(debugMeta)
   };
 }
 
@@ -1174,7 +1265,7 @@ function markTrainerMessageSent(game, dedupeKey) {
   game.trainerMessageKeys.add(dedupeKey);
 }
 
-function emitAutomatedGameChatMessage(io, roomId, game, speaker, content, { dedupeKey = '' } = {}) {
+function emitAutomatedGameChatMessage(io, roomId, game, speaker, content, { dedupeKey = '', debugMeta = null } = {}) {
   const normalizedContent = normalizeChatContent(content);
   if (!io || !roomId || !game || !speaker || !normalizedContent) {
     return null;
@@ -1186,7 +1277,9 @@ function emitAutomatedGameChatMessage(io, roomId, game, speaker, content, { dedu
 
   const message = appendChatMessage(
     game,
-    createScopedChatMessage(roomId, 'game', speaker, speaker, normalizedContent)
+    createScopedChatMessage(roomId, 'game', speaker, speaker, normalizedContent, {
+      debugMeta
+    })
   );
   if (dedupeKey) {
     markTrainerMessageSent(game, dedupeKey);
@@ -2187,6 +2280,7 @@ function buildGameSessionSnapshot(roomId, game, userId, { isSpectator = false } 
     standings: buildStandings(game),
     startingHandSize: game.startingHandSize || 0,
     chatMessages: serializeChatMessages(game.chatMessages),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -2517,7 +2611,9 @@ function getTrainingHumanPlayer(game) {
   return game?.players?.find((player) => !isBotPlayer(player)) || null;
 }
 
-async function maybeSendTrainerPreMoveComment(io, roomId, game, trainerPlayer, selectedMove, legalMoves, ruleset) {
+async function maybeSendTrainerPreMoveComment(io, roomId, game, trainerPlayer, selectedMove, legalMoves, ruleset, {
+  expectedActionKey = ''
+} = {}) {
   if (
     !io
     || !roomId
@@ -2541,16 +2637,28 @@ async function maybeSendTrainerPreMoveComment(io, roomId, game, trainerPlayer, s
     return null;
   }
 
-  const comment = await generateTrainerPreMoveComment({
+  const commentResult = await generateTrainerPreMoveComment({
     gameState: game,
     trainerPlayer,
     legalMoves,
     selectedMove,
-    ruleset
+    ruleset,
+    returnMetadata: true
   });
 
-  return emitAutomatedGameChatMessage(io, roomId, game, trainerPlayer, comment, {
-    dedupeKey
+  logTrainerRuntimeDebug(roomId, 'before_move', commentResult);
+
+  if (
+    expectedActionKey
+    && getPendingBotActionKey(game) !== expectedActionKey
+    && game.botActionInFlightKey !== expectedActionKey
+  ) {
+    return null;
+  }
+
+  return emitAutomatedGameChatMessage(io, roomId, game, trainerPlayer, commentResult.comment, {
+    dedupeKey,
+    debugMeta: commentResult.debugMeta
   });
 }
 
@@ -2594,8 +2702,11 @@ function maybeSendTrainerMoveFeedback(io, roomId, game, {
         playedCard,
         legalMoves,
         ruleset,
-        currentTrickBeforeMove
+        currentTrickBeforeMove,
+        returnMetadata: true
       });
+
+      logTrainerRuntimeDebug(roomId, 'after_move', evaluation);
 
       if (Number.isFinite(Number(evaluation?.rating))) {
         game.training.feedbackEntries = Array.isArray(game.training.feedbackEntries)
@@ -2615,7 +2726,8 @@ function maybeSendTrainerMoveFeedback(io, roomId, game, {
       }
 
       return emitAutomatedGameChatMessage(io, roomId, game, trainerPlayer, evaluation.feedback, {
-        dedupeKey
+        dedupeKey,
+        debugMeta: evaluation.debugMeta
       });
     })
     .catch((error) => {
@@ -3144,6 +3256,7 @@ function emitCurrentGameplayState(io, roomId, game) {
       stateVersion,
       cardCounts: buildCardCounts(game),
       choiceState: serializeChoiceState(game),
+      lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
       spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName,
@@ -3423,19 +3536,16 @@ async function executeBotAction(io, roomId, game, actionKey, generation) {
     }
 
     if (kind === 'play_card' && isTrainerBot(livePlayer)) {
-      await maybeSendTrainerPreMoveComment(
+      void maybeSendTrainerPreMoveComment(
         io,
         roomId,
         game,
         livePlayer,
         selectedMove,
         legalMoves,
-        ruleset
+        ruleset,
+        { expectedActionKey: actionKey }
       );
-
-      if (!doesBotActionStillMatchTurn(game, actionKey, generation)) {
-        return;
-      }
     }
 
     if (kind === 'play_card') {
@@ -3446,7 +3556,12 @@ async function executeBotAction(io, roomId, game, actionKey, generation) {
       }
     }
 
-    const result = playCardForPlayer(io, roomId, livePlayer.userId, selectedMove.card || selectedMove.id, { auto: true });
+    game.lastBotDecisionDebug = serializeGameplayBotDebugMeta(decision.debugMeta);
+
+    const result = playCardForPlayer(io, roomId, livePlayer.userId, selectedMove.card || selectedMove.id, {
+      auto: true,
+      botDecisionDebug: decision.debugMeta
+    });
     if (result?.error) {
       void scheduleBotActionIfNeeded(io, roomId, game);
     }
@@ -3725,6 +3840,7 @@ function buildGameStateFromLobby(lobby, { matchMode = STANDARD_MATCH_MODE, train
     abandonedPlayers: {},
     timerId: null,
     timerDeadline: null,
+    lastBotDecisionDebug: null,
     trainerMessageKeys: new Set()
   };
 }
@@ -3751,6 +3867,7 @@ function emitGameStartedToMembers(io, roomId, lobby, gameState) {
       choiceState: serializeChoiceState(gameState),
       availableRulesets: getAvailableRulesets(gameState.customRulesets),
       chatMessages: serializeChatMessages(gameState.chatMessages),
+      lastBotDecisionDebug: serializeGameplayBotDebugMeta(gameState.lastBotDecisionDebug),
       spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -3774,6 +3891,7 @@ function emitGameStartedToMembers(io, roomId, lobby, gameState) {
       choiceState: serializeChoiceState(gameState),
       availableRulesets: getAvailableRulesets(gameState.customRulesets),
       chatMessages: serializeChatMessages(gameState.chatMessages),
+      lastBotDecisionDebug: serializeGameplayBotDebugMeta(gameState.lastBotDecisionDebug),
       spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -3866,6 +3984,7 @@ function startTrainingRoundGameplay(io, roomId, game, {
     cardCounts: buildCardCounts(game),
     playerPoints: buildPointTotals(game),
     collectedHandsByPlayer: buildCollectedHands(game),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -4328,13 +4447,28 @@ async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
     clearCurrentPlayer(game);
 
     if (isTrainingMatch(game)) {
-      game.training.finalReview = await generateTrainerFinalReview({
+      game.training.finalReviewPending = true;
+      const pendingStateVersion = bumpGameStateVersion(game);
+      io.to(roomId).emit('training_final_review_pending', {
+        stateVersion: pendingStateVersion,
+        choiceState: serializeChoiceState(game)
+      });
+      await warmTrainerBotStage({ stage: 'final_review' }).catch(() => false);
+      const finalReview = await generateTrainerFinalReview({
         training: game.training,
         feedbackEntries: game.training.feedbackEntries || [],
         roundSummaries: game.training.roundSummaries || [],
         humanPlayer: getTrainingHumanPlayer(game),
-        trainerPlayer: getTrainerPlayer(game)
+        trainerPlayer: getTrainerPlayer(game),
+        returnMetadata: true
       });
+      logTrainerRuntimeDebug(roomId, 'final_review', finalReview);
+      game.training.finalReviewPending = false;
+      game.training.finalReview = {
+        review: finalReview.review,
+        starRating: finalReview.starRating,
+        debugMeta: finalReview.debugMeta
+      };
     }
 
     if (applyElo) {
@@ -4370,6 +4504,7 @@ async function finishBigGame(io, roomId, game, { applyElo = true } = {}) {
       cardCounts: buildCardCounts(game),
       choiceState: serializeChoiceState(game),
       trainingFinalReview: serializeTrainingFinalReview(game.training?.finalReview),
+      lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
       spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -4511,6 +4646,7 @@ function selectRulesetForRound(io, roomId, game, playerId, rulesetId) {
     cardCounts: buildCardCounts(game),
     playerPoints: buildPointTotals(game),
     collectedHandsByPlayer: buildCollectedHands(game),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName,
@@ -4552,6 +4688,7 @@ function finishSmallGameRound(io, roomId, game) {
     playerPoints: buildPointTotals(game),
     collectedHandsByPlayer: buildCollectedHands(game),
     cardCounts: buildCardCounts(game),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName
@@ -5092,6 +5229,7 @@ async function createTrainingMatchSession(io, socket, user, trainingSettings) {
   socket.join(roomId);
   lobbies.set(roomId, lobby);
   activeGames.set(roomId, game);
+  void warmTrainerBotStage({ stage: 'before_move' }).catch(() => {});
 
   emitGameStartedToMembers(io, roomId, lobby, game);
   startTrainingRound(io, roomId, game);
@@ -5450,7 +5588,7 @@ async function removeWaitingLobbyMemberOnDisconnect(io, roomId, lobby, member) {
   );
 }
 
-function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
+function playCardForPlayer(io, roomId, playerId, card, { auto = false, botDecisionDebug = null } = {}) {
   const game = activeGames.get(roomId);
   if (!game) {
     return { error: 'Game not found' };
@@ -5524,7 +5662,8 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     playedBy: player.userId,
     playerName: player.name,
     card,
-    auto
+    auto,
+    botDecisionDebug: serializeGameplayBotDebugMeta(botDecisionDebug)
   });
 
   const trickComplete = game.currentTrick.length === game.players.length;
@@ -5605,6 +5744,7 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     stateVersion: gameUpdateVersion,
     cardCounts: buildCardCounts(game),
     choiceState: serializeChoiceState(game),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: spectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: spectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: spectatorVisibleHandState.visiblePlayerName,
@@ -5644,6 +5784,7 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
     collectedHandsByPlayer: buildCollectedHands(game),
     cardCounts: buildCardCounts(game),
     choiceState: serializeChoiceState(game),
+    lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
     spectatorVisibleHand: nextSpectatorVisibleHandState.visibleHand,
     spectatorVisiblePlayerId: nextSpectatorVisibleHandState.visiblePlayerId,
     spectatorVisiblePlayerName: nextSpectatorVisibleHandState.visiblePlayerName
@@ -5687,6 +5828,7 @@ function playCardForPlayer(io, roomId, playerId, card, { auto = false } = {}) {
       cardCounts: buildCardCounts(game),
       gameFinished: gameShouldFinish,
       choiceState: serializeChoiceState(game),
+      lastBotDecisionDebug: serializeGameplayBotDebugMeta(game.lastBotDecisionDebug),
       spectatorVisibleHand: nextSpectatorVisibleHandState.visibleHand,
       spectatorVisiblePlayerId: nextSpectatorVisibleHandState.visiblePlayerId,
       spectatorVisiblePlayerName: nextSpectatorVisibleHandState.visiblePlayerName

@@ -1,0 +1,93 @@
+- description: Trainer praises a strong king-of-hearts avoidance move with a high rating
+  vars:
+    scenarioId: trainer-mock-after-good
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2600
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    playedCard: 2-clubs
+    currentTrickBeforeMove: '[]'
+    expectedSource: mock
+    expectedMinRating: 8
+    expectedMaxRating: 10
+    maxLength: 260
+    forbiddenHiddenStrings: '["A-spades"]'
+
+- description: Trainer flags taking the king of hearts as a bad move and suggests a safer alternative
+  vars:
+    scenarioId: trainer-mock-after-bad
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 3200
+    trainerHand: '["5-hearts", "K-hearts", "9-spades"]'
+    legalMoves: '["5-hearts", "K-hearts"]'
+    playedCard: K-hearts
+    currentTrickBeforeMove: '[{"playedBy":"player-2","playerName":"Opponent","card":"2-hearts"}]'
+    expectedSource: mock
+    expectedMinRating: 0
+    expectedMaxRating: 5
+    requireSuggestion: true
+    maxLength: 260
+    forbiddenHiddenStrings: '["9-spades"]'
+
+- description: Trainer keeps neutral feedback short for a middling move that does not swing the round too much
+  vars:
+    scenarioId: trainer-mock-after-neutral
+    evaluationType: contract
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2100
+    trainerHand: '["2-clubs", "6-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "6-clubs", "K-hearts"]'
+    playedCard: 6-clubs
+    expectedSource: mock
+    expectedMinRating: 4.5
+    expectedMaxRating: 8.5
+    maxLength: 220
+    forbiddenHiddenStrings: '[]'
+
+- description: Trainer pre-move commentary explains intent without exposing exact hidden cards
+  vars:
+    scenarioId: trainer-mock-before-visible
+    evaluationType: contract
+    mode: before_move
+    rulesetId: kingOfHearts
+    trainerElo: 2800
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    selectedMoveId: 2-clubs
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"A-hearts"}]'
+    expectedSource: mock
+    maxLength: 220
+    forbiddenHiddenStrings: '["2-clubs", "K-hearts", "A-spades"]'
+
+- description: Trainer hidden-info trap keeps both its own hand and unseen opponent cards private
+  vars:
+    scenarioId: trainer-mock-before-hidden-info
+    evaluationType: contract
+    mode: before_move
+    rulesetId: whist
+    trainerElo: 3600
+    trainerHand: '["J-spades", "A-spades", "10-clubs"]'
+    hiddenOpponentCards: '["Q-diamonds", "A-hearts"]'
+    legalMoves: '["J-spades", "A-spades"]'
+    selectedMoveId: A-spades
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"10-spades"}]'
+    expectedSource: mock
+    maxLength: 220
+    forbiddenHiddenStrings: '["J-spades", "A-spades", "10-clubs", "Q-diamonds", "A-hearts"]'
+
+- description: Trainer final review summarizes the session without repeating the star score in text
+  vars:
+    scenarioId: trainer-mock-final-review
+    evaluationType: contract
+    mode: final_review
+    selectedRulesetLabel: King of Hearts
+    totalRounds: 2
+    feedbackEntries: '[{"roundNumber":1,"rating":8.8,"feedback":"Move rating: 8.8/10. Good choice. It fits the current objective and keeps the position manageable."},{"roundNumber":2,"rating":4.2,"feedback":"Move rating: 4.2/10. This was a riskier choice for the current ruleset. A card like 2-clubs would usually be steadier here."}]'
+    roundSummaries: '[{"roundNumber":1,"humanScoreDelta":10,"humanTricksWon":1,"trainerTricksWon":0},{"roundNumber":2,"humanScoreDelta":-100,"humanTricksWon":0,"trainerTricksWon":1}]'
+    expectedSource: mock
+    maxLength: 420

@@ -1,0 +1,127 @@
+- description: Editor Bot sanitizer removes category labels and score contamination from explanations
+  vars:
+    caseId: editor-contaminated-output
+    evaluationType: contract
+    executionMode: synthetic-cloud-fixture
+    mockScenario: contaminated-cloud
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: Contaminated Output Sample
+    rulesetShortName: COS
+    expectedAllowedReviewSources: '["cloud"]'
+    expectedSuccess: true
+    expectedProviderModes: '["synthetic-cloud-fixture"]'
+    expectedSourceHash: dbc1a362b5515fae
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedKeywords: '["king of hearts"]'
+
+- description: Empty response plus hidden thinking becomes a fallback classification instead of fake cloud success
+  vars:
+    caseId: editor-budget-exhausted-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: empty-thinking-fallback
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: Budget Exhaustion Fallback
+    rulesetShortName: TBE
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: dbc1a362b5515fae
+    requiredWarningTerms: '["fallback"]'
+
+- description: Editor Bot does not pretend a broken ruleset compiled successfully
+  vars:
+    caseId: editor-broken-ruleset
+    evaluationType: compiler-error
+    executionMode: compiler-error
+    rulesetTitle: Broken Ruleset
+    rulesetShortName: BRK
+    rulesetCode: "if(HEART_KING)\n  add(-100)\n"
+    compilerStatus: error
+    compilerMessage: "Unexpected end of ruleset: missing endif."
+    compilerErrors: '["Unexpected end of ruleset: missing endif."]'
+    expectedAllowedReviewSources: '["error"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["compiler-error"]'
+    expectedSourceHash: 6349f52484534fbf
+    expectedMaxOverallScore: 1
+    requiredWarningTerms: '["compiler"]'
+    expectedKeywords: '["compile", "compiler", "endif", "fix"]'
+
+- description: Default King of Hearts fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-king-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: kingOfHearts
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: 5addde5ba9addbec
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["king of hearts"]'
+
+- description: Default Diamonds fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-diamonds-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: diamonds
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: d195d83ec2901d0a
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["diamonds"]'
+    forbiddenKeywords: '["king of hearts"]'
+
+- description: Default Queens fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-queens-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: queens
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: d4cf12a594f7426e
+    expectedMinOverallScore: 6
+    expectedKeywords: '["queens"]'
+
+- description: Default Ten of Clubs fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-ten-of-clubs-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: tenOfClubs
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: cbde6a56de3e0db6
+    expectedMinOverallScore: 6
+    expectedKeywords: '["ten of clubs", "clubs"]'
+
+- description: Default Whist fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-whist-fallback
+    evaluationType: fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: whist
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: 2e638be6187005ca
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["whist", "trick"]'

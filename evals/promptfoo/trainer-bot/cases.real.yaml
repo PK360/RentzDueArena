@@ -1,0 +1,96 @@
+- description: Trainer real contract returns concise pre-move commentary without exposing hidden cards
+  vars:
+    scenarioId: trainer-real-before-visible
+    evaluationType: contract
+    mode: before_move
+    rulesetId: kingOfHearts
+    trainerElo: 2800
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    selectedMoveId: 2-clubs
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"A-hearts"}]'
+    expectedSource: llm
+    maxLength: 220
+    forbiddenHiddenStrings: '["A-spades"]'
+
+- description: Trainer real contract keeps hidden information private even in a trap setup
+  vars:
+    scenarioId: trainer-real-before-hidden-info
+    evaluationType: contract
+    mode: before_move
+    rulesetId: whist
+    trainerElo: 3600
+    trainerHand: '["J-spades", "A-spades", "10-clubs"]'
+    hiddenOpponentCards: '["Q-diamonds", "A-hearts"]'
+    legalMoves: '["J-spades", "A-spades"]'
+    selectedMoveId: A-spades
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"10-spades"}]'
+    expectedSource: llm
+    maxLength: 220
+    forbiddenHiddenStrings: '["J-spades", "A-spades", "10-clubs", "Q-diamonds", "A-hearts"]'
+
+- description: Trainer real quality praises a strong king-of-hearts avoidance move
+  vars:
+    scenarioId: trainer-real-after-good
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2600
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    playedCard: 2-clubs
+    currentTrickBeforeMove: '[]'
+    expectedSource: llm
+    expectedMinRating: 8
+    expectedMaxRating: 10
+    maxLength: 260
+    forbiddenHiddenStrings: '["A-spades"]'
+
+- description: Trainer real quality critiques taking the king of hearts and suggests a safer line
+  vars:
+    scenarioId: trainer-real-after-bad
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 3200
+    trainerHand: '["5-hearts", "K-hearts", "9-spades"]'
+    legalMoves: '["5-hearts", "K-hearts"]'
+    playedCard: K-hearts
+    currentTrickBeforeMove: '[{"playedBy":"player-2","playerName":"Opponent","card":"2-hearts"}]'
+    expectedSource: llm
+    expectedMinRating: 0
+    expectedMaxRating: 5
+    requireSuggestion: true
+    suggestedAlternativeCard: 5-hearts
+    maxLength: 260
+    maxElapsedMs: 120000
+    forbiddenHiddenStrings: '["9-spades"]'
+
+- description: Trainer real contract keeps middling feedback short and structured
+  vars:
+    scenarioId: trainer-real-after-neutral
+    evaluationType: contract
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2100
+    trainerHand: '["2-clubs", "6-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "6-clubs", "K-hearts"]'
+    playedCard: 6-clubs
+    expectedSource: llm
+    expectedMinRating: 4.5
+    expectedMaxRating: 8.5
+    maxLength: 220
+    maxElapsedMs: 120000
+    forbiddenHiddenStrings: '[]'
+
+- description: Trainer real final review summarizes the session without repeating the star score in text
+  vars:
+    scenarioId: trainer-real-final-review
+    evaluationType: quality
+    mode: final_review
+    selectedRulesetLabel: King of Hearts
+    totalRounds: 2
+    feedbackEntries: '[{"roundNumber":1,"rating":8.8,"feedback":"Move rating: 8.8/10. Good choice. It fits the current objective and keeps the position manageable."},{"roundNumber":2,"rating":4.2,"feedback":"Move rating: 4.2/10. This was a riskier choice for the current ruleset. A card like 2-clubs would usually be steadier here."}]'
+    roundSummaries: '[{"roundNumber":1,"humanScoreDelta":10,"humanTricksWon":1,"trainerTricksWon":0},{"roundNumber":2,"humanScoreDelta":-100,"humanTricksWon":0,"trainerTricksWon":1}]'
+    expectedSource: llm
+    maxLength: 420

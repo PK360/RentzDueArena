@@ -1,0 +1,87 @@
+- description: Editor Bot cloud rates a simple focused king-of-hearts contract as clear and specific
+  vars:
+    caseId: editor-cloud-simple-heart-threat
+    evaluationType: quality
+    executionMode: cloud
+    rulesetFixture: simple-good-ruleset.rentz
+    rulesetTitle: Simple Heart Threat
+    rulesetShortName: SHT
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: 10195fa94fbf035f
+    expectedMinOverallScore: 7.5
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8.5}'
+    expectedKeywords: '["king of hearts", "heart", "danger card"]'
+    requireCloudAttempt: true
+
+- description: Editor Bot cloud warns that instant-ending king-of-hearts rules feel abrupt and harsher
+  vars:
+    caseId: editor-cloud-king-of-hearts-ender
+    evaluationType: quality
+    executionMode: cloud
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: King of Hearts Ender
+    rulesetShortName: KHE
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: dbc1a362b5515fae
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedMaxCategoryScores: '{"comebackPotential": 7.5, "playerAgency": 8.5}'
+    requiredConcernTermsAny: '["abrupt", "harsh", "punitive"]'
+    expectedKeywords: '["king of hearts", "ends the round", "game_end", "ending"]'
+    requireCloudAttempt: true
+
+- description: Editor Bot cloud recognizes diamonds as a clean suit-pressure avoidance contract
+  vars:
+    caseId: editor-cloud-diamonds
+    evaluationType: contract
+    executionMode: cloud
+    defaultRulesetId: diamonds
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: d195d83ec2901d0a
+    expectedMinOverallScore: 7.5
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedKeywords: '["diamonds", "diamond", "suit pressure"]'
+    forbiddenKeywords: '["king of hearts", "whist"]'
+    requireCloudAttempt: true
+
+- description: Editor Bot cloud understands whist as a positive trick-taking contract
+  vars:
+    caseId: editor-cloud-whist
+    evaluationType: contract
+    executionMode: cloud
+    defaultRulesetId: whist
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: 2e638be6187005ca
+    expectedMinOverallScore: 7.0
+    expectedScoreTolerance: 0.5
+    expectedKeywords: '["taking tricks", "trick", "positive"]'
+    forbiddenKeywords: '["avoid king of hearts", "diamond pressure"]'
+    requireCloudAttempt: true
+
+- description: Editor Bot cloud gives convoluted rulesets lower clarity and clear warnings
+  vars:
+    caseId: editor-cloud-convoluted-mashup
+    evaluationType: quality
+    executionMode: cloud
+    rulesetFixture: complex-bad-ruleset.rentz
+    rulesetTitle: Convoluted Mashup
+    rulesetShortName: CM
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: eee0e0e2a3a1d2ec
+    expectedMaxOverallScore: 6
+    expectedMaxCategoryScores: '{"claritySimplicity": 5.5}'
+    requiredConcernTermsAny: '["tracking", "track", "readability", "clarity", "confusion", "tangled"]'
+    expectedKeywords: '["tracking", "complex", "conditional", "readability", "teach"]'
+    requireCloudAttempt: true

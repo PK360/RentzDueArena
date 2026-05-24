@@ -49,6 +49,7 @@ const socket = io(import.meta.env.VITE_SOCKET_URL || window.location.origin, {
   autoConnect: false,
   withCredentials: true
 });
+const SHOW_BOT_DEBUG_BADGES = import.meta.env.VITE_SHOW_BOT_DEBUG_BADGES === 'true';
 
 const SUIT_SYMBOLS = {
   H: '♥',
@@ -696,6 +697,7 @@ function normalizeTrainingState(training = null) {
     selectedRulesetId: training.selectedRulesetId || '',
     selectedRulesetLabel: training.selectedRulesetLabel || '',
     selectedRulesetSource: training.selectedRulesetSource || 'default',
+    finalReviewPending: training.finalReviewPending === true,
     preMoveCommentaryEnabled: training.preMoveCommentaryEnabled !== false,
     postMoveFeedbackEnabled: training.postMoveFeedbackEnabled !== false
   };
@@ -708,8 +710,184 @@ function normalizeTrainingFinalReview(review = null) {
 
   return {
     review: String(review.review || '').trim(),
-    starRating: clampNumber(Number(review.starRating || 3), 0.5, 5)
+    starRating: clampNumber(Number(review.starRating || 3), 0.5, 5),
+    debugMeta: normalizeTrainerDebugMeta(review.debugMeta)
   };
+}
+
+function normalizeGameplayBotDebugMeta(meta = null) {
+  if (!meta) {
+    return null;
+  }
+
+  return {
+    source: String(meta.botDecisionSource || 'unknown'),
+    fallbackUsed: meta.botDecisionFallbackUsed === true,
+    elapsedMs: clampNumber(Number(meta.botDecisionElapsedMs || 0), 0, 999999),
+    errorCode: meta.botDecisionErrorCode ? String(meta.botDecisionErrorCode) : '',
+    mode: String(meta.botDecisionMode || 'live'),
+    model: String(meta.model || ''),
+    timeoutMs: clampNumber(Number(meta.timeoutMs || 0), 0, 999999),
+    numPredict: clampNumber(Number(meta.numPredict || 0), 0, 999999),
+    promptLength: clampNumber(Number(meta.promptLength || 0), 0, 999999),
+    payloadLength: clampNumber(Number(meta.payloadLength || 0), 0, 999999),
+    legalMoveCount: clampNumber(Number(meta.legalMoveCount || 0), 0, 999),
+    outputContract: String(meta.outputContract || 'legacy'),
+    rawOutputPreview: String(meta.rawOutputPreview || ''),
+    selectedIndex: Number.isInteger(meta.selectedIndex) ? meta.selectedIndex : null,
+    selectedMoveId: String(meta.selectedMoveId || '')
+  };
+}
+
+function normalizeTrainerDebugMeta(meta = null) {
+  if (!meta) {
+    return null;
+  }
+
+  return {
+    source: String(meta.trainerSource || 'unknown'),
+    fallbackUsed: meta.trainerFallbackUsed === true,
+    elapsedMs: clampNumber(Number(meta.trainerElapsedMs || 0), 0, 999999),
+    errorCode: meta.trainerErrorCode ? String(meta.trainerErrorCode) : '',
+    mode: String(meta.trainerMode || 'fast'),
+    model: String(meta.model || ''),
+    timeoutMs: clampNumber(Number(meta.timeoutMs || 0), 0, 999999),
+    numPredict: clampNumber(Number(meta.numPredict || 0), 0, 999999),
+    promptLength: clampNumber(Number(meta.promptLength || 0), 0, 999999),
+    payloadLength: clampNumber(Number(meta.payloadLength || 0), 0, 999999),
+    parserMode: String(meta.parserMode || 'fallback'),
+    preview: String(meta.preview || ''),
+    stage: String(meta.stage || ''),
+    rawResponsePreview: String(meta.rawResponsePreview || ''),
+    rawResponseLength: clampNumber(Number(meta.rawResponseLength || 0), 0, 999999),
+    parseStep: String(meta.parseStep || ''),
+    parseErrorMessage: String(meta.parseErrorMessage || ''),
+    validationErrorMessage: String(meta.validationErrorMessage || ''),
+    sourceBeforeFallback: String(meta.sourceBeforeFallback || ''),
+    finalSource: String(meta.finalSource || ''),
+    fallbackReason: String(meta.fallbackReason || '')
+  };
+}
+
+function formatBotDebugElapsed(elapsedMs) {
+  const numericElapsedMs = Number(elapsedMs || 0);
+  if (!Number.isFinite(numericElapsedMs) || numericElapsedMs <= 0) {
+    return '';
+  }
+
+  if (numericElapsedMs < 1000) {
+    return `${Math.round(numericElapsedMs)}ms`;
+  }
+
+  const seconds = numericElapsedMs / 1000;
+  return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)}s`;
+}
+
+function getBotDebugBadgeLabel(meta = null) {
+  if (!meta) {
+    return '';
+  }
+
+  if (meta.fallbackUsed || meta.source === 'fallback') {
+    return 'Fallback';
+  }
+  if (meta.source === 'mock') {
+    return 'Mock';
+  }
+  if (meta.source === 'forced') {
+    return 'Forced';
+  }
+  if (meta.source === 'llm-repaired') {
+    return 'AI repaired';
+  }
+  if (meta.source === 'llm') {
+    return 'AI';
+  }
+  return 'Unknown';
+}
+
+function getBotDebugBadgeTone(meta = null) {
+  if (!meta) {
+    return 'neutral';
+  }
+
+  if (meta.fallbackUsed || meta.source === 'fallback') {
+    return 'warning';
+  }
+  if (meta.source === 'llm') {
+    return 'success';
+  }
+  if (meta.source === 'llm-repaired') {
+    return 'neutral';
+  }
+  if (meta.source === 'forced') {
+    return 'muted';
+  }
+  if (meta.source === 'mock') {
+    return 'muted';
+  }
+  return 'neutral';
+}
+
+function getBotDebugBadgeDetail(meta = null) {
+  if (!meta) {
+    return '';
+  }
+
+  if (meta.errorCode) {
+    return String(meta.errorCode).replace(/_/g, ' ');
+  }
+
+  if (meta.source === 'forced') {
+    return formatBotDebugElapsed(meta.elapsedMs) || '';
+  }
+
+  return formatBotDebugElapsed(meta.elapsedMs) || meta.mode || '';
+}
+
+function RuntimeDebugBadge({ meta, compact = false, className = '' }) {
+  if (!SHOW_BOT_DEBUG_BADGES || !meta) {
+    return null;
+  }
+
+  const label = getBotDebugBadgeLabel(meta);
+  const detail = getBotDebugBadgeDetail(meta);
+  const tone = getBotDebugBadgeTone(meta);
+  const toneClassName = tone === 'success'
+    ? 'border-emerald-300/80 bg-emerald-50/90 text-emerald-900'
+    : tone === 'warning'
+      ? 'border-amber-300/80 bg-amber-50/90 text-amber-950'
+      : tone === 'muted'
+        ? 'border-slate-300/80 bg-slate-100/90 text-slate-800'
+        : 'border-sky-200/80 bg-sky-50/90 text-sky-950';
+  const title = [
+    `source=${meta.source || 'unknown'}`,
+    `mode=${meta.mode || 'unknown'}`,
+    meta.model ? `model=${meta.model}` : '',
+    meta.promptLength ? `prompt=${meta.promptLength}` : '',
+    meta.payloadLength ? `payload=${meta.payloadLength}` : '',
+    meta.numPredict ? `numPredict=${meta.numPredict}` : '',
+    meta.outputContract ? `contract=${meta.outputContract}` : '',
+    meta.parserMode ? `parser=${meta.parserMode}` : '',
+    meta.selectedIndex != null ? `index=${meta.selectedIndex}` : '',
+    meta.rawOutputPreview ? `raw=${meta.rawOutputPreview}` : '',
+    meta.preview ? `preview=${meta.preview}` : ''
+  ].filter(Boolean).join(' | ');
+
+  return (
+    <div
+      className={clsx(
+        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-black uppercase tracking-[0.12em] shadow-[0_8px_18px_rgba(15,23,42,0.08)]',
+        compact ? 'text-[0.56rem]' : 'text-[0.6rem]',
+        toneClassName,
+        className
+      )}
+      title={title}
+    >
+      <span>{label}</span>
+      {detail ? <span className="opacity-75">{detail}</span> : null}
+    </div>
+  );
 }
 
 function normalizeTrainerEloValue(value, fallback = DEFAULT_ACCOUNT_ELO) {
@@ -1052,7 +1230,8 @@ function normalizeChatMessage(message, fallbackScope = 'lobby') {
       guest: Boolean(message.sender?.guest)
     },
     content,
-    createdAt: message.createdAt || new Date().toISOString()
+    createdAt: message.createdAt || new Date().toISOString(),
+    debugMeta: normalizeTrainerDebugMeta(message.debugMeta)
   };
 }
 
@@ -2445,7 +2624,7 @@ function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, p
   );
 }
 
-function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef }) {
+function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef, debugMeta = null }) {
   const [flightPaths, setFlightPaths] = useState(null);
 
   useLayoutEffect(() => {
@@ -2508,6 +2687,11 @@ function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef }) {
           </div>
         );
       })}
+      {SHOW_BOT_DEBUG_BADGES && debugMeta ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-2 z-[12] flex justify-center px-3">
+          <RuntimeDebugBadge meta={debugMeta} compact />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2866,6 +3050,7 @@ function App() {
   const [matchMode, setMatchMode] = useState(MATCH_MODE_STANDARD);
   const [trainingState, setTrainingState] = useState(null);
   const [trainingFinalReview, setTrainingFinalReview] = useState(null);
+  const [lastBotDecisionDebug, setLastBotDecisionDebug] = useState(null);
   const [isTrainingSetupOpen, setIsTrainingSetupOpen] = useState(false);
   const [trainingSetup, setTrainingSetup] = useState(() => createTrainingSetup());
   const [trainingStartBusy, setTrainingStartBusy] = useState(false);
@@ -3920,6 +4105,7 @@ function App() {
     const restoredHand = restoredGame?.hand || [];
     applyMatchMetadata(restoredGame || response.lobby, response.lobby);
     setTrainingFinalReview(normalizeTrainingFinalReview(restoredGame?.trainingFinalReview));
+    setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(restoredGame?.lastBotDecisionDebug));
     setTrainingReturnBusy(false);
 
     updateStoredGuestRoom(response.roomId);
@@ -4009,6 +4195,7 @@ function App() {
     setMatchMode(MATCH_MODE_STANDARD);
     setTrainingState(null);
     setTrainingFinalReview(null);
+    setLastBotDecisionDebug(null);
     setInLobby(false);
     setGameStarted(false);
     setIsSpectatingGame(false);
@@ -4211,7 +4398,7 @@ function App() {
       setRoomChatMessages(normalizeChatMessages(lobby?.chatMessages, 'lobby'));
     });
 
-    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize }) => {
+    socket.on('game_started', ({ hand: nextHand, playerIndex, isSpectator, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, stateVersion, choiceState: nextChoiceState, chatMessages: nextChatMessages, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, startingHandSize: nextStartingHandSize, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       clearScheduledGameEventTimeouts();
       registerGameStateVersion(stateVersion, { reset: true });
       applyMatchMetadata(nextChoiceState);
@@ -4244,6 +4431,7 @@ function App() {
       setTrickWinnerId(null);
       setActivityFeed([]);
       setGameChatMessages(normalizeChatMessages(nextChatMessages, 'game'));
+      setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
       setFinalStandings([]);
       setChoiceState(nextChoiceState || null);
       setLatestRoundStats(null);
@@ -4271,7 +4459,7 @@ function App() {
       applyPlayerPoints(nextPlayerPoints);
     });
 
-    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('small_game_started', ({ message, choiceState: nextChoiceState, currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, collectedHandsByPlayer: nextCollectedHands, stateVersion, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
       setChoiceState(nextChoiceState || null);
@@ -4283,6 +4471,7 @@ function App() {
       setIsStatsOpen(false);
       setMatchCompletePending(false);
       setCurrentTrick(nextTrick || []);
+      setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
       setTurnIndex(nextTurnIndex || 0);
       setCurrentPlayerId(nextCurrentPlayerId || '');
       setTrickSuit(nextTrickSuit || null);
@@ -4302,10 +4491,11 @@ function App() {
       }
     });
 
-    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('game_update', ({ currentTrick: nextTrick, turnIndex: nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, cardCounts: nextCardCounts, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
       setCurrentTrick(nextTrick);
+      setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
       setTurnIndex(nextTurnIndex);
       setCurrentPlayerId(nextCurrentPlayerId || '');
       setTrickSuit(nextTrickSuit || null);
@@ -4334,9 +4524,10 @@ function App() {
       setHand(resolvedHand);
     });
 
-    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, nextTurnIndex, currentPlayerId: nextCurrentPlayerId, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('trick_won', ({ winnerName, winnerId, scoreDelta, nextTurnIndex, currentPlayerId: nextCurrentPlayerId, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       registerGameStateVersion(stateVersion);
       applyMatchMetadata(nextChoiceState);
+      setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
       setAnimatingWinner(winnerName);
       setTrickWinnerId(winnerId);
       setTrickPending(true);
@@ -4364,8 +4555,9 @@ function App() {
       });
     });
 
-    socket.on('trick_end', ({ nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('trick_end', ({ nextTurnIndex, currentPlayerId: nextCurrentPlayerId, trickSuit: nextTrickSuit, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, gameFinished: finished, stateVersion, choiceState: nextChoiceState, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       applyMatchMetadata(nextChoiceState);
+      setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
       scheduleVersionedGameStateUpdate(stateVersion, () => {
         setTurnIndex(nextTurnIndex);
         setCurrentPlayerId(nextCurrentPlayerId || '');
@@ -4405,6 +4597,9 @@ function App() {
         setLatestRoundStats(roundStats || null);
         setIsStatsOpen(shouldShowTrainerFinalReview ? false : Boolean(roundStats));
         setMatchCompletePending(shouldShowTrainerFinalReview ? false : Boolean(matchComplete));
+        if (shouldShowTrainerFinalReview) {
+          setTrainingFinalReview(null);
+        }
         setChoiceState(nextChoiceState || null);
         setCurrentPlayerId('');
         setTrickPending(false);
@@ -4427,7 +4622,16 @@ function App() {
       });
     });
 
-    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, trainingFinalReview: nextTrainingFinalReview, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName }) => {
+    socket.on('training_final_review_pending', ({ stateVersion, choiceState: nextChoiceState }) => {
+      applyMatchMetadata(nextChoiceState);
+      scheduleVersionedGameStateUpdate(stateVersion, () => {
+        setMatchCompletePending(true);
+        setIsStatsOpen(false);
+        setTrainingFinalReview(null);
+      });
+    });
+
+    socket.on('game_finished', ({ winnerId, winnerName, standings, collectedHandsByPlayer: nextCollectedHands, cardCounts: nextCardCounts, playerPoints: nextPlayerPoints, stateVersion, choiceState: nextChoiceState, trainingFinalReview: nextTrainingFinalReview, spectatorVisibleHand: nextSpectatorVisibleHand, spectatorVisiblePlayerId: nextSpectatorVisiblePlayerId, spectatorVisiblePlayerName: nextSpectatorVisiblePlayerName, lastBotDecisionDebug: nextLastBotDecisionDebug }) => {
       applyMatchMetadata(nextChoiceState);
       scheduleVersionedGameStateUpdate(stateVersion, () => {
         recentGameFinishRef.current = Date.now();
@@ -4440,9 +4644,10 @@ function App() {
         setFinalStandings(standings || []);
         setChoiceState(nextChoiceState || null);
         setCurrentPlayerId('');
-        setMatchCompletePending(Boolean(!normalizedTrainingReview));
+        setMatchCompletePending(false);
         setIsStatsOpen(Boolean(!normalizedTrainingReview));
         setTrainingFinalReview(normalizedTrainingReview);
+        setLastBotDecisionDebug(normalizeGameplayBotDebugMeta(nextLastBotDecisionDebug));
         setTrainingReturnBusy(false);
         if (nextCollectedHands) {
           setCollectedHandsByPlayer(nextCollectedHands);
@@ -4620,6 +4825,7 @@ function App() {
       socket.off('trick_won');
       socket.off('trick_end');
       socket.off('round_finished');
+      socket.off('training_final_review_pending');
       socket.off('game_finished');
       socket.off('game_activity');
       socket.off('chat_message');
@@ -7666,6 +7872,7 @@ function App() {
     (isRecoveryPromptOpen && recoverableGuestSession) ||
     isRoomSettingsOpen ||
     isTrainingSetupOpen ||
+    (trainingState?.finalReviewPending && !trainingFinalReview) ||
     trainingFinalReview ||
     playerProfileModal ||
     roomRulesetSourcePicker ||
@@ -9419,6 +9626,13 @@ function App() {
             >
               {message.content}
             </div>
+            {message.debugMeta ? (
+              <RuntimeDebugBadge
+                meta={message.debugMeta}
+                compact
+                className={clsx('mt-2', isOwnMessage && 'ml-auto')}
+              />
+            ) : null}
           </div>
         </div>
       </div>
@@ -10538,6 +10752,7 @@ function App() {
                   currentTrick={currentTrick}
                   trickPending={trickPending || Boolean(animatingWinner)}
                   trickWinnerId={trickWinnerId}
+                  debugMeta={lastBotDecisionDebug}
                 />
               </div>
             </div>
@@ -13178,7 +13393,45 @@ endif`}
   };
 
   const renderTrainingFinalReviewModal = () => {
-    if (!isTrainingMatch || !trainingFinalReview || !trainerPlayer) {
+    if (!isTrainingMatch || !trainerPlayer) {
+      return null;
+    }
+
+    if (trainingState?.finalReviewPending && !trainingFinalReview) {
+      return (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/75 px-4 py-6 backdrop-blur-[2px]">
+          <div className="relative z-10 w-full max-w-3xl">
+            <div className="flex flex-col items-center gap-6">
+              <div className="flex w-full items-end justify-center gap-4">
+                <AvatarFace
+                  player={trainerPlayer}
+                  alt={`${getPlayerName(trainerPlayer)} avatar`}
+                  wrapperClassName="seat-avatar h-16 w-16 shrink-0 border-4 border-white/80 text-lg shadow-[0_14px_30px_rgba(15,23,42,0.18)] sm:h-20 sm:w-20"
+                  imageClassName="h-full w-full rounded-full object-cover"
+                  fallbackClassName="flex h-full w-full items-center justify-center rounded-full"
+                />
+                <div className="relative w-full max-w-2xl rounded-[1.8rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(236,248,255,0.94)_100%)] px-5 py-4 text-left shadow-[0_26px_54px_rgba(15,23,42,0.16)] sm:px-6 sm:py-5">
+                  <span className="absolute -left-2.5 bottom-5 h-5 w-5 rotate-45 rounded-[0.3rem] border-l border-b border-white/85 bg-inherit" aria-hidden="true" />
+                  <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                    {getPlayerName(trainerPlayer)}
+                  </div>
+                  <div className="mt-2 text-base font-semibold leading-7 text-[var(--text-primary)] sm:text-lg">
+                    Building your final review...
+                  </div>
+                </div>
+              </div>
+
+              <div className="inline-flex items-center gap-3 rounded-full bg-slate-950/35 px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-white shadow-[0_18px_42px_rgba(0,0,0,0.28)]">
+                <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-300" />
+                Final Review Loading
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (!trainingFinalReview) {
       return null;
     }
 
@@ -13199,6 +13452,9 @@ endif`}
                 <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
                   {getPlayerName(trainerPlayer)}
                 </div>
+                {trainingFinalReview.debugMeta ? (
+                  <RuntimeDebugBadge meta={trainingFinalReview.debugMeta} compact className="mt-2" />
+                ) : null}
                 <div className="mt-2 text-base font-semibold leading-7 text-[var(--text-primary)] sm:text-lg">
                   {trainingFinalReview.review}
                 </div>

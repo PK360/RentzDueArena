@@ -477,12 +477,14 @@
   }
 
   .rentz-editor-judgement-heading {
-    color: var(--theme-chip-active-text, var(--text-primary));
+    background-image: none;
+    color: #17283b;
+    -webkit-text-fill-color: #17283b;
+    display: inline-block;
     letter-spacing: 0.02em;
     text-shadow:
-      0 1px 0 rgba(255,255,255,0.82),
-      0 0 16px rgba(140,198,63,0.18),
-      0 10px 22px rgba(122,179,50,0.12);
+      0 1px 0 rgba(255,255,255,0.72),
+      0 6px 14px rgba(23,40,59,0.08);
   }
 
   html.rentz-modal-open,

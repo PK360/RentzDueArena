@@ -1,0 +1,1 @@
+Editor bot eval routing prompt. The provider calls the backend ruleset-judge pipeline so prompt construction, sanitization, repair, and fallback stay aligned with production.

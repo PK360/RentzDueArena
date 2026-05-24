@@ -1,0 +1,4 @@
+if(HEART_KING)
+  add(-100)
+  game_end()
+endif
