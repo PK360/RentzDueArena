@@ -6,5 +6,9 @@ backend/.env.*
 coverage/
 .vitest/
 test-results/
+.promptfoo/
+promptfoo-results/
+eval-results/
+logs/evals/
 backend/logs/editor-ai.log.txt
 backend/logs/editor-bot-response-dump.txt

@@ -1,0 +1,115 @@
+- description: Gameplay bot keeps a simple king-of-hearts choice inside the legal move list
+  vars:
+    scenarioId: simple-legal
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[900, 1100, 1000]'
+    botHand: '["2-hearts", "9-hearts"]'
+    legalMoves: '["2-hearts", "9-hearts"]'
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: High-ELO gameplay bot avoids the obvious king-of-hearts penalty card when a safe club is legal
+  vars:
+    scenarioId: avoid-obvious-penalty
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[2500, 2400, 2600]'
+    botHand: '["2-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    expectedMoveId: 2-clubs
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: Gameplay bot accepts a forced penalty when there is only one legal move
+  vars:
+    scenarioId: forced-penalty
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[1800, 1900, 1700]'
+    botHand: '["K-hearts"]'
+    legalMoves: '["K-hearts"]'
+    expectedMoveId: K-hearts
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: High-ELO gameplay bot prefers losing the trick in a levate-style avoidance spot
+  vars:
+    scenarioId: avoid-winning-trick
+    kind: play_card
+    rulesetId: levate
+    humanElos: '[2800, 2500, 2600]'
+    botHand: '["2-spades", "A-spades"]'
+    currentTrick: '[{"playedBy":"human-1","playerName":"Human 1","card":"10-spades"},{"playedBy":"human-2","playerName":"Human 2","card":"J-spades"}]'
+    legalMoves: '["2-spades", "A-spades"]'
+    expectedMoveId: 2-spades
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: High-ELO gameplay bot prefers winning the trick in a whist-style positive scoring spot
+  vars:
+    scenarioId: whist-winning-trick
+    kind: play_card
+    rulesetId: whist
+    humanElos: '[3200, 3000, 3400]'
+    botHand: '["2-spades", "A-spades"]'
+    currentTrick: '[{"playedBy":"human-1","playerName":"Human 1","card":"10-spades"},{"playedBy":"human-2","playerName":"Human 2","card":"J-spades"}]'
+    legalMoves: '["2-spades", "A-spades"]'
+    expectedMoveId: A-spades
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: Gameplay bot remains valid in a six-player context
+  vars:
+    scenarioId: six-player-validity
+    useSixPlayerFixture: true
+    kind: play_card
+    rulesetId: whist
+    humanElos: '[1400, 1500, 1600, 1700, 1800]'
+    botHand: '["4-clubs", "9-hearts"]'
+    legalMoves: '["4-clubs", "9-hearts"]'
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: Gameplay bot fixture can simulate malformed model output and still normalize to a legal fallback move
+  vars:
+    scenarioId: malformed-output
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[2200, 2300, 2100]'
+    botHand: '["2-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    expectedMoveId: 2-clubs
+    expectedSource: mock-fallback
+    mockResponseMode: malformed-output
+    maxElapsedMs: 500
+
+- description: Room-average ELO 500 maps the gameplay bot to Starting-out Rentz Rookie
+  vars:
+    scenarioId: elo-500-rank
+    kind: choose_nv
+    humanElos: '[500, 500, 500]'
+    legalMoves: '[{"id":"nv_no","label":"Skip NV","value":false},{"id":"nv_yes","label":"Choose NV","value":true}]'
+    expectedBotRank: Starting-out Rentz Rookie
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: Room-average ELO 2500 maps the gameplay bot to Practising Rentz Expert
+  vars:
+    scenarioId: elo-2500-rank
+    kind: choose_nv
+    humanElos: '[2500, 2500, 2500]'
+    legalMoves: '[{"id":"nv_no","label":"Skip NV","value":false},{"id":"nv_yes","label":"Choose NV","value":true}]'
+    expectedBotRank: Practising Rentz Expert
+    expectedSource: mock
+    maxElapsedMs: 500
+
+- description: Room-average ELO 9000 maps the gameplay bot to Ennead of Rentz Member
+  vars:
+    scenarioId: elo-9000-rank
+    kind: choose_nv
+    humanElos: '[9000, 9000, 9000]'
+    legalMoves: '[{"id":"nv_no","label":"Skip NV","value":false},{"id":"nv_yes","label":"Choose NV","value":true}]'
+    expectedBotRank: Ennead of Rentz Member
+    expectedSource: mock
+    maxElapsedMs: 500

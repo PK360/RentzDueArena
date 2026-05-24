@@ -1,0 +1,106 @@
+- description: Trainer fast contract returns concise pre-move commentary without exposing hidden cards
+  vars:
+    scenarioId: trainer-fast-before-visible
+    evaluationType: contract
+    mode: before_move
+    rulesetId: kingOfHearts
+    trainerElo: 2800
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    selectedMoveId: 2-clubs
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"A-hearts"}]'
+    expectedAllowedSources: '["llm","llm-repaired"]'
+    timeoutMs: 10000
+    maxLength: 120
+    maxElapsedMs: 10000
+    forbiddenHiddenStrings: '["A-spades"]'
+
+- description: Trainer fast keeps hidden information private in pre-move coaching
+  vars:
+    scenarioId: trainer-fast-before-hidden-info
+    evaluationType: contract
+    mode: before_move
+    rulesetId: whist
+    trainerElo: 3600
+    trainerHand: '["J-spades", "A-spades", "10-clubs"]'
+    hiddenOpponentCards: '["Q-diamonds", "A-hearts"]'
+    legalMoves: '["J-spades", "A-spades"]'
+    selectedMoveId: A-spades
+    currentTrick: '[{"playedBy":"player-2","playerName":"Opponent","card":"10-spades"}]'
+    expectedAllowedSources: '["llm","llm-repaired"]'
+    timeoutMs: 10000
+    maxLength: 120
+    maxElapsedMs: 10000
+    forbiddenHiddenStrings: '["J-spades", "A-spades", "10-clubs", "Q-diamonds", "A-hearts"]'
+
+- description: Trainer fast quality praises a strong king-of-hearts avoidance move
+  vars:
+    scenarioId: trainer-fast-after-good
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2600
+    trainerHand: '["2-clubs", "K-hearts", "A-spades"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    playedCard: 2-clubs
+    currentTrickBeforeMove: '[]'
+    expectedAllowedSources: '["llm","llm-repaired"]'
+    timeoutMs: 12000
+    expectedMinRating: 8
+    expectedMaxRating: 10
+    maxLength: 160
+    maxElapsedMs: 12000
+    forbiddenHiddenStrings: '["A-spades"]'
+
+- description: Trainer fast quality critiques taking the king of hearts and suggests a safer line
+  vars:
+    scenarioId: trainer-fast-after-bad
+    evaluationType: quality
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 3200
+    trainerHand: '["5-hearts", "K-hearts", "9-spades"]'
+    legalMoves: '["5-hearts", "K-hearts"]'
+    playedCard: K-hearts
+    currentTrickBeforeMove: '[{"playedBy":"player-2","playerName":"Opponent","card":"2-hearts"}]'
+    expectedAllowedSources: '["llm","llm-repaired"]'
+    timeoutMs: 12000
+    expectedMinRating: 0
+    expectedMaxRating: 5
+    requireSuggestion: true
+    suggestedAlternativeCard: 5-hearts
+    maxLength: 160
+    maxElapsedMs: 12000
+    forbiddenHiddenStrings: '["9-spades"]'
+
+- description: Trainer fast keeps middling feedback concise for a neutral move
+  vars:
+    scenarioId: trainer-fast-after-neutral
+    evaluationType: contract
+    mode: after_move
+    rulesetId: kingOfHearts
+    trainerElo: 2100
+    trainerHand: '["2-clubs", "6-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "6-clubs", "K-hearts"]'
+    playedCard: 6-clubs
+    expectedAllowedSources: '["llm","llm-repaired"]'
+    timeoutMs: 12000
+    expectedMinRating: 4.5
+    expectedMaxRating: 8.5
+    maxLength: 160
+    maxElapsedMs: 12000
+    forbiddenHiddenStrings: '[]'
+
+- description: Trainer fast final review summarizes the session without repeating the star score in text
+  vars:
+    scenarioId: trainer-fast-final-review
+    evaluationType: quality
+    mode: final_review
+    selectedRulesetLabel: King of Hearts
+    totalRounds: 2
+    feedbackEntries: '[{"roundNumber":1,"rating":8.8,"feedback":"Move rating: 8.8/10. Good choice. It fits the current objective and keeps the position manageable."},{"roundNumber":2,"rating":4.2,"feedback":"Move rating: 4.2/10. This was a riskier choice for the current ruleset. A safer choice would have been 2-clubs."}]'
+    roundSummaries: '[{"roundNumber":1,"humanScoreDelta":10,"humanTricksWon":1,"trainerTricksWon":0},{"roundNumber":2,"humanScoreDelta":-100,"humanTricksWon":0,"trainerTricksWon":1}]'
+    expectedAllowedSources: '["llm","llm-repaired","fallback"]'
+    timeoutMs: 40000
+    maxLength: 220
+    maxElapsedMs: 40000

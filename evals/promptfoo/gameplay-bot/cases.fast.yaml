@@ -1,0 +1,65 @@
+- description: Gameplay fast contract returns one legal move in a simple king-of-hearts spot
+  vars:
+    scenarioId: gameplay-fast-simple-legal
+    evaluationType: contract
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[900, 1100, 1000]'
+    botHand: '["2-hearts", "9-hearts"]'
+    legalMoves: '["2-hearts", "9-hearts"]'
+    expectedSource: llm
+    maxElapsedMs: 15000
+
+- description: Gameplay fast contract handles a forced penalty card without falling back
+  vars:
+    scenarioId: gameplay-fast-forced-penalty
+    evaluationType: contract
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[1800, 1900, 1700]'
+    botHand: '["K-hearts"]'
+    legalMoves: '["K-hearts"]'
+    expectedMoveId: K-hearts
+    expectedSource: forced
+    maxElapsedMs: 1000
+
+- description: Gameplay fast quality avoids the obvious king-of-hearts penalty when a safe club is legal
+  vars:
+    scenarioId: gameplay-fast-avoid-obvious-penalty
+    evaluationType: quality
+    kind: play_card
+    rulesetId: kingOfHearts
+    humanElos: '[2500, 2400, 2600]'
+    botHand: '["2-clubs", "K-hearts"]'
+    legalMoves: '["2-clubs", "K-hearts"]'
+    expectedMoveId: 2-clubs
+    expectedSource: llm
+    maxElapsedMs: 15000
+
+- description: Gameplay fast quality prefers losing the trick in a levate-style avoidance spot
+  vars:
+    scenarioId: gameplay-fast-avoid-winning-trick
+    evaluationType: quality
+    kind: play_card
+    rulesetId: levate
+    humanElos: '[2800, 2500, 2600]'
+    botHand: '["2-spades", "A-spades"]'
+    currentTrick: '[{"playedBy":"human-1","playerName":"Human 1","card":"10-spades"},{"playedBy":"human-2","playerName":"Human 2","card":"J-spades"}]'
+    legalMoves: '["2-spades", "A-spades"]'
+    expectedMoveId: 2-spades
+    expectedSource: llm
+    maxElapsedMs: 15000
+
+- description: Gameplay fast quality prefers winning the trick in a whist-style positive scoring spot
+  vars:
+    scenarioId: gameplay-fast-whist-winning-trick
+    evaluationType: quality
+    kind: play_card
+    rulesetId: whist
+    humanElos: '[3200, 3000, 3400]'
+    botHand: '["2-spades", "A-spades"]'
+    currentTrick: '[{"playedBy":"human-1","playerName":"Human 1","card":"10-spades"},{"playedBy":"human-2","playerName":"Human 2","card":"J-spades"}]'
+    legalMoves: '["2-spades", "A-spades"]'
+    expectedMoveId: A-spades
+    expectedSource: llm
+    maxElapsedMs: 15000

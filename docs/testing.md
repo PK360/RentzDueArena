@@ -86,3 +86,7 @@ Generated outputs are ignored by git:
 - `.vitest/`
 - `test-results/`
 - backend editor AI log dumps
+
+## Promptfoo Bot Evals
+
+Promptfoo suites for the gameplay bot, trainer bot, and editor bot live under [evals/promptfoo/README.md](/home/alexn/FMI/MDS/RentzArena/evals/promptfoo/README.md).

@@ -1,0 +1,1 @@
+Gameplay bot eval routing prompt. The provider calls the backend gameplay bot prompt contract via `buildBotPromptPayload` and the eval adapter normalizes the move result for assertions.

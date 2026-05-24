@@ -1,0 +1,49 @@
+description: Rentz Arena editor bot promptfoo real cloud evals
+prompts:
+  - file://prompts/current.txt
+providers:
+  - id: file://../providers/editor-bot.provider.js
+    label: editor-bot
+evaluateOptions:
+  maxConcurrency: 1
+commandLineOptions:
+  tableCellMaxLength: 120
+tests: file://cases.cloud.yaml
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assertions.js:isValidJsonOutput
+    - type: javascript
+      value: file://assertions.js:providerEnvelopeIsValid
+    - type: javascript
+      value: file://assertions.js:responseIsNotThinkingOnly
+    - type: javascript
+      value: file://assertions.js:resultSourceMatchesExpectations
+    - type: javascript
+      value: file://assertions.js:sourceHashMatchesExpected
+    - type: javascript
+      value: file://assertions.js:hasRequiredEditorJudgeSchema
+    - type: javascript
+      value: file://assertions.js:brokenCompilerHandledSafely
+    - type: javascript
+      value: file://assertions.js:hasOnlyAllowedEditorCategories
+    - type: javascript
+      value: file://assertions.js:categoryScoresInRange
+    - type: javascript
+      value: file://assertions.js:explanationsAreClean
+    - type: javascript
+      value: file://assertions.js:representativeEmojiIsValid
+    - type: javascript
+      value: file://assertions.js:editorKeywordsMatchCase
+    - type: javascript
+      value: file://assertions.js:editorNarrativeFieldsPresent
+    - type: javascript
+      value: file://assertions.js:editorRecommendationsWarningsArrays
+    - type: javascript
+      value: file://assertions.js:editorCaseExpectationScore
+    - type: javascript
+      value: file://assertions.js:editorLatencyScore
+    - type: javascript
+      value: file://assertions.js:noRepeatedNarrativeAcrossCases
+    - type: javascript
+      value: file://assertions.js:noForbiddenPhrases

@@ -4,9 +4,13 @@ const {
   BOT_TYPE_TRAINER,
   buildBotIdentity,
   chooseFallbackMove,
+  chooseBotMove,
   getAverageHumanElo,
   getBotDifficultyElo,
-  getNextBotOrdinal
+  getGameplayBotRuntimeConfig,
+  getNextBotOrdinal,
+  getTrainerRuntimeConfig,
+  parseGameplayDecisionOutput
 } = require('../src/lib/bots');
 
 test('computes room-average human elo while ignoring bots', () => {
@@ -148,4 +152,124 @@ test('uses Trainer elo directly for difficulty while normal bots still use room 
     { userId: 'human-1', elo: 1000 },
     trainer
   ]), 9100);
+});
+
+test('bypasses the llm for forced gameplay moves', async () => {
+  const originalFetch = global.fetch;
+  let fetchCalled = false;
+  global.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called for forced moves');
+  };
+
+  try {
+    const decision = await chooseBotMove({
+      roomId: 'FORCED1',
+      kind: 'play_card',
+      gameState: {
+        players: [
+          { userId: 'human-1', elo: 1800 },
+          { userId: 'bot-1', elo: 1800, isBot: true }
+        ],
+        pointsByPlayer: {},
+        currentTrick: []
+      },
+      botPlayer: {
+        userId: 'bot-1',
+        isBot: true,
+        elo: 1800,
+        rankName: 'Practising Rentz Expert'
+      },
+      legalMoves: [{ id: '6-S', card: '6-S' }],
+      ruleset: { id: 'whist', label: 'Whist' }
+    });
+
+    assert.strictEqual(fetchCalled, false);
+    assert.strictEqual(decision.source, 'forced');
+    assert.strictEqual(decision.fallbackUsed, false);
+    assert.strictEqual(decision.selectedMove.id, '6-S');
+    assert.strictEqual(decision.debugMeta.source, 'forced');
+    assert.strictEqual(decision.debugMeta.legalMoveCount, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('parses gameplay live index output and plain numeric repair', () => {
+  const legalMoves = [
+    { id: '6-S', card: '6-S' },
+    { id: 'K-C', card: 'K-C' }
+  ];
+
+  const jsonDecision = parseGameplayDecisionOutput('{"i":1}', legalMoves, {
+    outputContract: 'index'
+  });
+  assert.strictEqual(jsonDecision.success, true);
+  assert.strictEqual(jsonDecision.move.id, 'K-C');
+  assert.strictEqual(jsonDecision.selectedIndex, 1);
+
+  const repairedDecision = parseGameplayDecisionOutput('0', legalMoves, {
+    outputContract: 'index'
+  });
+  assert.strictEqual(repairedDecision.success, true);
+  assert.strictEqual(repairedDecision.move.id, '6-S');
+  assert.strictEqual(repairedDecision.parserMode, 'plain-number');
+});
+
+test('rejects invalid gameplay live indices with specific error codes', () => {
+  const legalMoves = [
+    { id: '6-S', card: '6-S' },
+    { id: 'K-C', card: 'K-C' }
+  ];
+
+  assert.strictEqual(
+    parseGameplayDecisionOutput('{"i":"nope"}', legalMoves, { outputContract: 'index' }).error,
+    'invalid-index'
+  );
+  assert.strictEqual(
+    parseGameplayDecisionOutput('{"i":9}', legalMoves, { outputContract: 'index' }).error,
+    'index-out-of-range'
+  );
+  assert.strictEqual(
+    parseGameplayDecisionOutput('{}', legalMoves, { outputContract: 'index' }).error,
+    'empty-json'
+  );
+  assert.strictEqual(
+    parseGameplayDecisionOutput('{"schema":{"i":"number"}}', legalMoves, { outputContract: 'index' }).error,
+    'schema-output-instead-of-answer'
+  );
+});
+
+test('uses gameplay and trainer model overrides for their respective runtime modes', () => {
+  const originalEnv = {
+    OLLAMA_GAMEPLAY_MODEL: process.env.OLLAMA_GAMEPLAY_MODEL,
+    OLLAMA_TRAINER_MODEL: process.env.OLLAMA_TRAINER_MODEL,
+    OLLAMA_TRAINER_FAST_MODEL: process.env.OLLAMA_TRAINER_FAST_MODEL,
+    OLLAMA_TRAINER_FINAL_MODEL: process.env.OLLAMA_TRAINER_FINAL_MODEL,
+    OLLAMA_TRAINER_EVAL_MODEL: process.env.OLLAMA_TRAINER_EVAL_MODEL,
+    RENTZ_GAMEPLAY_BOT_NUM_PREDICT_LIVE: process.env.RENTZ_GAMEPLAY_BOT_NUM_PREDICT_LIVE
+  };
+
+  process.env.OLLAMA_GAMEPLAY_MODEL = 'llama3.2:3b';
+  process.env.OLLAMA_TRAINER_MODEL = 'llama3.2:3b';
+  process.env.OLLAMA_TRAINER_FAST_MODEL = 'llama3.2:3b';
+  process.env.OLLAMA_TRAINER_FINAL_MODEL = 'qwen2.5:7b';
+  process.env.OLLAMA_TRAINER_EVAL_MODEL = 'qwen2.5:7b';
+  process.env.RENTZ_GAMEPLAY_BOT_NUM_PREDICT_LIVE = '48';
+
+  try {
+    assert.strictEqual(getGameplayBotRuntimeConfig({ mode: 'live' }).modelName, 'llama3.2:3b');
+    assert.strictEqual(getGameplayBotRuntimeConfig({ mode: 'live' }).numPredict, 48);
+    assert.strictEqual(getTrainerRuntimeConfig({ mode: 'fast', stage: 'after_move' }).modelName, 'llama3.2:3b');
+    assert.strictEqual(getTrainerRuntimeConfig({ mode: 'fast', stage: 'final_review' }).modelName, 'qwen2.5:7b');
+    assert.strictEqual(getTrainerRuntimeConfig({ mode: 'deep', stage: 'after_move' }).modelName, 'qwen2.5:7b');
+  } finally {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });

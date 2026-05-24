@@ -10,6 +10,27 @@
     "dev:backend": "cd backend && node index.js",
     "dev:frontend": "cd frontend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "check:gameplay-ollama": "OLLAMA_GAMEPLAY_MODEL=llama3.2:3b RENTZ_GAMEPLAY_BOT_MODE=live RENTZ_GAMEPLAY_BOT_LIVE_TIMEOUT_MS=12000 RENTZ_GAMEPLAY_BOT_NUM_PREDICT_LIVE=48 PROMPTFOO_BOT_DECISION_TIMEOUT_MS=120000 node evals/promptfoo/checks/check-gameplay-ollama.js",
+    "check:trainer-ollama": "OLLAMA_TRAINER_MODEL=llama3.2:3b OLLAMA_TRAINER_FAST_MODEL=llama3.2:3b OLLAMA_TRAINER_FINAL_MODEL=llama3.2:3b OLLAMA_TRAINER_EVAL_MODEL=qwen2.5:7b RENTZ_TRAINER_MODE=fast RENTZ_TRAINER_FAST_TIMEOUT_MS=8000 RENTZ_TRAINER_FINAL_TIMEOUT_MS=40000 RENTZ_TRAINER_FAST_NUM_PREDICT=48 RENTZ_TRAINER_FINAL_NUM_PREDICT=180 PROMPTFOO_BOT_DECISION_TIMEOUT_MS=45000 node evals/promptfoo/checks/check-trainer-ollama.js",
+    "check:editor-cloud": "RENTZ_EDITOR_BOT_MODE=deep OLLAMA_EDITOR_BOT_TIMEOUT_DEEP_MS=120000 OLLAMA_EDITOR_BOT_NUM_PREDICT_DEEP=1800 node evals/promptfoo/checks/check-editor-cloud.js",
+    "eval:bots": "npm run eval:bots:mock",
+    "eval:bots:mock": "PROMPTFOO_USE_REAL_OLLAMA=false PROMPTFOO_USE_REAL_CLOUD=false PROMPTFOO_CONFIG_DIR=.promptfoo node evals/promptfoo/run-all.js mock",
+    "eval:bots:real": "PROMPTFOO_USE_REAL_OLLAMA=true PROMPTFOO_USE_REAL_CLOUD=true OLLAMA_GAMEPLAY_MODEL=llama3.2:3b OLLAMA_TRAINER_MODEL=llama3.2:3b OLLAMA_TRAINER_FAST_MODEL=llama3.2:3b OLLAMA_TRAINER_FINAL_MODEL=llama3.2:3b RENTZ_GAMEPLAY_BOT_MODE=eval RENTZ_TRAINER_MODE=fast RENTZ_EDITOR_BOT_MODE=deep RENTZ_TRAINER_FAST_TIMEOUT_MS=8000 RENTZ_TRAINER_FINAL_TIMEOUT_MS=40000 RENTZ_TRAINER_FAST_NUM_PREDICT=48 RENTZ_TRAINER_FINAL_NUM_PREDICT=180 PROMPTFOO_BOT_DECISION_TIMEOUT_MS=45000 PROMPTFOO_CONFIG_DIR=.promptfoo node evals/promptfoo/run-all.js real",
+    "eval:gameplay-bot": "npm run eval:gameplay-bot:mock",
+    "eval:gameplay-bot:mock": "PROMPTFOO_USE_REAL_OLLAMA=false PROMPTFOO_USE_REAL_CLOUD=false PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/gameplay-bot/gameplay-bot.mock.promptfooconfig.yaml",
+    "eval:gameplay-bot:fast": "PROMPTFOO_USE_REAL_OLLAMA=true OLLAMA_GAMEPLAY_MODEL=llama3.2:3b RENTZ_GAMEPLAY_BOT_MODE=live RENTZ_GAMEPLAY_BOT_LIVE_TIMEOUT_MS=12000 RENTZ_GAMEPLAY_BOT_NUM_PREDICT_LIVE=48 PROMPTFOO_BOT_DECISION_TIMEOUT_MS=15000 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/gameplay-bot/gameplay-bot.fast.promptfooconfig.yaml --max-concurrency 1",
+    "eval:gameplay-bot:real": "PROMPTFOO_USE_REAL_OLLAMA=true OLLAMA_GAMEPLAY_MODEL=llama3.2:3b RENTZ_GAMEPLAY_BOT_MODE=eval PROMPTFOO_BOT_DECISION_TIMEOUT_MS=120000 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/gameplay-bot/gameplay-bot.real.promptfooconfig.yaml --max-concurrency 1",
+    "eval:trainer-bot": "npm run eval:trainer-bot:fast",
+    "eval:trainer-bot:mock": "PROMPTFOO_USE_REAL_OLLAMA=false PROMPTFOO_USE_REAL_CLOUD=false PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/trainer-bot/trainer-bot.mock.promptfooconfig.yaml",
+    "eval:trainer-bot:fast": "PROMPTFOO_USE_REAL_OLLAMA=true OLLAMA_TRAINER_MODEL=llama3.2:3b OLLAMA_TRAINER_FAST_MODEL=llama3.2:3b OLLAMA_TRAINER_FINAL_MODEL=llama3.2:3b OLLAMA_TRAINER_EVAL_MODEL=qwen2.5:7b RENTZ_TRAINER_MODE=fast RENTZ_TRAINER_FAST_TIMEOUT_MS=8000 RENTZ_TRAINER_FINAL_TIMEOUT_MS=40000 RENTZ_TRAINER_FAST_NUM_PREDICT=48 RENTZ_TRAINER_FINAL_NUM_PREDICT=180 PROMPTFOO_BOT_DECISION_TIMEOUT_MS=45000 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/trainer-bot/trainer-bot.fast.promptfooconfig.yaml --max-concurrency 1",
+    "eval:trainer-bot:real": "npm run eval:trainer-bot:fast",
+    "eval:trainer-bot:deep-llm": "PROMPTFOO_USE_REAL_OLLAMA=true OLLAMA_TRAINER_MODEL=qwen2.5:7b OLLAMA_TRAINER_FAST_MODEL=qwen2.5:7b OLLAMA_TRAINER_FINAL_MODEL=qwen2.5:7b OLLAMA_TRAINER_EVAL_MODEL=qwen2.5:7b RENTZ_TRAINER_MODE=deep PROMPTFOO_BOT_DECISION_TIMEOUT_MS=120000 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/trainer-bot/trainer-bot.real.promptfooconfig.yaml --max-concurrency 1",
+    "eval:editor-bot": "npm run eval:editor-bot:mock",
+    "eval:editor-bot:mock": "PROMPTFOO_USE_REAL_OLLAMA=false PROMPTFOO_USE_REAL_CLOUD=false PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/editor-bot/editor-bot.mock.promptfooconfig.yaml",
+    "eval:editor-bot:cloud": "PROMPTFOO_USE_REAL_CLOUD=true RENTZ_EDITOR_BOT_MODE=deep OLLAMA_EDITOR_BOT_TIMEOUT_DEEP_MS=120000 OLLAMA_EDITOR_BOT_NUM_PREDICT_DEEP=1800 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/editor-bot/editor-bot.cloud.promptfooconfig.yaml --max-concurrency 1",
+    "eval:editor-bot:fast": "PROMPTFOO_USE_REAL_CLOUD=true RENTZ_EDITOR_BOT_MODE=fast OLLAMA_EDITOR_BOT_TIMEOUT_FAST_MS=25000 OLLAMA_EDITOR_BOT_NUM_PREDICT_FAST=900 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/editor-bot/editor-bot.fast.promptfooconfig.yaml --max-concurrency 1",
+    "eval:editor-bot:deep": "PROMPTFOO_USE_REAL_CLOUD=true RENTZ_EDITOR_BOT_MODE=deep OLLAMA_EDITOR_BOT_TIMEOUT_DEEP_MS=120000 OLLAMA_EDITOR_BOT_NUM_PREDICT_DEEP=1800 PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo eval -c evals/promptfoo/editor-bot/editor-bot.deep.promptfooconfig.yaml --max-concurrency 1",
+    "eval:bots:view": "PROMPTFOO_CONFIG_DIR=.promptfoo promptfoo view",
     "test": "npm run test:backend && npm run test:frontend",
     "test:backend": "npm --prefix backend run test",
     "test:frontend": "npm --prefix frontend run test",
@@ -27,7 +48,8 @@
     "start": "cd backend && node index.js"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "promptfoo": "^0.121.12"
   },
   "dependencies": {
     "mongodb": "^7.1.1"

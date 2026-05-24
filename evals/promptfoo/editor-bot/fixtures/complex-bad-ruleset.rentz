@@ -1,0 +1,27 @@
+if(HEART_KING)
+  add(-80)
+endif
+
+if(DIAMOND_NR > 1)
+  add(-12 * DIAMOND_NR)
+endif
+
+if(Q_NR > 0)
+  add(-25 * Q_NR)
+endif
+
+if(CLUB_TEN)
+  set_to(-150)
+endif
+
+if(TOTAL_DIAMOND_NR > 4)
+  set_to(-40)
+endif
+
+if(SPADE_ACE)
+  add(20)
+endif
+
+if(TOTAL_HEART_NR > 4)
+  game_end()
+endif

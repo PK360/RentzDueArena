@@ -150,6 +150,16 @@ const LEAN_EDITOR_BOT_NUM_PREDICT = Math.max(
 const EDITOR_BOT_KEEP_ALIVE = process.env.OLLAMA_EDITOR_BOT_KEEP_ALIVE
   || process.env.RENTZ_EDITOR_BOT_KEEP_ALIVE
   || '15m';
+const EDITOR_BOT_TEMPERATURE = Math.max(
+  0,
+  Math.min(
+    1,
+    Number(readFirstEditorBotEnv([
+      'OLLAMA_EDITOR_BOT_TEMPERATURE',
+      'RENTZ_EDITOR_BOT_TEMPERATURE'
+    ]) || 0.2)
+  )
+);
 const EDITOR_BOT_LOG_RULESET_PREVIEW_LENGTH = Math.max(
   0,
   Number(readFirstEditorBotEnv([
@@ -215,6 +225,36 @@ const EDITOR_BOT_CRITERIA_GUIDANCE = Object.freeze({
 });
 let cachedEditorBotRuntime = null;
 const warmedEditorBotModels = new Map();
+
+function normalizeEditorBotMode(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'deep' || normalized === 'eval') {
+    return 'deep';
+  }
+  return 'fast';
+}
+
+function getEditorBotMode() {
+  return normalizeEditorBotMode(readFirstEditorBotEnv([
+    'RENTZ_EDITOR_BOT_MODE'
+  ]) || 'fast');
+}
+
+function resolveEditorBotTimeoutMs(mode = getEditorBotMode()) {
+  const resolvedMode = normalizeEditorBotMode(mode);
+  return Math.max(
+    1800,
+    Number(
+      readFirstEditorBotEnv([
+        resolvedMode === 'deep' ? 'OLLAMA_EDITOR_BOT_TIMEOUT_DEEP_MS' : 'OLLAMA_EDITOR_BOT_TIMEOUT_FAST_MS'
+      ]) || (
+        resolvedMode === 'deep'
+          ? 120000
+          : 25000
+      )
+    )
+  );
+}
 
 async function ensureEditorAiLoggingInitialized() {
   await initializeEditorAiLogging({
@@ -423,8 +463,11 @@ async function postJsonWithTimeout(url, payload, timeoutMs, errorMessage) {
       signal: controller.signal
     }).catch((error) => {
       if (error?.name === 'AbortError') {
-        throw new Error(errorMessage);
+        const timeoutError = new Error(errorMessage);
+        timeoutError.code = 'cloud_timeout';
+        throw timeoutError;
       }
+      error.code = error?.code || 'cloud_connectivity_failed';
       throw error;
     });
 
@@ -2004,6 +2047,7 @@ function buildEditorBotThinkingSuppressionConfig({ modelName, baseUrl } = {}) {
 function resolveEditorBotJudgeNumPredict({
   modelName,
   baseUrl,
+  mode = getEditorBotMode(),
   retry = false,
   repair = false
 } = {}) {
@@ -2019,7 +2063,13 @@ function resolveEditorBotJudgeNumPredict({
     return CLOUD_EDITOR_BOT_RETRY_NUM_PREDICT;
   }
 
-  return CLOUD_EDITOR_BOT_NUM_PREDICT;
+  return normalizeEditorBotMode(mode) === 'deep'
+    ? Math.max(CLOUD_EDITOR_BOT_NUM_PREDICT, Number(readFirstEditorBotEnv([
+      'OLLAMA_EDITOR_BOT_NUM_PREDICT_DEEP'
+    ]) || 1800))
+    : Math.max(400, Number(readFirstEditorBotEnv([
+      'OLLAMA_EDITOR_BOT_NUM_PREDICT_FAST'
+    ]) || 900));
 }
 
 async function invokeEditorBotModel({
@@ -2071,7 +2121,7 @@ async function queryStructuredEditorBotResponse({
       keep_alive: EDITOR_BOT_KEEP_ALIVE,
       ...thinkingSuppression.body,
       options: {
-        temperature: 0.1,
+        temperature: EDITOR_BOT_TEMPERATURE,
         num_predict: request.numPredict,
         num_ctx: isCloudEditorBotTarget({ modelName: request.modelName, baseUrl: request.baseUrl }) ? 4096 : 2048,
         ...thinkingSuppression.options
@@ -2089,6 +2139,13 @@ async function queryStructuredEditorBotResponse({
     error.httpStatus = response.status;
     error.responseText = responseText;
     error.bodyPreview = buildEditorBotDiagnosticPreview(responseText);
+    error.code = response.status === 401 || response.status === 403
+      ? 'cloud_auth_failed'
+      : response.status === 404
+        ? 'cloud_model_not_found'
+        : response.status >= 500
+          ? 'cloud_provider_error'
+          : 'cloud_http_error';
     throw error;
   }
 
@@ -2283,6 +2340,7 @@ function buildEditorBotSystemPrompt() {
     'If you need reasoning, do it silently.',
     'Judge each ruleset as one rotating Rentz mini-game or contract inside a larger match, not as the entire game.',
     'Simple focused contracts can score very high when they are clear, fast, and tactically meaningful.',
+    'A single iconic danger card can still create solid player agency when players can time, dump, protect, or force that card.',
     'Swingy scoring is acceptable when it is intentional, readable, and easy to track.',
     'Do not punish a ruleset for being narrow, simple, or for not solving comeback pacing by itself.',
     'Do punish rules that feel unclear, arbitrary, impossible to track, unplayable, or wildly mismatched in scoring.',
@@ -2532,6 +2590,7 @@ async function requestEditorBotReviewVariant({
   lean = false,
   requestId = ''
 } = {}) {
+  const editorMode = lean ? 'fast' : getEditorBotMode();
   const systemPrompt = buildEditorBotSystemPrompt();
   const humanPrompt = JSON.stringify(buildEditorBotPromptPayload({
     ...safeRuleset,
@@ -2550,7 +2609,7 @@ async function requestEditorBotReviewVariant({
       baseUrl,
       timeoutMs,
       attemptLabel: lean ? 'lean-main' : 'full-main',
-      numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl }),
+      numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, mode: editorMode }),
       jsonMode: isCloudEditorBotTarget({ modelName, baseUrl }),
       requestId,
       phase: 'judge'
@@ -2573,7 +2632,7 @@ async function requestEditorBotReviewVariant({
       await logEditorAiEvent('WARN', 'judge request triggering focused retry', {
         requestId,
         retryAttempt: 'empty-response-thinking-retry',
-        numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, retry: true }),
+        numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, mode: editorMode, retry: true }),
         previousDoneReason: primaryResult.diagnostic?.responseMeta?.doneReason,
         previousEvalCount: primaryResult.diagnostic?.responseMeta?.evalCount,
         responseEmpty: true,
@@ -2593,7 +2652,7 @@ async function requestEditorBotReviewVariant({
         baseUrl,
         timeoutMs,
         attemptLabel: 'empty-response-thinking-retry',
-        numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, retry: true }),
+        numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, mode: editorMode, retry: true }),
         jsonMode: true,
         requestId,
         phase: 'judge-retry'
@@ -2666,6 +2725,7 @@ async function requestEditorBotRepairVariant({
     ]
   });
   const diagnostics = [];
+  const editorMode = getEditorBotMode();
 
   try {
     const repairResult = await requestEditorBotAttempt({
@@ -2676,7 +2736,7 @@ async function requestEditorBotRepairVariant({
       baseUrl,
       timeoutMs,
       attemptLabel: 'repair-json',
-      numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, repair: true }),
+      numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, mode: editorMode, repair: true }),
       jsonMode: isCloudEditorBotTarget({ modelName, baseUrl }),
       requestId,
       phase: 'repair'
@@ -2919,6 +2979,13 @@ async function requestEditorBotWarmupAttempt({
       error.httpStatus = response.status;
       error.responseText = responseText;
       error.bodyPreview = buildEditorBotDiagnosticPreview(responseText);
+      error.code = response.status === 401 || response.status === 403
+        ? 'cloud_auth_failed'
+        : response.status === 404
+          ? 'cloud_model_not_found'
+          : response.status >= 500
+            ? 'cloud_provider_error'
+            : 'cloud_http_error';
       throw error;
     }
 
@@ -3277,12 +3344,13 @@ async function reviewRulesetWithEditorBot({
   compiler = null,
   modelName = DEFAULT_EDITOR_BOT_FULL_OLLAMA_MODEL,
   baseUrl = DEFAULT_EDITOR_BOT_OLLAMA_BASE_URL,
-  timeoutMs = EDITOR_BOT_TIMEOUT_MS,
+  timeoutMs = resolveEditorBotTimeoutMs(),
   rulesetHashOverride = ''
 } = {}) {
   await ensureEditorAiLoggingInitialized();
   const requestId = createEditorBotRequestId();
   const reviewStartedAt = Date.now();
+  const editorMode = getEditorBotMode();
   const safeRuleset = buildSafeRulesetPayload(ruleset);
   const metrics = buildRulesetJudgeMetrics({
     code: safeRuleset.code,
@@ -3316,7 +3384,8 @@ async function reviewRulesetWithEditorBot({
     baseUrl: sanitizeEditorBotBaseUrlForLog(baseUrl),
     timeoutMs,
     rulesetHash,
-    numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl }),
+    mode: editorMode,
+    numPredict: resolveEditorBotJudgeNumPredict({ modelName, baseUrl, mode: editorMode }),
     noThinkEnabled: judgeThinkingSuppression.enabled,
     noThinkStrategy: judgeThinkingSuppression.strategy
   });
@@ -3360,7 +3429,7 @@ async function reviewRulesetWithEditorBot({
       modelName,
       baseUrl,
       timeoutMs,
-      lean: !isCloudEditorBotTarget({ modelName, baseUrl }),
+      lean: editorMode !== 'deep',
       requestId
     }).catch((error) => {
       if (Array.isArray(error.editorBotDiagnostics)) {

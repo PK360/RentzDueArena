@@ -1,0 +1,3 @@
+if(HEART_KING)
+  add(-100)
+endif

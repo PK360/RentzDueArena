@@ -1,0 +1,34 @@
+- description: Editor Bot fast cloud rates a simple focused king-of-hearts contract as clear and specific
+  vars:
+    caseId: editor-fast-simple-heart-threat
+    evaluationType: contract
+    executionMode: cloud
+    rulesetFixture: simple-good-ruleset.rentz
+    rulesetTitle: Simple Heart Threat
+    rulesetShortName: SHT
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: 10195fa94fbf035f
+    expectedMinOverallScore: 8
+    expectedMinCategoryScores: '{"claritySimplicity": 8.5}'
+    expectedKeywords: '["king of hearts", "heart", "danger card"]'
+    requireCloudAttempt: true
+    maxElapsedMs: 30000
+
+- description: Editor Bot fast cloud recognizes diamonds as a clean suit-pressure avoidance contract
+  vars:
+    caseId: editor-fast-diamonds
+    evaluationType: contract
+    executionMode: cloud
+    defaultRulesetId: diamonds
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedProviderModes: '["real-cloud"]'
+    expectedSourceHash: d195d83ec2901d0a
+    expectedMinOverallScore: 7.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedKeywords: '["diamonds", "diamond", "suit pressure"]'
+    forbiddenKeywords: '["king of hearts", "whist"]'
+    requireCloudAttempt: true
+    maxElapsedMs: 30000

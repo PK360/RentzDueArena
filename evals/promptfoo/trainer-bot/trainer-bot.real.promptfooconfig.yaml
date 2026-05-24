@@ -1,0 +1,35 @@
+description: Rentz Arena trainer bot promptfoo real Ollama evals
+prompts:
+  - file://../shared/default-routing-prompt.txt
+providers:
+  - id: file://../providers/trainer-bot.provider.js
+    label: trainer-bot
+evaluateOptions:
+  maxConcurrency: 1
+commandLineOptions:
+  tableCellMaxLength: 120
+tests: file://cases.real.yaml
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://assertions.js:isValidJsonOutput
+    - type: javascript
+      value: file://assertions.js:trainerModeContract
+    - type: javascript
+      value: file://assertions.js:trainerSourceExpectation
+    - type: javascript
+      value: file://assertions.js:trainerRatingInRange
+    - type: javascript
+      value: file://assertions.js:trainerDoesNotLeakHiddenCards
+    - type: javascript
+      value: file://assertions.js:outputDoesNotContainChainOfThought
+    - type: javascript
+      value: file://assertions.js:trainerLengthScore
+    - type: javascript
+      value: file://assertions.js:trainerConstructiveToneScore
+    - type: javascript
+      value: file://assertions.js:trainerRecommendationExpectation
+    - type: javascript
+      value: file://assertions.js:trainerFinalReviewNoNumericScore
+    - type: javascript
+      value: file://assertions.js:trainerLatencyScore

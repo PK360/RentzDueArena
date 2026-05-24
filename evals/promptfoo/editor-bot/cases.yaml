@@ -1,0 +1,196 @@
+- description: Editor Bot rates a simple focused king-of-hearts contract as clear and specific
+  vars:
+    caseId: editor-simple-heart-threat
+    executionMode: cloud
+    mockScenario: simple-good-cloud
+    rulesetFixture: simple-good-ruleset.rentz
+    rulesetTitle: Simple Heart Threat
+    rulesetShortName: SHT
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedSourceHash: 10195fa94fbf035f
+    expectedMinOverallScore: 7.5
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8.5}'
+    expectedKeywords: '["king of hearts", "heart", "danger card"]'
+
+- description: Editor Bot warns that instant-ending king-of-hearts rules feel abrupt and harsher
+  vars:
+    caseId: editor-king-of-hearts-ender
+    executionMode: cloud
+    mockScenario: king-end-cloud
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: King of Hearts Ender
+    rulesetShortName: KHE
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedSourceHash: dbc1a362b5515fae
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedMaxCategoryScores: '{"comebackPotential": 7.5, "playerAgency": 8.5}'
+    requiredConcernTermsAny: '["abrupt", "harsh", "punitive"]'
+    expectedKeywords: '["king of hearts", "ends the round", "game_end", "ending"]'
+
+- description: Editor Bot recognizes diamonds as a clean suit-pressure avoidance contract
+  vars:
+    caseId: editor-diamonds
+    executionMode: cloud
+    mockScenario: diamonds-cloud
+    defaultRulesetId: diamonds
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedSourceHash: d195d83ec2901d0a
+    expectedMinOverallScore: 7.0
+    expectedScoreTolerance: 0.5
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedKeywords: '["diamonds", "diamond", "suit pressure"]'
+    forbiddenKeywords: '["king of hearts", "whist"]'
+
+- description: Editor Bot understands whist as a positive trick-taking contract
+  vars:
+    caseId: editor-whist
+    executionMode: cloud
+    mockScenario: whist-cloud
+    defaultRulesetId: whist
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedSourceHash: 2e638be6187005ca
+    expectedMinOverallScore: 7.0
+    expectedScoreTolerance: 0.5
+    expectedKeywords: '["taking tricks", "trick", "positive"]'
+    forbiddenKeywords: '["avoid king of hearts", "diamond pressure"]'
+
+- description: Editor Bot gives convoluted rulesets lower clarity and clear warnings
+  vars:
+    caseId: editor-convoluted-mashup
+    executionMode: cloud
+    mockScenario: complex-bad-cloud
+    rulesetFixture: complex-bad-ruleset.rentz
+    rulesetTitle: Convoluted Mashup
+    rulesetShortName: CM
+    expectedAllowedReviewSources: '["cloud", "cloud-repaired"]'
+    expectedSuccess: true
+    expectedSourceHash: eee0e0e2a3a1d2ec
+    expectedMaxOverallScore: 6
+    expectedMaxCategoryScores: '{"claritySimplicity": 5.5}'
+    requiredConcernTermsAny: '["tracking", "track", "readability", "clarity", "confusion", "tangled"]'
+    expectedKeywords: '["tracking", "complex", "conditional", "readability", "teach"]'
+
+- description: Editor Bot does not pretend a broken ruleset compiled successfully
+  vars:
+    caseId: editor-broken-ruleset
+    executionMode: compiler-error
+    rulesetTitle: Broken Ruleset
+    rulesetShortName: BRK
+    rulesetCode: "if(HEART_KING)\n  add(-100)\n"
+    compilerStatus: error
+    compilerMessage: "Unexpected end of ruleset: missing endif."
+    compilerErrors: '["Unexpected end of ruleset: missing endif."]'
+    expectedAllowedReviewSources: '["error"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedSourceHash: 6349f52484534fbf
+    expectedMaxOverallScore: 1
+    requiredWarningTerms: '["compiler"]'
+    expectedKeywords: '["compile", "compiler", "endif", "fix"]'
+
+- description: Editor Bot sanitizer removes category labels and score contamination from explanations
+  vars:
+    caseId: editor-contaminated-output
+    executionMode: synthetic-cloud-fixture
+    mockScenario: contaminated-cloud
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: Contaminated Output Sample
+    rulesetShortName: COS
+    expectedAllowedReviewSources: '["cloud"]'
+    expectedSuccess: true
+    expectedProviderModes: '["synthetic-cloud-fixture"]'
+    expectedSourceHash: dbc1a362b5515fae
+    expectedMinCategoryScores: '{"claritySimplicity": 8}'
+    expectedKeywords: '["king of hearts"]'
+
+- description: Empty response plus hidden thinking becomes a fallback classification instead of fake cloud success
+  vars:
+    caseId: editor-budget-exhausted-fallback
+    executionMode: synthetic-fallback
+    mockScenario: empty-thinking-fallback
+    rulesetFixture: default-king-of-hearts.rentz
+    rulesetTitle: Budget Exhaustion Fallback
+    rulesetShortName: TBE
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: dbc1a362b5515fae
+    requiredWarningTerms: '["fallback"]'
+
+- description: Default King of Hearts fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-king-fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: kingOfHearts
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: 5addde5ba9addbec
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["king of hearts"]'
+
+- description: Default Diamonds fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-diamonds-fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: diamonds
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: d195d83ec2901d0a
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["diamonds"]'
+    forbiddenKeywords: '["king of hearts"]'
+
+- description: Default Queens fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-queens-fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: queens
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: d4cf12a594f7426e
+    expectedMinOverallScore: 6
+    expectedKeywords: '["queens"]'
+
+- description: Default Ten of Clubs fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-ten-of-clubs-fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: tenOfClubs
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: cbde6a56de3e0db6
+    expectedMinOverallScore: 6
+    expectedKeywords: '["ten of clubs", "clubs"]'
+
+- description: Default Whist fallback review stays reasonable and specific
+  vars:
+    caseId: editor-default-whist-fallback
+    executionMode: synthetic-fallback
+    mockScenario: default-fallback
+    defaultRulesetId: whist
+    expectedAllowedReviewSources: '["fallback"]'
+    expectedUsedFallback: true
+    expectedSuccess: false
+    expectedProviderModes: '["synthetic-fallback"]'
+    expectedSourceHash: 2e638be6187005ca
+    expectedMinOverallScore: 6.5
+    expectedKeywords: '["whist", "trick"]'
