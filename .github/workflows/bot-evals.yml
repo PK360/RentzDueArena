@@ -26,8 +26,6 @@ jobs:
       PROMPTFOO_USE_REAL_OLLAMA: 'false'
       PROMPTFOO_USE_REAL_CLOUD: 'false'
       AUTH_JWT_SECRET: test-jwt-secret
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_EDITOR_BOT_AUTH_TOKEN: ${{ secrets.OLLAMA_API_KEY }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -79,14 +77,19 @@ jobs:
         if: ${{ inputs.eval_type == 'stable' }}
         run: npm run eval:bots --if-present
 
-      - name: Require cloud editor secret
-        if: ${{ inputs.eval_type == 'editor-cloud' && secrets.OLLAMA_API_KEY == '' }}
+      - name: Validate editor cloud secret
+        if: ${{ inputs.eval_type == 'editor-cloud' }}
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
         run: |
-          echo "The editor-cloud lane requires the OLLAMA_API_KEY secret."
-          exit 1
+          if [ -z "$OLLAMA_API_KEY" ]; then
+            echo "missing secret"
+            exit 1
+          fi
 
       - name: Run editor cloud eval
-        if: ${{ inputs.eval_type == 'editor-cloud' && secrets.OLLAMA_API_KEY != '' }}
+        if: ${{ inputs.eval_type == 'editor-cloud' }}
         env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           PROMPTFOO_USE_REAL_CLOUD: 'true'
         run: npm run eval:editor-bot:cloud --if-present
