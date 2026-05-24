@@ -7,7 +7,7 @@ const DEFAULTS_DIR = path.join(MEDIA_ROOT, 'defaults');
 const PROFILES_DIR = path.join(MEDIA_ROOT, 'profiles');
 const BANNERS_DIR = path.join(MEDIA_ROOT, 'banners');
 
-const DEFAULT_PROFILE_PICTURE_PATH = '/media/defaults/default-profile.gif';
+const DEFAULT_PROFILE_PICTURE_PATH = '/media/defaults/default-profile.png';
 const DEFAULT_BANNER_PATH = '/media/defaults/default-banner.jpeg';
 const MAX_ACCOUNT_IMAGE_SIZE_BYTES = 2 * 1024 * 1024;
 const ACCOUNT_IMAGE_MIME_TYPES = Object.freeze({

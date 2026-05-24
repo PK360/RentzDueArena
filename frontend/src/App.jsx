@@ -44,6 +44,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { io } from 'socket.io-client';
+import sidebarBrandLogo from './assets/logo_small.png';
 
 const socket = io(import.meta.env.VITE_SOCKET_URL || window.location.origin, {
   autoConnect: false,
@@ -146,7 +147,7 @@ const ACCOUNT_RULESET_OPTIONS = ROOM_RULESET_OPTIONS.map((option, index) => ({
 }));
 const DEFAULT_RULESET_REF_PREFIX = 'default:';
 const SAVED_RULESET_REF_PREFIX = 'saved:';
-const DEFAULT_REGISTER_PROFILE_PREVIEW = '/media/defaults/default-profile.gif';
+const DEFAULT_REGISTER_PROFILE_PREVIEW = '/media/defaults/default-profile.png';
 const DEFAULT_REGISTER_BANNER_PREVIEW = '/media/defaults/default-banner.jpeg';
 const EMOJI_REACTION_REGISTRY = Object.freeze([
   { id: 'grin', label: 'Grin', glyph: '😄', animationClassName: 'is-bounce' },
@@ -2224,13 +2225,20 @@ async function copyTextToClipboard(text) {
   document.body.removeChild(textArea);
 }
 
-function Card({ cardString, onClick, disabled, ghosted = false, compact = false, title = '', variant = 'default' }) {
+function Card({ cardString, onClick, disabled, ghosted = false, compact = false, title = '', variant = 'default', size = 'default' }) {
   if (!cardString) {
     return null;
   }
 
   const cardLabel = getCardLabel(cardString);
   const cardAssetPath = getCardAssetPath(cardString);
+  const cardSizeClass = variant === 'trick' || variant === 'hand'
+    ? 'h-full w-full'
+    : size === 'showcase'
+      ? 'h-[6.95rem] w-[4.7rem] sm:h-[7.75rem] sm:w-[5.2rem] md:h-[8.45rem] md:w-[5.7rem]'
+      : compact
+        ? 'h-[3.85rem] w-[2.6rem] sm:h-[4.3rem] sm:w-[2.9rem] md:h-[4.75rem] md:w-[3.2rem]'
+        : 'h-[5.2rem] w-[3.45rem] sm:h-[5.95rem] sm:w-[3.95rem] md:h-[8rem] md:w-[5.2rem] lg:h-[8.7rem] lg:w-[5.65rem]';
 
   return (
     <button
@@ -2247,11 +2255,7 @@ function Card({ cardString, onClick, disabled, ghosted = false, compact = false,
           : variant === 'hand'
             ? 'rounded-none'
             : 'rounded-[0.34rem]',
-        variant === 'trick' || variant === 'hand'
-          ? 'h-full w-full'
-          : compact
-            ? 'h-[3.85rem] w-[2.6rem] sm:h-[4.3rem] sm:w-[2.9rem] md:h-[4.75rem] md:w-[3.2rem]'
-            : 'h-[5.2rem] w-[3.45rem] sm:h-[5.95rem] sm:w-[3.95rem] md:h-[8rem] md:w-[5.2rem] lg:h-[8.7rem] lg:w-[5.65rem]',
+        cardSizeClass,
         disabled && ghosted
           ? 'cursor-not-allowed opacity-40 saturate-0'
           : disabled
@@ -2624,7 +2628,7 @@ function DesktopPlayerCard({ player, isCurrent, isLocal, cardCount, tricksWon, p
   );
 }
 
-function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef, debugMeta = null }) {
+function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef, debugMeta = null, onOpenCurrentTrick = null }) {
   const [flightPaths, setFlightPaths] = useState(null);
 
   useLayoutEffect(() => {
@@ -2656,11 +2660,25 @@ function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef, debug
     return () => window.clearTimeout(timer);
   }, [boardRef, trickPending, trickWinnerId, currentTrick.length]);
 
+  const handleKeyDown = (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+
+    event.preventDefault();
+    onOpenCurrentTrick?.();
+  };
+
   return (
     <section
       ref={boardRef}
-      className={clsx('rentz-trick-board', trickPending && 'is-pending')}
-      aria-label="Central trick board"
+      className={clsx('rentz-trick-board', trickPending && 'is-pending', onOpenCurrentTrick && 'is-interactive')}
+      role={onOpenCurrentTrick ? 'button' : undefined}
+      tabIndex={onOpenCurrentTrick ? 0 : undefined}
+      aria-label={onOpenCurrentTrick ? 'View current trick cards' : 'Central trick board'}
+      aria-haspopup={onOpenCurrentTrick ? 'dialog' : undefined}
+      onClick={onOpenCurrentTrick || undefined}
+      onKeyDown={handleKeyDown}
     >
       {(currentTrick || []).map((play, index) => {
         const placement = getTrickCardPlacement(play, index);
@@ -2694,6 +2712,20 @@ function TrickBoard({ currentTrick, trickPending, trickWinnerId, boardRef, debug
       ) : null}
     </section>
   );
+}
+
+function getCurrentTrickPlayer(play, playersById) {
+  const playerFromTable = play?.playedBy ? playersById.get(play.playedBy) : null;
+  if (playerFromTable) {
+    return playerFromTable;
+  }
+
+  const fallbackName = String(play?.playerName || '').trim() || 'Player';
+  return {
+    userId: play?.playedBy || '',
+    name: fallbackName,
+    displayName: fallbackName
+  };
 }
 
 function CollectedHandsView({ players, collectedHandsByPlayer, myPlayerId }) {
@@ -2754,6 +2786,81 @@ function CollectedHandsView({ players, collectedHandsByPlayer, myPlayerId }) {
   );
 }
 
+function CurrentTrickModal({ isOpen, onClose, currentTrick, players }) {
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  const playersById = new Map(players.map((player) => [player.userId, player]));
+  const hasCards = currentTrick.length > 0;
+
+  return (
+    <ModalShell
+      title="Current Trick"
+      eyebrow="Live table view"
+      onClose={onClose}
+      overlayClassName="items-start overflow-y-auto py-3 sm:items-center sm:py-6"
+      panelClassName="my-auto max-w-5xl"
+      panelStyle={{ maxHeight: 'calc(100dvh - 1.5rem)' }}
+      bodyClassName="pr-0"
+      closeOnBackdrop
+      ariaLabel="Current trick cards"
+    >
+      <div className="space-y-4 overflow-y-auto pr-1" data-rentz-modal-scroll="y">
+        {hasCards ? (
+          <div className="overflow-x-auto pb-2" data-rentz-modal-scroll="x">
+            <div className="flex w-max min-w-full justify-start gap-3 sm:justify-center sm:gap-4 md:gap-5">
+              {currentTrick.map((play, index) => {
+                const player = getCurrentTrickPlayer(play, playersById);
+
+                return (
+                  <div
+                    key={`${play.playedBy || play.playerName || 'player'}-${play.card}-${index}`}
+                    className="flex w-[8.1rem] shrink-0 flex-col items-center gap-3 rounded-[1.45rem] border border-[var(--glass-border)] bg-[var(--surface-subtle)] px-3 py-4 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_12px_28px_rgba(15,23,42,0.1)] sm:w-[8.8rem] sm:px-4"
+                  >
+                    <Card cardString={play.card} disabled size="showcase" />
+                    <div className="flex min-w-0 flex-col items-center gap-2">
+                      <AvatarFace
+                        player={player}
+                        alt={`${getPlayerName(player)} avatar`}
+                        wrapperClassName="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border border-white/70 bg-white/80 p-0.5 shadow-[0_8px_16px_rgba(15,23,42,0.12)]"
+                        imageClassName="h-full w-full rounded-full object-cover"
+                        fallbackClassName="flex h-full w-full items-center justify-center rounded-full bg-[linear-gradient(180deg,rgba(216,236,252,0.96)_0%,rgba(179,214,240,0.96)_100%)] text-xs font-black uppercase tracking-[0.08em] text-[#1f4d68]"
+                      />
+                      <span className="max-w-full text-sm font-black text-[var(--text-primary)] [overflow-wrap:anywhere]">
+                        {getPlayerName(player)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-[1.4rem] border border-dashed border-[var(--glass-border)] bg-[var(--surface-subtle)] px-5 py-8 text-center text-sm font-semibold text-[var(--text-secondary)]">
+            No cards played yet.
+          </div>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
 function ModalShell({
   title,
   eyebrow,
@@ -2766,11 +2873,31 @@ function ModalShell({
   overlayClassName = '',
   panelClassName = '',
   bodyClassName = '',
-  headerless = false
+  headerless = false,
+  closeOnBackdrop = false,
+  ariaLabel = '',
+  panelStyle = undefined
 }) {
+  const handleOverlayClick = (event) => {
+    if (!closeOnBackdrop || event.target !== event.currentTarget || !onClose) {
+      return;
+    }
+
+    onClose();
+  };
+
   return (
-    <div className={clsx('rentz-modal-overlay fixed inset-0 z-[80] flex items-center justify-center px-4 py-6', overlayClassName)}>
-      <div className={clsx('rentz-modal-panel glass-panel relative flex max-h-[82vh] w-full flex-col rounded-[2rem] p-5 sm:p-6', wide ? 'max-w-6xl' : 'max-w-3xl', panelClassName)}>
+    <div
+      className={clsx('rentz-modal-overlay fixed inset-0 z-[80] flex items-center justify-center px-4 py-6', overlayClassName)}
+      onClick={handleOverlayClick}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel || title}
+        className={clsx('rentz-modal-panel glass-panel relative flex max-h-[82vh] w-full flex-col rounded-[2rem] p-5 sm:p-6', wide ? 'max-w-6xl' : 'max-w-3xl', panelClassName)}
+        style={panelStyle}
+      >
         {!headerless && (
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0 flex-1 pr-2">
@@ -3115,6 +3242,7 @@ function App() {
   const [choiceState, setChoiceState] = useState(null);
   const [latestRoundStats, setLatestRoundStats] = useState(null);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
+  const [isCurrentTrickModalOpen, setIsCurrentTrickModalOpen] = useState(false);
   const [matchCompletePending, setMatchCompletePending] = useState(false);
   const [roundActionBusy, setRoundActionBusy] = useState('');
   const [timerNow, setTimerNow] = useState(() => Date.now());
@@ -9041,6 +9169,13 @@ function App() {
       ? [localTablePlayer]
       : [];
   const isTableStageVisible = activeTab === 'play' && inLobby && gameStarted && !gameFinished && !isRoundSetupPhase && playView === 'table';
+  
+  useEffect(() => {
+    if (!isTableStageVisible) {
+      setIsCurrentTrickModalOpen(false);
+    }
+  }, [isTableStageVisible]);
+
   const isChoiceHandSpreadVisible = isChoosingRuleset && !choiceState?.nvSelected && !isSpectatingGame;
   const handSpreadLayoutMode = isChoiceHandSpreadVisible ? 'choice' : isTableStageVisible ? 'play' : 'hidden';
   const isHandSpreadVisible = handSpreadLayoutMode !== 'hidden';
@@ -10753,6 +10888,7 @@ function App() {
                   trickPending={trickPending || Boolean(animatingWinner)}
                   trickWinnerId={trickWinnerId}
                   debugMeta={lastBotDecisionDebug}
+                  onOpenCurrentTrick={() => setIsCurrentTrickModalOpen(true)}
                 />
               </div>
             </div>
@@ -14404,9 +14540,12 @@ endif`}
 
         <div className="relative flex min-h-0 flex-1 overflow-hidden">
           <aside className="hidden w-56 shrink-0 flex-col border-r border-[var(--glass-border)] p-4 transition-colors duration-500 md:flex" style={{ background: 'var(--glass-bg)' }}>
-            <div className="mb-8 mt-2 flex items-center gap-3 px-3">
-              <Sparkles fill="currentColor" className="h-8 w-8 text-[var(--text-primary)] opacity-80 drop-shadow-lg" />
-              <h1 className="font-display text-[2.1rem] font-black tracking-tighter text-[var(--text-primary)]">Rentz</h1>
+            <div className="rentz-sidebar-brand mb-8 mt-2 px-3">
+              <img
+                src={sidebarBrandLogo}
+                alt="Rentz Arena"
+                className="rentz-sidebar-brand-logo"
+              />
             </div>
 
             <nav className="flex flex-1 flex-col gap-1.5">
@@ -15316,6 +15455,14 @@ endif`}
           onEndGame={handleEndGame}
           onSaveQuit={handleSaveAndQuit}
           onClose={() => setIsStatsOpen(false)}
+        />
+      )}
+      {isTableStageVisible && (
+        <CurrentTrickModal
+          isOpen={isCurrentTrickModalOpen}
+          onClose={() => setIsCurrentTrickModalOpen(false)}
+          currentTrick={currentTrick}
+          players={players}
         />
       )}
       {renderTrainingFinalReviewModal()}
