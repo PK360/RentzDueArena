@@ -521,7 +521,7 @@ test('reviewRulesetWithEditorBot prefers a full AI-written structured judgment w
     });
 
     assert.equal(requests[0].url, 'https://ollama.com/api/generate');
-    assert.equal(requests[1].body.options.num_predict, 1600);
+    assert.equal(requests[1].body.options.num_predict, 900);
     assert.equal(requests[1].body.options.think, false);
     assert.equal(requests[1].body.options.reasoning, false);
     assert.equal(review.reviewSource, 'cloud');
@@ -784,7 +784,7 @@ test('reviewRulesetWithEditorBot retries once when cloud returns only thinking a
     });
 
     assert.equal(requests.length, 3);
-    assert.equal(requests[1].options.num_predict, 1600);
+    assert.equal(requests[1].options.num_predict, 900);
     assert.equal(requests[2].options.num_predict >= 1800, true);
     assert.equal(requests[2].options.think, false);
     assert.equal(requests[2].options.reasoning, false);
