@@ -1,6 +1,6 @@
 # User Stories
 
-Acest document centralizează exact user story-urile definite în [BACKLOG.md](../BACKLOG.md), păstrând formularea originală.
+Acest document centralizează exact user story-urile definite în [BACKLOG.md](../BACKLOG.md).
 
 ## Functional User Stories
 
