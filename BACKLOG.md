@@ -830,7 +830,7 @@ Acceptance criteria:
 - A player can rate attached rulesets and save them into the library.
 - Counts and saved-state indicators stay consistent across forum and library views.
 
-### RA-11 - Select Rulesets Before Starting a Match (!!!)
+### RA-11 - Select Rulesets Before Starting a Match
 Priority: `Medium Priority`
 Type: `Functional`
 
@@ -842,7 +842,7 @@ Acceptance criteria:
 - All players see which ruleset is active before the game starts.
 - The selected ruleset is persisted with the game record.
 
-### RA-12 - Match History and Final Standings Archive (!!!!!!!)
+### RA-12 - Match History and Final Standings Archive
 Priority: `Medium Priority`
 Type: `Functional`
 
@@ -854,7 +854,7 @@ Acceptance criteria:
 - Each record includes room code, date, players, ruleset, and final standings.
 - A completed game can be opened from history for a summary view.
 
-### RA-13 - Post-Game Summary and Replay Timeline (legat de tabel, nu joc in sine)
+### RA-13 - Post-Game Summary and Replay Timeline
 Priority: `Medium Priority`
 Type: `Functional`
 
