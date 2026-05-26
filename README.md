@@ -53,6 +53,7 @@ Rentz Arena este o platformă multiplayer pentru jocul de cărți Rentz, cu lobb
 ## Link-uri utile
 
 - [Trello](https://trello.com/b/jerqOuXW/rentzduearena)
+- [Demo offline](https://www.youtube.com/watch?v=meVyUkvDiCI&feature=youtu.be)
 - [Raport folosire tool-uri AI](docs/Raport_Tooluri_AI.pdf)
 - [User Stories](docs/user-stories.md)
 - [Backlog](BACKLOG.md)
